@@ -1,0 +1,124 @@
+{
+  "name": "my-dev-team-vs-code",
+  "displayName": "My Dev Team",
+  "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
+  "version": "0.0.1",
+  "publisher": "bobro",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "myDevTeam.agent",
+        "name": "devteam",
+        "fullName": "My Dev Team",
+        "description": "Ask me to read, search, run, or change files in your workspace.",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "explain",
+            "description": "Explain a file or selection."
+          }
+        ]
+      }
+    ],
+    "languageModelTools": [
+      {
+        "name": "myDevTeam_readFile",
+        "displayName": "Read File",
+        "modelDescription": "Read the full text contents of a file in the workspace given its relative path.",
+        "tags": ["myDevTeam"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Workspace-relative path of the file to read."
+            }
+          },
+          "required": ["path"]
+        }
+      },
+      {
+        "name": "myDevTeam_searchFiles",
+        "displayName": "Search Files",
+        "modelDescription": "Search the workspace for files matching a glob, or for text contained within files.",
+        "tags": ["myDevTeam"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string",
+              "description": "Glob pattern (e.g. **/*.ts) or text to search for."
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["glob", "content"],
+              "description": "Whether to match file names by glob or search file contents for text."
+            }
+          },
+          "required": ["query", "mode"]
+        }
+      },
+      {
+        "name": "myDevTeam_runCommand",
+        "displayName": "Run Command",
+        "modelDescription": "Run a shell command in the workspace root. This is a side-effecting action and requires user confirmation.",
+        "tags": ["myDevTeam"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "description": "The shell command to execute."
+            }
+          },
+          "required": ["command"]
+        }
+      },
+      {
+        "name": "myDevTeam_writeFile",
+        "displayName": "Write File",
+        "modelDescription": "Create or overwrite a file in the workspace with the given contents. This is a side-effecting action and requires user confirmation.",
+        "tags": ["myDevTeam"],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Workspace-relative path of the file to create or update."
+            },
+            "contents": {
+              "type": "string",
+              "description": "The full new contents of the file."
+            }
+          },
+          "required": ["path", "contents"]
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run package",
+    "package": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node",
+    "build": "npm run package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.x",
+    "@types/vscode": "^1.95.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  }
+}
