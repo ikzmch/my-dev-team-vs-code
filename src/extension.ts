@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { StubBackend } from './core/backend';
 import { IntentClassifier } from './core/intentClassifier';
+import { Planner } from './core/planner';
 import { registerTools } from './tools/registerTools';
 import {
   PARTICIPANT_ID,
@@ -14,7 +15,8 @@ export function activate(context: vscode.ExtensionContext) {
   // The intent classifier uses a cheap/local model from the semantic router
   // in `core/models.ts`; swap models there, not here.
   const classifier = new IntentClassifier();
-  const backend = new StubBackend(classifier);
+  const planner = new Planner();
+  const backend = new StubBackend(classifier, planner);
 
   // --- Approval seam: Phase 1 uses the chat-based approver ---
   const approver = new ChatApprover();

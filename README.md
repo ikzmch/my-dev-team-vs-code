@@ -11,10 +11,11 @@ actions (run command, write file) are gated by an **approval seam**, so the chat
 confirmation can later be swapped for a rich Webview diff dialog **without
 touching the agent core**.
 
-> **Status:** the routing layer (intent classification) is live, but the
-> **planner and executor are not wired up yet**. Today the backend classifies
-> your request and reports the chosen path; it does not yet draft or execute
-> plans. See [Current behavior](#current-behavior) and [Roadmap](#roadmap).
+> **Status:** the routing layer (intent classification) and the **planner** are
+> live; the **executor is not wired up yet**. Today the backend classifies your
+> request and, for `planning` requests, drafts a step-by-step plan — but it does
+> not yet execute that plan with tools. See
+> [Current behavior](#current-behavior) and [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -26,6 +27,7 @@ src/
     backend.ts            Backend interface + StubBackend (swap this)
     models.ts             semantic model router (role -> AI SDK model)
     intentClassifier.ts   Mastra agent: classify request as oneshot | planning
+    planner.ts            Mastra agent: draft an ordered, tool-aware plan
   tools/
     workspaceTools.ts     read / search / run / write (UI-agnostic)
     registerTools.ts      registers tools with vscode.lm
@@ -58,8 +60,12 @@ core/intentClassifier.ts       Mastra Agent + zod structured output
   IntentClassifier.classify    → { intent: "oneshot" | "planning", reason }
         │                        (uses models.intent — local Ollama)
         ▼
-  (stub) renders the detected intent + reason back to the chat panel.
-  A planner/executor would branch here.
+core/planner.ts                Planner.plan(prompt)  (only for "planning")
+  Planner                       → { summary, steps[] }  (uses models.plan)
+        │                        oneshot answers directly; planning drafts a plan.
+        ▼
+  (stub) renders the intent + reason, and for planning the drafted plan,
+  back to the chat panel. An executor would walk the plan's steps here.
 ```
 
 ### Semantic model router (`core/models.ts`)
@@ -71,7 +77,7 @@ Swap providers per role here without touching agent code.
 | Role     | Purpose                                   | Current model            |
 | -------- | ----------------------------------------- | ------------------------ |
 | `intent` | Classify the request (cheap, local)       | Ollama `qwen3:8b`        |
-| `plan`   | Draft a step-by-step plan (not wired yet) | Ollama `qwen3:8b`        |
+| `plan`   | Draft a step-by-step plan                 | Ollama `qwen3:8b`        |
 
 ```ts
 // core/models.ts — to add a paid provider for execution later:
@@ -109,6 +115,8 @@ Out of the box, `@devteam <prompt>`:
 2. Streams "Understanding your request…".
 3. Classifies the prompt as `oneshot` or `planning` via the local Ollama model.
 4. Echoes your prompt plus the **detected intent and reason** back to the panel.
+5. For `planning` requests, streams "Drafting a plan…" and renders an ordered,
+   tool-aware **plan** (`summary` + numbered steps) via `models.plan`.
 
 The four workspace tools are registered and callable by any VS Code chat model
 that supports tool calling; the stub backend itself does not yet drive a
@@ -157,10 +165,10 @@ Scripts:
 
 ## Roadmap
 
-- **Wire the planner/executor.** Replace `StubBackend` in `core/backend.ts` with
-  a backend that branches on intent: answer `oneshot` directly; for `planning`,
-  draft a plan with `models.plan`, then run a tool-calling loop over the
-  registered tools.
+- **Wire the executor.** The planner is live: `StubBackend` branches on intent
+  and, for `planning`, drafts a plan with `models.plan` (`core/planner.ts`).
+  What's left is an executor that walks the plan's steps and runs a tool-calling
+  loop over the registered tools (with `Approver`-gated side effects).
 - **Swap the backend** for a real model client. The `Backend` interface only
   needs `reply(history, sink)`; candidates:
   - **vscode.lm** — `vscode.lm.selectChatModels()` + `sendRequest()` to reuse
