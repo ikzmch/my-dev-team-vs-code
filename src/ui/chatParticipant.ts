@@ -32,6 +32,51 @@ export class ChatApprover implements Approver {
   }
 }
 
+/** Cap on inlined attachment text so a huge file can't blow up the prompt. */
+const MAX_ATTACHMENT_CHARS = 20_000;
+
+function truncate(text: string): string {
+  return text.length > MAX_ATTACHMENT_CHARS
+    ? text.slice(0, MAX_ATTACHMENT_CHARS) + '\n…(truncated)'
+    : text;
+}
+
+/**
+ * Resolve files/selections the user attached to the chat request into text
+ * blocks. VS Code delivers attachments on `request.references`, not in the
+ * prompt: each `value` is a Uri (whole file), a Location (file + range, e.g. a
+ * selection), or a plain string.
+ */
+async function renderReferences(
+  refs: readonly vscode.ChatPromptReference[]
+): Promise<string> {
+  const blocks: string[] = [];
+  for (const ref of refs) {
+    const v = ref.value;
+    try {
+      if (v instanceof vscode.Uri) {
+        const bytes = await vscode.workspace.fs.readFile(v);
+        const rel = vscode.workspace.asRelativePath(v);
+        blocks.push(
+          `File: ${rel}\n\`\`\`\n${truncate(Buffer.from(bytes).toString('utf8'))}\n\`\`\``
+        );
+      } else if (v instanceof vscode.Location) {
+        const doc = await vscode.workspace.openTextDocument(v.uri);
+        const rel = vscode.workspace.asRelativePath(v.uri);
+        const startLine = v.range.start.line + 1;
+        blocks.push(
+          `Selection from ${rel} (line ${startLine}):\n\`\`\`\n${truncate(doc.getText(v.range))}\n\`\`\``
+        );
+      } else if (typeof v === 'string') {
+        blocks.push(truncate(v));
+      }
+    } catch (err) {
+      blocks.push(`(could not read attachment: ${String(err)})`);
+    }
+  }
+  return blocks.join('\n\n');
+}
+
 /**
  * Builds the chat handler. The handler is thin: it converts VS Code's chat
  * context into our UI-agnostic ChatTurn[] and hands off to the backend.
@@ -52,7 +97,14 @@ export function createHandler(backend: Backend): vscode.ChatRequestHandler {
         history.push({ role: 'assistant', content: text });
       }
     }
-    history.push({ role: 'user', content: request.prompt });
+
+    // Fold any attached files/selections into the user turn so the backend
+    // sees them as part of the message (no Backend interface change needed).
+    const attachments = await renderReferences(request.references);
+    const userContent = attachments
+      ? `${request.prompt}\n\n--- Attached context ---\n${attachments}`
+      : request.prompt;
+    history.push({ role: 'user', content: userContent });
 
     // Bridge the UI-agnostic OutputSink onto VS Code's chat stream.
     // The backend is responsible for announcing what it's doing via

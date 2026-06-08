@@ -34,7 +34,7 @@
     ],
     "languageModelTools": [
       {
-        "name": "devteam_readFile",
+        "name": "devteam__read",
         "displayName": "Read File",
         "modelDescription": "Read the full text contents of a file in the workspace given its relative path.",
         "tags": [
@@ -54,7 +54,7 @@
         }
       },
       {
-        "name": "devteam_searchFiles",
+        "name": "devteam__search",
         "displayName": "Search Files",
         "modelDescription": "Search the workspace for files matching a glob, or for text contained within files.",
         "tags": [
@@ -83,7 +83,7 @@
         }
       },
       {
-        "name": "devteam_runCommand",
+        "name": "devteam__run",
         "displayName": "Run Command",
         "modelDescription": "Run a shell command in the workspace root. This is a side-effecting action and requires user confirmation.",
         "tags": [
@@ -103,7 +103,7 @@
         }
       },
       {
-        "name": "devteam_writeFile",
+        "name": "devteam__write",
         "displayName": "Write File",
         "modelDescription": "Create or overwrite a file in the workspace with the given contents. This is a side-effecting action and requires user confirmation.",
         "tags": [

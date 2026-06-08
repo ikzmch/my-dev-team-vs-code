@@ -13,7 +13,7 @@ export function registerTools(
   approver: Approver
 ): void {
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam_readFile', {
+    vscode.lm.registerTool('devteam__read', {
       async invoke(options) {
         const { path } = options.input as { path: string };
         const text = await readFile(path);
@@ -25,7 +25,7 @@ export function registerTools(
   );
 
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam_searchFiles', {
+    vscode.lm.registerTool('devteam__search', {
       async invoke(options) {
         const { query, mode } = options.input as {
           query: string;
@@ -42,7 +42,7 @@ export function registerTools(
   );
 
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam_runCommand', {
+    vscode.lm.registerTool('devteam__run', {
       async invoke(options) {
         const { command } = options.input as { command: string };
         const output = await runCommand(command, approver);
@@ -54,7 +54,7 @@ export function registerTools(
   );
 
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam_writeFile', {
+    vscode.lm.registerTool('devteam__write', {
       async invoke(options) {
         const { path, contents } = options.input as {
           path: string;

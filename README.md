@@ -91,10 +91,10 @@ implementations in `workspaceTools.ts` are UI-agnostic.
 
 | Tool                   | Effect                          | Approval        |
 | ---------------------- | ------------------------------- | --------------- |
-| `devteam_readFile`     | Read a file's text              | none (read-only)|
-| `devteam_searchFiles`  | Glob file names or grep content | none (read-only)|
-| `devteam_runCommand`   | Run a shell command (60s cap)   | **Approver**    |
-| `devteam_writeFile`    | Create/overwrite a file         | **Approver**    |
+| `devteam__read`        | Read a file's text              | none (read-only)|
+| `devteam__search`      | Glob file names or grep content | none (read-only)|
+| `devteam__run`         | Run a shell command (60s cap)   | **Approver**    |
+| `devteam__write`       | Create/overwrite a file         | **Approver**    |
 
 Side-effecting tools call `approver.confirm(title, detail)`. The Phase-1
 `ChatApprover` streams the proposed action into the chat panel and gates it
