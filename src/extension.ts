@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { StubBackend } from './core/backend';
+import { OllamaClient } from './core/ollama';
+import { IntentClassifier } from './core/intentClassifier';
 import { registerTools } from './tools/registerTools';
 import {
   PARTICIPANT_ID,
@@ -9,8 +11,13 @@ import {
 } from './ui/chatParticipant';
 
 export function activate(context: vscode.ExtensionContext) {
+  // --- Cheap local model used for routing decisions (intent classification). ---
+  // Requires a local Ollama daemon with `qwen3:8b` pulled.
+  const ollama = new OllamaClient('qwen3:8b');
+  const classifier = new IntentClassifier(ollama);
+
   // --- Agent core (UI-agnostic) ---
-  const backend = new StubBackend();
+  const backend = new StubBackend(classifier);
 
   // --- Approval seam: Phase 1 uses the chat-based approver ---
   const approver = new ChatApprover();

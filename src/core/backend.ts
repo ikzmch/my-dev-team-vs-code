@@ -1,4 +1,5 @@
 import { ChatTurn, AgentReply } from './types';
+import { IntentClassifier } from './intentClassifier';
 
 /**
  * The backend abstraction. Swap the implementation to point at the Anthropic
@@ -27,30 +28,36 @@ export interface Backend {
  *  - vscode.lm:  use vscode.lm.selectChatModels() + sendRequest().
  */
 export class StubBackend implements Backend {
+  constructor(private readonly classifier?: IntentClassifier) {}
+
   async reply(history: ChatTurn[]): Promise<AgentReply> {
     const lastUser = [...history].reverse().find((t) => t.role === 'user');
     const prompt = lastUser?.content ?? '';
 
-    // Trivial heuristic so the stub feels alive and demonstrates follow-ups.
-    if (/\bquestion\b/i.test(prompt)) {
-      return {
-        text:
-          "I can ask clarifying questions before acting. For example: " +
-          "which file should I focus on, and do you want me to apply changes " +
-          "or just propose them?",
-        followups: [
-          'Focus on the current file',
-          'Just propose changes, do not apply',
-        ],
-      };
+    let intentBlock = '';
+    if (this.classifier) {
+      try {
+        const result = await this.classifier.classify(prompt, history);
+        intentBlock =
+          `**Detected intent:** \`${result.intent}\`\n\n` +
+          `**Reason:** ${result.reason}\n\n` +
+          `**Next step (not yet implemented):** ` +
+          (result.intent === 'oneshot'
+            ? 'answer the question directly.'
+            : 'draft a plan, then execute it with tools.') +
+          '\n\n';
+      } catch (err: any) {
+        intentBlock =
+          `**Intent classifier error:** ${err?.message ?? String(err)}\n\n` +
+          'Is Ollama running on http://localhost:11434 with `qwen3:8b` pulled?\n\n';
+      }
     }
 
     return {
       text:
-        `**(stub backend)** You said: "${prompt}"\n\n` +
-        'Swap `StubBackend` for a real client to make this useful. ' +
-        'The tool-calling loop and approval flow are already wired.',
-      followups: ['Read a file', 'Search the workspace', 'Run a command'],
+        `**(stub backend)** You said:\n\n> ${prompt.replace(/\n/g, '\n> ')}\n\n` +
+        intentBlock +
+        'The planner and executor are not wired up yet, so this is as far as I go for now.',
     };
   }
 }
