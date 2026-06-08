@@ -37,7 +37,9 @@
         "name": "myDevTeam_readFile",
         "displayName": "Read File",
         "modelDescription": "Read the full text contents of a file in the workspace given its relative path.",
-        "tags": ["myDevTeam"],
+        "tags": [
+          "myDevTeam"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -46,14 +48,18 @@
               "description": "Workspace-relative path of the file to read."
             }
           },
-          "required": ["path"]
+          "required": [
+            "path"
+          ]
         }
       },
       {
         "name": "myDevTeam_searchFiles",
         "displayName": "Search Files",
         "modelDescription": "Search the workspace for files matching a glob, or for text contained within files.",
-        "tags": ["myDevTeam"],
+        "tags": [
+          "myDevTeam"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -63,18 +69,26 @@
             },
             "mode": {
               "type": "string",
-              "enum": ["glob", "content"],
+              "enum": [
+                "glob",
+                "content"
+              ],
               "description": "Whether to match file names by glob or search file contents for text."
             }
           },
-          "required": ["query", "mode"]
+          "required": [
+            "query",
+            "mode"
+          ]
         }
       },
       {
         "name": "myDevTeam_runCommand",
         "displayName": "Run Command",
         "modelDescription": "Run a shell command in the workspace root. This is a side-effecting action and requires user confirmation.",
-        "tags": ["myDevTeam"],
+        "tags": [
+          "myDevTeam"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -83,14 +97,18 @@
               "description": "The shell command to execute."
             }
           },
-          "required": ["command"]
+          "required": [
+            "command"
+          ]
         }
       },
       {
         "name": "myDevTeam_writeFile",
         "displayName": "Write File",
         "modelDescription": "Create or overwrite a file in the workspace with the given contents. This is a side-effecting action and requires user confirmation.",
-        "tags": ["myDevTeam"],
+        "tags": [
+          "myDevTeam"
+        ],
         "inputSchema": {
           "type": "object",
           "properties": {
@@ -103,7 +121,10 @@
               "description": "The full new contents of the file."
             }
           },
-          "required": ["path", "contents"]
+          "required": [
+            "path",
+            "contents"
+          ]
         }
       }
     ]
@@ -120,5 +141,11 @@
     "@types/vscode": "^1.95.0",
     "esbuild": "^0.21.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.41.0",
+    "ai": "^6.0.198",
+    "ollama-ai-provider-v2": "^3.5.1",
+    "zod": "^4.4.3"
   }
 }

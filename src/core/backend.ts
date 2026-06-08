@@ -41,7 +41,7 @@ export class StubBackend implements Backend {
     if (this.classifier) {
       try {
         sink.progress('Understanding your request…');
-        const result = await this.classifier.classify(prompt, history);
+        const result = await this.classifier.classify(prompt);
         intentBlock =
           `**Detected intent:** \`${result.intent}\`\n\n` +
           `**Reason:** ${result.reason}\n\n` +

@@ -1,19 +1,24 @@
-import { ChatTurn } from './types';
-import { OllamaClient } from './ollama';
+import { Agent } from '@mastra/core/agent';
+import { z } from 'zod';
+import { models } from './models';
 
 /**
  * Routing decision for a user request:
- *  - "oneshot": answer directly in a single model call, no planning needed.
- *  - "planning": decompose into steps, likely with tool calls.
+ *   - "oneshot":  answer directly in a single model call, no planning needed.
+ *   - "planning": decompose into steps, likely with tool calls.
  */
-export type Intent = 'oneshot' | 'planning';
+export const IntentSchema = z.object({
+  intent: z
+    .enum(['oneshot', 'planning'])
+    .describe(
+      '"oneshot" for direct answers; "planning" for multi-step / file-touching work.'
+    ),
+  reason: z.string().describe('One short sentence explaining the choice.'),
+});
 
-export interface IntentResult {
-  intent: Intent;
-  reason: string;
-}
+export type IntentResult = z.infer<typeof IntentSchema>;
 
-const SYSTEM_PROMPT = `You are an intent classifier for a coding assistant inside VS Code.
+const INSTRUCTIONS = `You are an intent classifier for a coding assistant inside VS Code.
 
 Read the user's most recent message and decide which path it should take.
 
@@ -30,47 +35,21 @@ Categories:
   * "fix the failing test in foo.spec.ts"
   * "find all callers of X and update them"
 
-Respond with ONLY a JSON object, no prose, no markdown fences:
-{"intent": "oneshot" | "planning", "reason": "<one short sentence>"}`;
+Respond with a JSON object matching the provided schema.`;
 
 export class IntentClassifier {
-  constructor(private readonly client: OllamaClient) {}
+  private readonly agent = new Agent({
+    id: 'intent-classifier',
+    name: 'Intent Classifier',
+    instructions: INSTRUCTIONS,
+    model: models.intent,
+  });
 
-  async classify(prompt: string, _history: ChatTurn[]): Promise<IntentResult> {
-    const raw = await this.client.chat(
-      [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: prompt },
-      ],
-      { format: 'json', temperature: 0.1 }
+  async classify(prompt: string): Promise<IntentResult> {
+    const result = await this.agent.generate(
+      [{ role: 'user', content: prompt }],
+      { structuredOutput: { schema: IntentSchema } }
     );
-    return parseIntent(raw);
+    return result.object as IntentResult;
   }
-}
-
-function parseIntent(raw: string): IntentResult {
-  // Some models still emit <think>...</think> even with think:false; strip it.
-  const cleaned = raw.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-
-  try {
-    const obj = JSON.parse(cleaned);
-    if (obj && (obj.intent === 'oneshot' || obj.intent === 'planning')) {
-      return {
-        intent: obj.intent,
-        reason:
-          typeof obj.reason === 'string' && obj.reason.length > 0
-            ? obj.reason
-            : '(no reason given)',
-      };
-    }
-  } catch {
-    // Fall through to safe default.
-  }
-
-  // Safe default: assume planning so we never skip exploration when we
-  // should have done it. The reason carries the raw response for debugging.
-  return {
-    intent: 'planning',
-    reason: `Classifier returned unparseable response: ${cleaned.slice(0, 120)}`,
-  };
 }
