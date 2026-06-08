@@ -22,10 +22,19 @@ touching the agent core**.
 ```
 src/
   extension.ts            entry point — wires core + tools + UI together
+  config/                 configuration, kept out of the logic (see below)
+    prompts/
+      intentClassifier.md system prompt for the classifier (prose)
+      planner.md          system prompt for the planner (prose)
+      markdown.d.ts       lets TS treat `*.md` imports as strings
+    prompts.ts            loads the .md files, exports typed `prompts`
+    settings.ts           operational limits (timeouts, search caps, truncation)
+    messages.ts           user-facing chat copy (progress, errors, templates)
+    modelConfig.ts        model id + provider per semantic role
   core/
     types.ts              ChatTurn, Approver, OutputSink, AgentReply
     backend.ts            Backend interface + StubBackend (swap this)
-    models.ts             semantic model router (role -> AI SDK model)
+    models.ts             semantic model router (wires modelConfig -> AI SDK)
     intentClassifier.ts   Mastra agent: classify request as oneshot | planning
     planner.ts            Mastra agent: draft an ordered, tool-aware plan
   tools/
@@ -33,6 +42,7 @@ src/
     registerTools.ts      registers tools with vscode.lm
   ui/
     chatParticipant.ts    chat handler + Phase-1 ChatApprover + followups
+test/                     Vitest unit tests + an in-memory `vscode` mock
 ```
 
 Three layers, deliberately decoupled:
@@ -68,11 +78,35 @@ core/planner.ts                Planner.plan(prompt)  (only for "planning")
   back to the chat panel. An executor would walk the plan's steps here.
 ```
 
+### Configuration vs. code (`config/`)
+
+Anything that's *configuration* — prose an author tunes, tunable limits, UI
+copy, model selection — lives in `src/config/`, separate from the logic that
+consumes it. The agents and tools import from there and never carry literals
+inline.
+
+| File                         | Holds                                                          |
+| ---------------------------- | ------------------------------------------------------------- |
+| `config/prompts/*.md`        | System prompts as plain Markdown (one file per agent)         |
+| `config/prompts.ts`          | Loads the `.md` files, re-exports them as the typed `prompts` |
+| `config/settings.ts`         | Operational limits: run timeout, search caps, truncation      |
+| `config/messages.ts`         | Progress labels, error text, and the stub's markdown templates|
+| `config/modelConfig.ts`      | Which model id + provider each semantic role uses             |
+
+**Prompts are real `.md` files.** esbuild's text loader inlines them into the
+bundle at build time (`--loader:.md=text` in the `package` script), so the
+prose lives in its own editable file but ships as a plain string — no runtime
+file I/O. `config/prompts/markdown.d.ts` declares the `*.md` module type so
+TypeScript treats the import as a string. Vitest mirrors this with a small
+`markdown-as-text` transform in `vitest.config.ts`.
+
 ### Semantic model router (`core/models.ts`)
 
 Each *role* maps to an [AI SDK](https://sdk.vercel.ai) model, so cheap/local
 models handle routing and capable (paid) models can later handle execution.
-Swap providers per role here without touching agent code.
+The **selection** (which model id per role) is configuration and lives in
+`config/modelConfig.ts`; `core/models.ts` only wires those ids onto provider
+instances. Change the model per role there without touching agent code.
 
 | Role     | Purpose                                   | Current model            |
 | -------- | ----------------------------------------- | ------------------------ |
@@ -80,12 +114,18 @@ Swap providers per role here without touching agent code.
 | `plan`   | Draft a step-by-step plan                 | Ollama `qwen3:8b`        |
 
 ```ts
-// core/models.ts — to add a paid provider for execution later:
+// config/modelConfig.ts — the selection (data):
+export const modelConfig = {
+  intent: { provider: 'ollama', model: 'qwen3:8b' },
+  plan: { provider: 'ollama', model: 'qwen3:8b' },
+} as const;
+
+// core/models.ts — the wiring; add a paid provider for execution later:
 import { createAnthropic } from '@ai-sdk/anthropic';
 const anthropic = createAnthropic({ apiKey: /* … */ });
 export const models = {
-  intent: ollama('qwen3:8b'),
-  plan: anthropic('claude-haiku-4-5'),
+  intent: ollama(modelConfig.intent.model),
+  plan: anthropic(modelConfig.plan.model),
 } as const;
 ```
 
@@ -149,11 +189,24 @@ Use the `/explain` command to explain a file or selection.
 
 Scripts:
 
-| Script            | What it does                                            |
-| ----------------- | ------------------------------------------------------- |
-| `npm run compile` | Type-check / emit with `tsc`                            |
-| `npm run watch`   | `tsc` in watch mode                                     |
-| `npm run build`   | Bundle to `dist/extension.js` with esbuild (alias of `package`) |
+| Script                  | What it does                                                     |
+| ----------------------- | --------------------------------------------------------------- |
+| `npm run compile`       | Type-check / emit with `tsc`                                     |
+| `npm run watch`         | `tsc` in watch mode                                             |
+| `npm run build`         | Bundle to `dist/extension.js` with esbuild (alias of `package`) |
+| `npm test`              | Run the Vitest unit suite once                                  |
+| `npm run test:watch`    | Vitest in watch mode                                            |
+| `npm run test:coverage` | Run the suite with a v8 coverage report                        |
+
+### Tests
+
+Unit tests live in `test/` and run on [Vitest](https://vitest.dev) in plain
+Node — no editor required. The extension imports the `vscode` module (which only
+exists inside a running editor), so `vitest.config.ts` aliases it to an
+in-memory fake in `test/mocks/vscode.ts`; the fakes are real classes so the
+source's `instanceof` checks still hold. Mastra agents are stubbed so tests
+never construct a model or reach Ollama. Coverage of the agent core, tools, UI
+handler, and `config/` is comprehensive — run `npm run test:coverage` to see it.
 
 ## Tech stack
 

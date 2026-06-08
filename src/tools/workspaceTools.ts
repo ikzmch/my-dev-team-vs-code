@@ -2,6 +2,8 @@ import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { Approver } from '../core/types';
+import { settings } from '../config/settings';
+import { messages } from '../config/messages';
 
 const execAsync = promisify(exec);
 
@@ -26,12 +28,20 @@ export async function searchFiles(
   mode: 'glob' | 'content'
 ): Promise<string[]> {
   if (mode === 'glob') {
-    const uris = await vscode.workspace.findFiles(query, '**/node_modules/**', 200);
+    const uris = await vscode.workspace.findFiles(
+      query,
+      '**/node_modules/**',
+      settings.search.globMaxResults
+    );
     return uris.map((u) => vscode.workspace.asRelativePath(u));
   }
 
   // Content search: scan candidate files for the query string.
-  const uris = await vscode.workspace.findFiles('**/*', '**/node_modules/**', 500);
+  const uris = await vscode.workspace.findFiles(
+    '**/*',
+    '**/node_modules/**',
+    settings.search.contentScanLimit
+  );
   const matches: string[] = [];
   for (const uri of uris) {
     try {
@@ -42,7 +52,7 @@ export async function searchFiles(
     } catch {
       // Skip unreadable/binary files.
     }
-    if (matches.length >= 50) break;
+    if (matches.length >= settings.search.contentMaxMatches) break;
   }
   return matches;
 }
@@ -52,14 +62,14 @@ export async function runCommand(
   command: string,
   approver: Approver
 ): Promise<string> {
-  const ok = await approver.confirm('Run command', '$ ' + command);
+  const ok = await approver.confirm(messages.approval.runCommandTitle, '$ ' + command);
   if (!ok) {
-    return 'Command was not approved by the user.';
+    return messages.notApproved.run;
   }
   try {
     const { stdout, stderr } = await execAsync(command, {
       cwd: workspaceRoot().fsPath,
-      timeout: 60_000,
+      timeout: settings.runCommandTimeoutMs,
     });
     return (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
   } catch (err: any) {
@@ -86,15 +96,15 @@ export async function writeFile(
     `File: ${relPath}\n\n--- current ---\n${truncate(existing)}\n\n` +
     `--- proposed ---\n${truncate(contents)}`;
 
-  const ok = await approver.confirm('Write file', preview);
+  const ok = await approver.confirm(messages.approval.writeFileTitle, preview);
   if (!ok) {
-    return 'Write was not approved by the user.';
+    return messages.notApproved.write;
   }
 
   await vscode.workspace.fs.writeFile(uri, Buffer.from(contents, 'utf8'));
   return `Wrote ${relPath} (${contents.length} bytes).`;
 }
 
-function truncate(s: string, max = 800): string {
+function truncate(s: string, max = settings.writePreviewMaxChars): string {
   return s.length > max ? s.slice(0, max) + '\n…(truncated)' : s;
 }

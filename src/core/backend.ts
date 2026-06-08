@@ -1,6 +1,7 @@
 import { ChatTurn, AgentReply, OutputSink } from './types';
 import { IntentClassifier } from './intentClassifier';
 import { Planner, PlanResult } from './planner';
+import { messages } from '../config/messages';
 
 /**
  * The backend abstraction. Swap the implementation to point at the Anthropic
@@ -44,31 +45,26 @@ export class StubBackend implements Backend {
     let intentBlock = '';
     if (this.classifier) {
       try {
-        sink.progress('Understanding your request…');
+        sink.progress(messages.progress.understanding);
         const result = await this.classifier.classify(prompt);
-        intentBlock =
-          `**Detected intent:** \`${result.intent}\`\n\n` +
-          `**Reason:** ${result.reason}\n\n`;
+        intentBlock = messages.intent.block(result.intent, result.reason);
 
         if (result.intent === 'oneshot') {
-          intentBlock +=
-            `**Next step (not yet implemented):** answer the question directly.\n\n`;
+          intentBlock += messages.intent.oneshotNextStep;
         } else {
           // Planning path: draft the plan now; execution is the next roadmap item.
           intentBlock += await this.renderPlan(prompt, sink);
         }
       } catch (err: any) {
-        intentBlock =
-          `**Intent classifier error:** ${err?.message ?? String(err)}\n\n` +
-          'Is Ollama running on http://localhost:11434 with `qwen3:8b` pulled?\n\n';
+        intentBlock = messages.intent.error(err?.message ?? String(err));
       }
     }
 
     return {
       text:
-        `**(stub backend)** You said:\n\n> ${prompt.replace(/\n/g, '\n> ')}\n\n` +
+        messages.stub.youSaid(prompt.replace(/\n/g, '\n> ')) +
         intentBlock +
-        'The executor is not wired up yet, so I stop after planning for now.',
+        messages.stub.footer,
     };
   }
 
@@ -79,17 +75,14 @@ export class StubBackend implements Backend {
    */
   private async renderPlan(prompt: string, sink: OutputSink): Promise<string> {
     if (!this.planner) {
-      return `**Next step (not yet implemented):** draft a plan, then execute it with tools.\n\n`;
+      return messages.plan.noPlannerNextStep;
     }
     try {
-      sink.progress('Drafting a plan…');
+      sink.progress(messages.progress.drafting);
       const plan = await this.planner.plan(prompt);
       return this.formatPlan(plan);
     } catch (err: any) {
-      return (
-        `**Planner error:** ${err?.message ?? String(err)}\n\n` +
-        'Is Ollama running on http://localhost:11434 with `qwen3:8b` pulled?\n\n'
-      );
+      return messages.plan.error(err?.message ?? String(err));
     }
   }
 
@@ -102,9 +95,9 @@ export class StubBackend implements Backend {
       })
       .join('\n');
     return (
-      `**Plan:** ${plan.summary}\n\n` +
+      messages.plan.header(plan.summary) +
       `${steps}\n\n` +
-      `**Next step (not yet implemented):** execute these steps with tools.\n\n`
+      messages.plan.nextStep
     );
   }
 }

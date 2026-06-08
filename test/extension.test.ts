@@ -1,0 +1,98 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Keep the agent core from touching a real model when the wired handler runs.
+const { generateMock } = vi.hoisted(() => ({ generateMock: vi.fn() }));
+vi.mock('@mastra/core/agent', () => ({
+  Agent: class {
+    generate = generateMock;
+  },
+}));
+
+import { activate, deactivate } from '../src/extension';
+import {
+  __reset,
+  __state,
+  chat,
+  ChatResultFeedbackKind,
+} from './mocks/vscode';
+
+beforeEach(() => {
+  __reset();
+  generateMock.mockReset();
+  vi.mocked(chat.createChatParticipant).mockClear();
+});
+
+function fakeContext() {
+  return { subscriptions: [] as unknown[] };
+}
+
+describe('activate', () => {
+  it('registers the four tools and creates the chat participant', () => {
+    const context = fakeContext();
+    activate(context as any);
+
+    expect([...__state.registeredTools.keys()]).toHaveLength(4);
+    expect(chat.createChatParticipant).toHaveBeenCalledWith(
+      'myDevTeam.agent',
+      expect.any(Function)
+    );
+    // Four tools + the participant get pushed for disposal.
+    expect(context.subscriptions).toHaveLength(5);
+  });
+
+  it('wires a feedback listener that classifies helpful vs unhelpful', () => {
+    const participant = {
+      followupProvider: undefined as unknown,
+      onDidReceiveFeedback: vi.fn(),
+      dispose: vi.fn(),
+    };
+    vi.mocked(chat.createChatParticipant).mockReturnValueOnce(participant as any);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    activate(fakeContext() as any);
+
+    const feedbackCb = participant.onDidReceiveFeedback.mock.calls[0][0] as (
+      fb: unknown
+    ) => void;
+    feedbackCb({ kind: ChatResultFeedbackKind.Helpful });
+    feedbackCb({ kind: ChatResultFeedbackKind.Unhelpful });
+
+    expect(logSpy).toHaveBeenCalledWith('[My Dev Team] feedback: helpful');
+    expect(logSpy).toHaveBeenCalledWith('[My Dev Team] feedback: unhelpful');
+    expect(participant.followupProvider).toBeDefined();
+    logSpy.mockRestore();
+  });
+
+  it('the wired handler drives the backend through the approver', async () => {
+    generateMock.mockResolvedValue({
+      object: { intent: 'oneshot', reason: 'simple' },
+    });
+    const participant = {
+      followupProvider: undefined as unknown,
+      onDidReceiveFeedback: vi.fn(),
+      dispose: vi.fn(),
+    };
+    vi.mocked(chat.createChatParticipant).mockReturnValueOnce(participant as any);
+
+    activate(fakeContext() as any);
+    const handler = vi.mocked(chat.createChatParticipant).mock.calls[0][1] as Function;
+
+    const stream = { markdown: vi.fn(), progress: vi.fn() };
+    await handler(
+      { prompt: 'what is x', references: [] },
+      { history: [] },
+      stream,
+      {}
+    );
+
+    expect(stream.markdown).toHaveBeenCalled();
+    const emitted = stream.markdown.mock.calls.map((c: unknown[]) => c[0]).join('');
+    expect(emitted).toContain('Detected intent');
+  });
+});
+
+describe('deactivate', () => {
+  it('is a no-op that does not throw', () => {
+    expect(() => deactivate()).not.toThrow();
+  });
+});

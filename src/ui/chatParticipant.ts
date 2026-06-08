@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { Approver, ChatTurn, OutputSink } from '../core/types';
 import { Backend } from '../core/backend';
+import { settings } from '../config/settings';
 
 export const PARTICIPANT_ID = 'myDevTeam.agent';
 
@@ -32,12 +33,10 @@ export class ChatApprover implements Approver {
   }
 }
 
-/** Cap on inlined attachment text so a huge file can't blow up the prompt. */
-const MAX_ATTACHMENT_CHARS = 20_000;
-
 function truncate(text: string): string {
-  return text.length > MAX_ATTACHMENT_CHARS
-    ? text.slice(0, MAX_ATTACHMENT_CHARS) + '\n…(truncated)'
+  // Cap on inlined attachment text so a huge file can't blow up the prompt.
+  return text.length > settings.maxAttachmentChars
+    ? text.slice(0, settings.maxAttachmentChars) + '\n…(truncated)'
     : text;
 }
 
