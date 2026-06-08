@@ -1,4 +1,4 @@
-import { ChatTurn, AgentReply } from './types';
+import { ChatTurn, AgentReply, OutputSink } from './types';
 import { IntentClassifier } from './intentClassifier';
 
 /**
@@ -12,8 +12,11 @@ export interface Backend {
    * In a real backend this is where you'd run the tool-calling loop with the
    * model: the model asks for a tool, you execute it via the ToolRegistry,
    * feed the result back, and repeat until it returns a final answer.
+   *
+   * The `sink` lets the backend stream transient progress messages
+   * (e.g. "Understanding your request…") to the UI as work progresses.
    */
-  reply(history: ChatTurn[]): Promise<AgentReply>;
+  reply(history: ChatTurn[], sink: OutputSink): Promise<AgentReply>;
 }
 
 /**
@@ -30,13 +33,14 @@ export interface Backend {
 export class StubBackend implements Backend {
   constructor(private readonly classifier?: IntentClassifier) {}
 
-  async reply(history: ChatTurn[]): Promise<AgentReply> {
+  async reply(history: ChatTurn[], sink: OutputSink): Promise<AgentReply> {
     const lastUser = [...history].reverse().find((t) => t.role === 'user');
     const prompt = lastUser?.content ?? '';
 
     let intentBlock = '';
     if (this.classifier) {
       try {
+        sink.progress('Understanding your request…');
         const result = await this.classifier.classify(prompt, history);
         intentBlock =
           `**Detected intent:** \`${result.intent}\`\n\n` +

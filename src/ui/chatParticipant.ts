@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { Approver, ChatTurn } from '../core/types';
+import { Approver, ChatTurn, OutputSink } from '../core/types';
 import { Backend } from '../core/backend';
 
 export const PARTICIPANT_ID = 'myDevTeam.agent';
@@ -54,9 +54,15 @@ export function createHandler(backend: Backend): vscode.ChatRequestHandler {
     }
     history.push({ role: 'user', content: request.prompt });
 
-    stream.progress('Thinking…');
+    // Bridge the UI-agnostic OutputSink onto VS Code's chat stream.
+    // The backend is responsible for announcing what it's doing via
+    // sink.progress(); we do not emit a generic placeholder here.
+    const sink: OutputSink = {
+      markdown: (text) => stream.markdown(text),
+      progress: (text) => stream.progress(text),
+    };
 
-    const reply = await backend.reply(history);
+    const reply = await backend.reply(history, sink);
     stream.markdown(reply.text);
 
     // Render follow-up suggestions as clickable chips.
