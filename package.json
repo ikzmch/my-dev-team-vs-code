@@ -5,7 +5,7 @@
   "version": "0.0.1",
   "publisher": "bobro",
   "private": true,
-  "license": "MIT",
+  "license": "Apache-2.0",
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -34,7 +34,7 @@
     ],
     "languageModelTools": [
       {
-        "name": "myDevTeam_readFile",
+        "name": "devteam_readFile",
         "displayName": "Read File",
         "modelDescription": "Read the full text contents of a file in the workspace given its relative path.",
         "tags": [
@@ -54,7 +54,7 @@
         }
       },
       {
-        "name": "myDevTeam_searchFiles",
+        "name": "devteam_searchFiles",
         "displayName": "Search Files",
         "modelDescription": "Search the workspace for files matching a glob, or for text contained within files.",
         "tags": [
@@ -83,7 +83,7 @@
         }
       },
       {
-        "name": "myDevTeam_runCommand",
+        "name": "devteam_runCommand",
         "displayName": "Run Command",
         "modelDescription": "Run a shell command in the workspace root. This is a side-effecting action and requires user confirmation.",
         "tags": [
@@ -103,7 +103,7 @@
         }
       },
       {
-        "name": "myDevTeam_writeFile",
+        "name": "devteam_writeFile",
         "displayName": "Write File",
         "modelDescription": "Create or overwrite a file in the workspace with the given contents. This is a side-effecting action and requires user confirmation.",
         "tags": [
