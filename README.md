@@ -5,13 +5,13 @@ An agentic chat participant for VS Code. It lives in the **native chat panel**
 search, run, and write** files in your workspace via the Language Model Tools
 API.
 
-The agent routes each request through a **local intent classifier** (Ollama via
+The agent routes each request through a **local triage agent** (Ollama via
 the Vercel AI SDK + Mastra) before deciding how to respond. Side-effecting
 actions (run command, write file) are gated by an **approval seam**, so the chat
 confirmation can later be swapped for a rich Webview diff dialog **without
 touching the agent core**.
 
-> **Status:** the routing layer (intent classification) and the **planner** are
+> **Status:** the routing layer (triage) and the **planner** are
 > live; the **executor is not wired up yet**. Today the workflow classifies your
 > request and, for `planning` requests, drafts a step-by-step plan — but it does
 > not yet execute that plan with tools. See
@@ -24,7 +24,7 @@ src/
   extension.ts            entry point — wires core + tools + UI together
   config/                 configuration, kept out of the logic (see below)
     agents/
-      intentClassifier.md classifier config: frontmatter + system prompt
+      triage.md           triage config: frontmatter + system prompt
       planner.md          planner config: frontmatter + system prompt
     tools/
       read.md … write.md  one config per tool: frontmatter + model-facing description
@@ -37,9 +37,9 @@ src/
     modelConfig.ts        model id + provider per semantic role
   core/
     types.ts              Approver — the approval seam
-    workflow.ts           Mastra workflow: classify -> branch -> plan | answer
+    workflow.ts           Mastra workflow: triage -> branch -> plan | answer
     models.ts             semantic model router (wires modelConfig -> AI SDK)
-    intentClassifier.ts   Mastra agent: classify request as oneshot | planning
+    triage.ts             Mastra agent: triage request as oneshot | planning
     planner.ts            Mastra agent: draft an ordered, tool-aware plan
   tools/
     workspaceTools.ts     read / search / run / write (UI-agnostic)
@@ -67,9 +67,9 @@ ui/chatParticipant.ts          fold attachments into the prompt, start a run of
         │                      chat stream as progress labels
         ▼
 core/workflow.ts               Mastra workflow (createWorkflow + createStep)
-  classify-intent              ── IntentClassifier.classify(prompt)
+  triage                       ── Triage.classify(prompt)
         │                         → { intent: "oneshot" | "planning", reason }
-        ▼                         (uses models.intent — local Ollama)
+        ▼                         (uses models.triage — local Ollama)
       branch
         ├─▶ draft-plan         ── Planner.plan(prompt)   (intent = "planning")
         │                         → { summary, steps[] } (uses models.plan)
@@ -124,19 +124,19 @@ instances. Change the model per role there without touching agent code.
 
 | Role     | Purpose                                   | Current model            |
 | -------- | ----------------------------------------- | ------------------------ |
-| `intent` | Classify the request (cheap, local)       | Ollama `qwen3:8b`        |
+| `triage` | Triage the request (cheap, local)         | Ollama `qwen3:8b`        |
 | `plan`   | Draft a step-by-step plan                 | Ollama `qwen3:8b`        |
 
 ```ts
 // config/modelConfig.ts — the selection (data):
 export const modelConfig = {
-  intent: { provider: 'ollama', model: 'qwen3:8b' },
+  triage: { provider: 'ollama', model: 'qwen3:8b' },
   plan: { provider: 'ollama', model: 'qwen3:8b' },
 } as const;
 
 // core/models.ts — the wiring (today both roles run on local Ollama):
 export const models = {
-  intent: ollama(modelConfig.intent.model),
+  triage: ollama(modelConfig.triage.model),
   plan: ollama(modelConfig.plan.model),
 } as const;
 
@@ -170,8 +170,8 @@ Out of the box, `@devteam <prompt>`:
 
 1. Folds any attached files/selections into the prompt and starts a run of the
    dev-team workflow.
-2. Streams "Understanding your request…" when the classify step starts.
-3. Classifies the prompt as `oneshot` or `planning` via the local Ollama model.
+2. Streams "Understanding your request…" when the triage step starts.
+3. Triages the prompt as `oneshot` or `planning` via the local Ollama model.
 4. Renders the **detected intent and reason** back to the panel.
 5. For `planning` requests, streams "Drafting a plan…" and renders an ordered,
    tool-aware **plan** (`summary` + at most 8 numbered steps, each hinting
@@ -189,7 +189,7 @@ failed and a reminder to start Ollama with `qwen3:8b` pulled.
 
 - **VS Code** ^1.95.0
 - **Node.js** 20.x
-- **[Ollama](https://ollama.com)** running locally for intent classification:
+- **[Ollama](https://ollama.com)** running locally for request triage:
 
   ```bash
   ollama serve                 # listens on http://localhost:11434
@@ -208,7 +208,7 @@ npm run build      # esbuild bundle -> dist/extension.js
 
 In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 An `/explain` slash command is declared in `package.json`, but it has no
-dedicated handling yet — its prompt flows through the same classify → plan
+dedicated handling yet — its prompt flows through the same triage → plan
 workflow as any other message.
 
 Scripts:
@@ -234,10 +234,10 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Tech stack
 
-- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (classifier, planner) + the orchestrating workflow
+- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (triage, planner) + the orchestrating workflow
 - **[Vercel AI SDK](https://sdk.vercel.ai)** (`ai`) — model interface
 - **`ollama-ai-provider-v2`** — AI SDK provider for local Ollama models
-- **`zod`** — structured-output schemas for the classifier and planner, plus the workflow's step I/O schemas
+- **`zod`** — structured-output schemas for the triage agent and planner, plus the workflow's step I/O schemas
 - **VS Code Chat + Language Model Tools APIs** — the front end and tool surface
 
 ## Roadmap

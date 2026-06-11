@@ -9,16 +9,16 @@ import { PlanStepSchema } from '../src/core/planner';
 
 describe('messages templates', () => {
   it('renders the intent block with the intent and reason', () => {
-    const block = messages.intent.block('oneshot', 'because');
+    const block = messages.triage.block('oneshot', 'because');
     expect(block).toContain('**Detected intent:** `oneshot`');
     expect(block).toContain('**Reason:** because');
   });
 
-  it('appends the Ollama troubleshooting hint to classifier errors', () => {
-    const text = messages.intent.error('connection refused');
-    expect(text).toContain('**Intent classifier error:** connection refused');
+  it('appends the Ollama troubleshooting hint to triage errors', () => {
+    const text = messages.triage.error('connection refused');
+    expect(text).toContain('**Triage error:** connection refused');
     expect(text).toContain(OLLAMA_ENDPOINT);
-    expect(text).toContain(modelConfig.intent.model);
+    expect(text).toContain(modelConfig.triage.model);
   });
 
   it('appends the Ollama troubleshooting hint to planner errors', () => {
@@ -44,15 +44,15 @@ describe('messages templates', () => {
   });
 
   it('marks every not-yet-implemented next step so the reply stays honest', () => {
-    expect(messages.intent.oneshotNextStep).toContain('not yet implemented');
+    expect(messages.triage.oneshotNextStep).toContain('not yet implemented');
     expect(messages.plan.nextStep).toContain('not yet implemented');
   });
 
   it('keeps the Ollama hint sourced from modelConfig, not a hardcoded id', () => {
     // The hint must name whatever model the router is configured with, so the
     // troubleshooting text can never drift from the actual model in use.
-    expect(messages.intent.error('x')).toContain(modelConfig.intent.model);
-    expect(messages.plan.error('x')).toContain(modelConfig.intent.model);
+    expect(messages.triage.error('x')).toContain(modelConfig.triage.model);
+    expect(messages.plan.error('x')).toContain(modelConfig.triage.model);
   });
 });
 
@@ -75,7 +75,7 @@ describe('settings', () => {
 });
 
 describe('modelConfig', () => {
-  it.each(['intent', 'plan'] as const)('defines provider and model for %s', (role) => {
+  it.each(['triage', 'plan'] as const)('defines provider and model for %s', (role) => {
     expect(modelConfig[role].provider).toBeTruthy();
     expect(modelConfig[role].model).toBeTruthy();
   });
@@ -151,24 +151,24 @@ describe('tool configs', () => {
 
 describe('agent configs', () => {
   it('loads frontmatter fields and non-empty instructions for each agent', () => {
-    expect(agents.intentClassifier.id).toBe('intent-classifier');
-    expect(agents.intentClassifier.name).toBe('Intent Classifier');
-    expect(agents.intentClassifier.description).toBeTruthy();
-    expect(agents.intentClassifier.model).toBe('intent');
+    expect(agents.triage.id).toBe('triage');
+    expect(agents.triage.name).toBe('Triage');
+    expect(agents.triage.description).toBeTruthy();
+    expect(agents.triage.model).toBe('triage');
     expect(agents.planner.id).toBe('planner');
     expect(agents.planner.name).toBe('Planner');
     expect(agents.planner.description).toBeTruthy();
     expect(agents.planner.model).toBe('plan');
-    expect(agents.intentClassifier.instructions).toContain('intent classifier');
+    expect(agents.triage.instructions).toContain('triage agent');
     expect(agents.planner.instructions).toContain('planner');
   });
 
   // The prose lives in standalone .md files, so these lock the structural
   // contract each agent depends on — an accidental edit that drops a routing
   // category or a tool would fail here rather than silently degrade routing.
-  it('keeps the classifier contract: no tools, both routing categories, JSON output', () => {
-    expect(agents.intentClassifier.tools).toEqual([]);
-    const p = agents.intentClassifier.instructions;
+  it('keeps the triage contract: no tools, both routing categories, JSON output', () => {
+    expect(agents.triage.tools).toEqual([]);
+    const p = agents.triage.instructions;
     expect(p).toContain('"oneshot"');
     expect(p).toContain('"planning"');
     expect(p).not.toContain('tools available');

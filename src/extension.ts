@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { IntentClassifier } from './core/intentClassifier';
+import { Triage } from './core/triage';
 import { Planner } from './core/planner';
 import { createDevTeamWorkflow } from './core/workflow';
 import { registerTools } from './tools/registerTools';
@@ -14,8 +14,8 @@ export function activate(context: vscode.ExtensionContext) {
   // --- Agent core (UI-agnostic) ---
   // The agents use cheap/local models from the semantic router in
   // `core/models.ts`; swap models there, not here. The Mastra workflow
-  // orchestrates them: classify → branch → draft a plan / answer directly.
-  const workflow = createDevTeamWorkflow(new IntentClassifier(), new Planner());
+  // orchestrates them: triage → branch → draft a plan / answer directly.
+  const workflow = createDevTeamWorkflow(new Triage(), new Planner());
 
   // --- Approval seam: Phase 1 uses the chat-based approver ---
   const approver = new ChatApprover();

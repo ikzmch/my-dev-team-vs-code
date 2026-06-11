@@ -16,7 +16,7 @@ import { modelConfig } from '../config/modelConfig';
 const ollama = createOllama();
 
 export const models = {
-  intent: ollama(modelConfig.intent.model),
+  triage: ollama(modelConfig.triage.model),
   plan: ollama(modelConfig.plan.model),
 } as const;
 

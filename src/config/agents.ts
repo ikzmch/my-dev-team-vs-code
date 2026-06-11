@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
 import { modelConfig, ModelRole } from './modelConfig';
 import { toolNames, renderToolsSection } from './tools';
-import intentClassifier from './agents/intentClassifier.md';
+import triage from './agents/triage.md';
 import planner from './agents/planner.md';
 
 const TOOLS_PLACEHOLDER = '{{tools}}';
@@ -52,7 +52,7 @@ function loadAgent(raw: string): AgentConfig {
 }
 
 export const agents = {
-  intentClassifier: loadAgent(intentClassifier),
+  triage: loadAgent(triage),
   planner: loadAgent(planner),
 } as const;
 

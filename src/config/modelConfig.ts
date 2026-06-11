@@ -5,8 +5,8 @@
  * Swap a role onto a different model (or, later, a paid provider) here.
  */
 export const modelConfig = {
-  /** Classify the user's request (cheap, local, deterministic). */
-  intent: { provider: 'ollama', model: 'qwen3:8b' },
+  /** Triage the user's request (cheap, local, deterministic). */
+  triage: { provider: 'ollama', model: 'qwen3:8b' },
   /** Draft a step-by-step plan for non-trivial tasks. */
   plan: { provider: 'ollama', model: 'qwen3:8b' },
 } as const;

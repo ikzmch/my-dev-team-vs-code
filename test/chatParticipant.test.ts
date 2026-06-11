@@ -6,7 +6,7 @@ import {
   PARTICIPANT_ID,
 } from '../src/ui/chatParticipant';
 import { createDevTeamWorkflow } from '../src/core/workflow';
-import { IntentResult } from '../src/core/intentClassifier';
+import { TriageResult } from '../src/core/triage';
 import { PlanResult } from '../src/core/planner';
 import {
   __reset,
@@ -36,10 +36,10 @@ const aPlan: PlanResult = {
 
 /**
  * Build a real dev-team workflow over fake agents, and record the prompt the
- * classifier receives so tests can assert on what the handler composed.
+ * triage agent receives so tests can assert on what the handler composed.
  */
 function makeWorkflow(
-  classify: (prompt: string) => Promise<IntentResult> = async () => ({
+  classify: (prompt: string) => Promise<TriageResult> = async () => ({
     intent: 'oneshot',
     reason: 'simple',
   }),
@@ -140,7 +140,7 @@ describe('createHandler', () => {
     expect(stream.progress).toHaveBeenCalledWith('Drafting a plan…');
   });
 
-  it('surfaces a classifier failure with the Ollama hint', async () => {
+  it('surfaces a triage failure with the Ollama hint', async () => {
     const { workflow } = makeWorkflow(async () => {
       throw new Error('connection refused');
     });
@@ -154,7 +154,7 @@ describe('createHandler', () => {
     );
 
     const text = emitted(stream);
-    expect(text).toContain('**Intent classifier error:**');
+    expect(text).toContain('**Triage error:**');
     expect(text).toContain('connection refused');
     expect(text).toContain('Ollama');
   });

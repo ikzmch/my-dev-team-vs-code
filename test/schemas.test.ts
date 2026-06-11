@@ -1,28 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { IntentSchema } from '../src/core/intentClassifier';
+import { TriageSchema } from '../src/core/triage';
 import { PlanSchema, PlanStepSchema } from '../src/core/planner';
 
-describe('IntentSchema', () => {
+describe('TriageSchema', () => {
   it('accepts a well-formed oneshot result', () => {
     expect(
-      IntentSchema.parse({ intent: 'oneshot', reason: 'simple' })
+      TriageSchema.parse({ intent: 'oneshot', reason: 'simple' })
     ).toEqual({ intent: 'oneshot', reason: 'simple' });
   });
 
   it('accepts the planning intent', () => {
-    expect(IntentSchema.safeParse({ intent: 'planning', reason: 'x' }).success).toBe(
+    expect(TriageSchema.safeParse({ intent: 'planning', reason: 'x' }).success).toBe(
       true
     );
   });
 
   it('rejects an unknown intent value', () => {
-    expect(IntentSchema.safeParse({ intent: 'chitchat', reason: 'x' }).success).toBe(
+    expect(TriageSchema.safeParse({ intent: 'chitchat', reason: 'x' }).success).toBe(
       false
     );
   });
 
   it('rejects a missing reason', () => {
-    expect(IntentSchema.safeParse({ intent: 'oneshot' }).success).toBe(false);
+    expect(TriageSchema.safeParse({ intent: 'oneshot' }).success).toBe(false);
   });
 });
 

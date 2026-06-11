@@ -16,7 +16,7 @@ vi.mock('@mastra/core/agent', () => ({
   },
 }));
 
-import { IntentClassifier, IntentSchema } from '../src/core/intentClassifier';
+import { Triage, TriageSchema } from '../src/core/triage';
 import { Planner, PlanSchema } from '../src/core/planner';
 
 beforeEach(() => {
@@ -24,29 +24,29 @@ beforeEach(() => {
   agentCtor.mockReset();
 });
 
-describe('IntentClassifier', () => {
+describe('Triage', () => {
   it('returns the structured object from the model', async () => {
     generateMock.mockResolvedValue({
       object: { intent: 'oneshot', reason: 'just a question' },
     });
-    const result = await new IntentClassifier().classify('what is a closure');
+    const result = await new Triage().classify('what is a closure');
     expect(result).toEqual({ intent: 'oneshot', reason: 'just a question' });
   });
 
-  it('passes the prompt and the intent schema to the model', async () => {
+  it('passes the prompt and the triage schema to the model', async () => {
     generateMock.mockResolvedValue({ object: { intent: 'planning', reason: 'x' } });
-    await new IntentClassifier().classify('refactor this');
+    await new Triage().classify('refactor this');
 
     const [messages, options] = generateMock.mock.calls[0];
     expect(messages).toEqual([{ role: 'user', content: 'refactor this' }]);
-    expect(options).toEqual({ structuredOutput: { schema: IntentSchema } });
+    expect(options).toEqual({ structuredOutput: { schema: TriageSchema } });
   });
 
-  it('is configured with intent-classifier instructions', async () => {
-    new IntentClassifier();
+  it('is configured with triage instructions', async () => {
+    new Triage();
     const config = agentCtor.mock.calls[0][0] as { id: string; instructions: string };
-    expect(config.id).toBe('intent-classifier');
-    expect(config.instructions).toContain('intent classifier');
+    expect(config.id).toBe('triage');
+    expect(config.instructions).toContain('triage agent');
   });
 });
 

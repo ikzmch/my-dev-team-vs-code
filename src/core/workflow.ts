@@ -1,6 +1,6 @@
 import { createWorkflow, createStep } from '@mastra/core/workflows';
 import { z } from 'zod';
-import { IntentClassifier, IntentSchema } from './intentClassifier';
+import { Triage, TriageSchema } from './triage';
 import { Planner, PlanSchema } from './planner';
 
 /**
@@ -9,7 +9,7 @@ import { Planner, PlanSchema } from './planner';
  * without magic strings.
  */
 export const stepIds = {
-  classify: 'classify-intent',
+  triage: 'triage',
   plan: 'draft-plan',
   answer: 'answer-directly',
 } as const;
@@ -18,8 +18,8 @@ export const stepIds = {
 export const RequestSchema = z.object({ prompt: z.string() });
 export type RequestInput = z.infer<typeof RequestSchema>;
 
-/** Classification carried forward to the branch steps. */
-const ClassifiedSchema = RequestSchema.extend(IntentSchema.shape);
+/** Triage decision carried forward to the branch steps. */
+const TriagedSchema = RequestSchema.extend(TriageSchema.shape);
 
 /**
  * What the workflow produces: the routing decision plus, for "planning"
@@ -27,7 +27,7 @@ const ClassifiedSchema = RequestSchema.extend(IntentSchema.shape);
  * layer's job (see ui/chatParticipant.ts).
  */
 export const ReplySchema = z.object({
-  intent: IntentSchema.shape.intent,
+  intent: TriageSchema.shape.intent,
   reason: z.string(),
   plan: PlanSchema.optional(),
 });
@@ -36,30 +36,30 @@ export type ReplyResult = z.infer<typeof ReplySchema>;
 /**
  * The agent's orchestration as a Mastra workflow:
  *
- *   classify-intent ──▶ branch ──▶ draft-plan       (intent === "planning")
- *                              └─▶ answer-directly  (intent === "oneshot")
+ *   triage ──▶ branch ──▶ draft-plan       (intent === "planning")
+ *                     └─▶ answer-directly  (intent === "oneshot")
  *
  * An executor step that walks the drafted plan with the workspace tools is
  * the next roadmap item; until then "answer-directly" just reports the
  * routing decision.
  */
 export function createDevTeamWorkflow(
-  classifier: IntentClassifier,
+  triage: Triage,
   planner: Planner
 ) {
-  const classify = createStep({
-    id: stepIds.classify,
+  const triageStep = createStep({
+    id: stepIds.triage,
     inputSchema: RequestSchema,
-    outputSchema: ClassifiedSchema,
+    outputSchema: TriagedSchema,
     execute: async ({ inputData }) => ({
       prompt: inputData.prompt,
-      ...(await classifier.classify(inputData.prompt)),
+      ...(await triage.classify(inputData.prompt)),
     }),
   });
 
   const draftPlan = createStep({
     id: stepIds.plan,
-    inputSchema: ClassifiedSchema,
+    inputSchema: TriagedSchema,
     outputSchema: ReplySchema,
     execute: async ({ inputData }) => ({
       intent: inputData.intent,
@@ -70,7 +70,7 @@ export function createDevTeamWorkflow(
 
   const answerDirectly = createStep({
     id: stepIds.answer,
-    inputSchema: ClassifiedSchema,
+    inputSchema: TriagedSchema,
     outputSchema: ReplySchema,
     execute: async ({ inputData }) => ({
       intent: inputData.intent,
@@ -86,7 +86,7 @@ export function createDevTeamWorkflow(
     inputSchema: RequestSchema,
     outputSchema: ReplySchema,
   })
-    .then(classify)
+    .then(triageStep)
     .branch([
       [async ({ inputData }) => inputData.intent === 'planning', draftPlan],
       [async ({ inputData }) => inputData.intent !== 'planning', answerDirectly],

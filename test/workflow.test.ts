@@ -4,10 +4,10 @@ import {
   stepIds,
   DevTeamWorkflow,
 } from '../src/core/workflow';
-import { IntentResult } from '../src/core/intentClassifier';
+import { TriageResult } from '../src/core/triage';
 import { PlanResult } from '../src/core/planner';
 
-function fakeClassifier(impl: (prompt: string) => Promise<IntentResult>) {
+function fakeTriage(impl: (prompt: string) => Promise<TriageResult>) {
   return { classify: impl } as any;
 }
 
@@ -29,7 +29,7 @@ describe('dev-team workflow routing', () => {
   it('routes a oneshot request to answer-directly and skips the planner', async () => {
     let plannerCalled = false;
     const workflow = createDevTeamWorkflow(
-      fakeClassifier(async () => ({ intent: 'oneshot', reason: 'simple question' })),
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'simple question' })),
       fakePlanner(async () => {
         plannerCalled = true;
         return aPlan;
@@ -47,7 +47,7 @@ describe('dev-team workflow routing', () => {
 
   it('routes a planning request through the planner and returns the plan', async () => {
     const workflow = createDevTeamWorkflow(
-      fakeClassifier(async () => ({ intent: 'planning', reason: 'multi-step' })),
+      fakeTriage(async () => ({ intent: 'planning', reason: 'multi-step' })),
       fakePlanner(async () => aPlan)
     );
 
@@ -61,11 +61,11 @@ describe('dev-team workflow routing', () => {
     }
   });
 
-  it('hands the original prompt to both the classifier and the planner', async () => {
+  it('hands the original prompt to both the triage agent and the planner', async () => {
     const seen: Record<string, string> = {};
     const workflow = createDevTeamWorkflow(
-      fakeClassifier(async (p) => {
-        seen.classifier = p;
+      fakeTriage(async (p) => {
+        seen.triage = p;
         return { intent: 'planning', reason: 'x' };
       }),
       fakePlanner(async (p) => {
@@ -76,13 +76,13 @@ describe('dev-team workflow routing', () => {
 
     await runWorkflow(workflow, 'refactor the module');
 
-    expect(seen.classifier).toBe('refactor the module');
+    expect(seen.triage).toBe('refactor the module');
     expect(seen.planner).toBe('refactor the module');
   });
 
   it('emits a step-start event per step so the UI can show progress', async () => {
     const workflow = createDevTeamWorkflow(
-      fakeClassifier(async () => ({ intent: 'planning', reason: 'x' })),
+      fakeTriage(async () => ({ intent: 'planning', reason: 'x' })),
       fakePlanner(async () => aPlan)
     );
 
@@ -96,15 +96,15 @@ describe('dev-team workflow routing', () => {
     await run.start({ inputData: { prompt: 'add a feature' } });
     unwatch();
 
-    expect(startedSteps).toContain(stepIds.classify);
+    expect(startedSteps).toContain(stepIds.triage);
     expect(startedSteps).toContain(stepIds.plan);
   });
 });
 
 describe('dev-team workflow failures', () => {
-  it('fails the run on the classify step when the classifier throws', async () => {
+  it('fails the run on the triage step when the triage agent throws', async () => {
     const workflow = createDevTeamWorkflow(
-      fakeClassifier(async () => {
+      fakeTriage(async () => {
         throw new Error('connection refused');
       }),
       fakePlanner(async () => aPlan)
@@ -115,13 +115,13 @@ describe('dev-team workflow failures', () => {
     expect(result.status).toBe('failed');
     if (result.status === 'failed') {
       expect(result.error.message).toContain('connection refused');
-      expect(result.steps[stepIds.classify]?.status).toBe('failed');
+      expect(result.steps[stepIds.triage]?.status).toBe('failed');
     }
   });
 
   it('fails the run on the plan step when the planner throws', async () => {
     const workflow = createDevTeamWorkflow(
-      fakeClassifier(async () => ({ intent: 'planning', reason: 'needs steps' })),
+      fakeTriage(async () => ({ intent: 'planning', reason: 'needs steps' })),
       fakePlanner(async () => {
         throw new Error('model not found');
       })

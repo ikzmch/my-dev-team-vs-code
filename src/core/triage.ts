@@ -4,11 +4,11 @@ import { models } from './models';
 import { agents } from '../config/agents';
 
 /**
- * Routing decision for a user request:
+ * Triage decision for a user request:
  *   - "oneshot":  answer directly in a single model call, no planning needed.
  *   - "planning": decompose into steps, likely with tool calls.
  */
-export const IntentSchema = z.object({
+export const TriageSchema = z.object({
   intent: z
     .enum(['oneshot', 'planning'])
     .describe(
@@ -17,22 +17,22 @@ export const IntentSchema = z.object({
   reason: z.string().describe('One short sentence explaining the choice.'),
 });
 
-export type IntentResult = z.infer<typeof IntentSchema>;
+export type TriageResult = z.infer<typeof TriageSchema>;
 
-export class IntentClassifier {
+export class Triage {
   private readonly agent = new Agent({
-    id: agents.intentClassifier.id,
-    name: agents.intentClassifier.name,
-    description: agents.intentClassifier.description,
-    instructions: agents.intentClassifier.instructions,
-    model: models[agents.intentClassifier.model],
+    id: agents.triage.id,
+    name: agents.triage.name,
+    description: agents.triage.description,
+    instructions: agents.triage.instructions,
+    model: models[agents.triage.model],
   });
 
-  async classify(prompt: string): Promise<IntentResult> {
+  async classify(prompt: string): Promise<TriageResult> {
     const result = await this.agent.generate(
       [{ role: 'user', content: prompt }],
-      { structuredOutput: { schema: IntentSchema } }
+      { structuredOutput: { schema: TriageSchema } }
     );
-    return result.object as IntentResult;
+    return result.object as TriageResult;
   }
 }

@@ -84,7 +84,7 @@ async function renderReferences(
 
 /** Which transient progress label to show when a given workflow step starts. */
 const progressByStep: Record<string, string> = {
-  [stepIds.classify]: messages.progress.understanding,
+  [stepIds.triage]: messages.progress.understanding,
   [stepIds.plan]: messages.progress.drafting,
 };
 
@@ -101,8 +101,8 @@ function formatPlan(plan: PlanResult): string {
 
 /** Render the workflow's structured reply as chat markdown. */
 function renderReply(reply: ReplyResult): string {
-  let text = messages.intent.block(reply.intent, reply.reason);
-  text += reply.plan ? formatPlan(reply.plan) : messages.intent.oneshotNextStep;
+  let text = messages.triage.block(reply.intent, reply.reason);
+  text += reply.plan ? formatPlan(reply.plan) : messages.triage.oneshotNextStep;
   return text;
 }
 
@@ -119,7 +119,7 @@ function renderFailure(
       : String(error);
   return steps[stepIds.plan]?.status === 'failed'
     ? messages.plan.error(detail)
-    : messages.intent.error(detail);
+    : messages.triage.error(detail);
 }
 
 /**

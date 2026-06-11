@@ -9,9 +9,9 @@ import { modelConfig } from './modelConfig';
 /** Where the local Ollama server is expected to be listening. */
 export const OLLAMA_ENDPOINT = 'http://localhost:11434';
 
-/** Shared hint appended to classifier/planner errors. */
+/** Shared hint appended to triage/planner errors. */
 function ollamaHint(): string {
-  return `Is Ollama running on ${OLLAMA_ENDPOINT} with \`${modelConfig.intent.model}\` pulled?\n\n`;
+  return `Is Ollama running on ${OLLAMA_ENDPOINT} with \`${modelConfig.triage.model}\` pulled?\n\n`;
 }
 
 export const messages = {
@@ -32,13 +32,13 @@ export const messages = {
     write: 'Write was not approved by the user.',
   },
 
-  intent: {
+  triage: {
     block: (intent: string, reason: string) =>
       `**Detected intent:** \`${intent}\`\n\n` + `**Reason:** ${reason}\n\n`,
     oneshotNextStep:
       '**Next step (not yet implemented):** answer the question directly.\n\n',
     error: (detail: string) =>
-      `**Intent classifier error:** ${detail}\n\n` + ollamaHint(),
+      `**Triage error:** ${detail}\n\n` + ollamaHint(),
   },
 
   plan: {
