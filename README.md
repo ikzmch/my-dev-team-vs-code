@@ -6,7 +6,10 @@ search, run, and write** files in your workspace via the Language Model Tools
 API.
 
 The agent routes each request through a **local triage agent** (Ollama via
-the Vercel AI SDK + Mastra) before deciding how to respond. Side-effecting
+the Vercel AI SDK + Mastra) before deciding how to respond. Agents don't name
+models: each declares **weighted capability requirements**, and a router picks
+the best match from a **registry of models scored per capability**, discovered
+from `.md` config files at build time. Side-effecting
 actions (run command, write file) are gated by an **approval seam**, so the chat
 confirmation can later be swapped for a rich Webview diff dialog **without
 touching the agent core**.
@@ -26,19 +29,21 @@ src/
     agents/
       triage.md           triage config: frontmatter + system prompt
       planner.md          planner config: frontmatter + system prompt
+    models/
+      *.md                one registered model per file: provider, model id, capability scores
     tools/
       read.md … write.md  one config per tool: frontmatter + model-facing description
     agents.ts             loads agents/*.md, renders the tools section, exports `agents`
-    tools.ts              loads tools/*.md, exports `toolConfigs` + `renderToolsSection`
+    models.ts             discovers models/*.md, exports the registry + capability-based `selectModel`
+    tools.ts              discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
     frontmatter.ts        minimal frontmatter parser for the .md config files
-    markdown.d.ts         lets TS treat `*.md` imports as strings
+    markdown.d.ts         lets TS treat `*.md` and `glob:` imports as strings / string[]
     settings.ts           operational limits (timeouts, search caps, truncation)
     messages.ts           user-facing chat copy (progress, errors, templates)
-    modelConfig.ts        model id + provider per semantic role
   core/
     types.ts              Approver — the approval seam
     workflow.ts           Mastra workflow: triage -> branch -> plan | answer
-    models.ts             semantic model router (wires modelConfig -> AI SDK)
+    models.ts             provider wiring: turns the selected registry entry into an AI SDK model
     triage.ts             Mastra agent: triage request as oneshot | planning
     planner.ts            Mastra agent: draft an ordered, tool-aware plan
   tools/
@@ -47,6 +52,8 @@ src/
   ui/
     chatParticipant.ts    chat handler + Phase-1 ChatApprover + followups
 test/                     Vitest unit tests + an in-memory `vscode` mock
+esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
+md-glob.mjs               build-time `glob:./dir/*.md` expansion, shared with Vitest
 ```
 
 Three layers, deliberately decoupled:
@@ -69,10 +76,10 @@ ui/chatParticipant.ts          fold attachments into the prompt, start a run of
 core/workflow.ts               Mastra workflow (createWorkflow + createStep)
   triage                       ── Triage.classify(prompt)
         │                         → { intent: "oneshot" | "planning", reason }
-        ▼                         (uses models.triage — local Ollama)
+        ▼                         (model picked by the capability router)
       branch
         ├─▶ draft-plan         ── Planner.plan(prompt)   (intent = "planning")
-        │                         → { summary, steps[] } (uses models.plan)
+        │                         → { summary, steps[] } (capability-routed model)
         └─▶ answer-directly    ── placeholder: reports the routing decision
         │                         (the executor is the next roadmap item)
         ▼
@@ -90,60 +97,89 @@ inline.
 
 | File                         | Holds                                                          |
 | ---------------------------- | ------------------------------------------------------------- |
-| `config/agents/*.md`         | One agent per file: frontmatter (id, name, description, model role, tools) + the system prompt |
+| `config/agents/*.md`         | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
+| `config/models/*.md`         | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
 | `config/tools/*.md`          | One tool per file: frontmatter (name, displayName, lmTool id, sideEffecting) + the model-facing description |
 | `config/agents.ts`           | Loads the agent files, validates the frontmatter, exports typed `agents` |
-| `config/tools.ts`            | Loads the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
+| `config/models.ts`           | Discovers the model files, exports the registry and the capability-based `selectModel` |
+| `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
 | `config/frontmatter.ts`      | Minimal parser for the frontmatter subset the config files use |
 | `config/settings.ts`         | Operational limits: run timeout, search caps, truncation      |
 | `config/messages.ts`         | Progress labels, error text, and reply markdown templates     |
-| `config/modelConfig.ts`      | Which model id + provider each semantic role uses             |
 
-**Agents and tools are real `.md` files with frontmatter.** esbuild's text
-loader inlines them into the bundle at build time (`--loader:.md=text` in the
-`package` script), so each config lives in its own editable file but ships as
-a plain string — no runtime file I/O. `config/markdown.d.ts` declares the
-`*.md` module type so TypeScript treats the import as a string; Vitest mirrors
-this with a small `markdown-as-text` transform in `vitest.config.ts`.
+**Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
+text loader inlines them into the bundle at build time (see `esbuild.mjs`), so
+each config lives in its own editable file but ships as a plain string — no
+runtime file I/O. The model and tool folders are **discovered, not listed**: a
+`glob:./models/*.md` import (expanded by the `md-glob` plugin in `esbuild.mjs`,
+with `md-glob.mjs` shared by the matching Vitest plugin) resolves to the
+contents of every `.md` file in the folder, in filename order — dropping a new
+config file in registers it with no code change. `config/markdown.d.ts`
+declares both module types (`*.md` as a string, `glob:*` as a string[]).
+Agents stay on explicit imports because `agents.triage`/`agents.planner` are
+statically typed keys used across the code.
 
 The frontmatter carries everything an agent needs besides its prose: its `id`,
-`name`, `description`, which semantic **model role** drives it, and the list of
-**tools** it may plan with. Prompts never hardcode tool descriptions — the
-`{{tools}}` placeholder in the prompt body is replaced with a section rendered
-from the tool configs, so adding a tool to an agent is a one-line frontmatter
-change. The planner's `tool` enum in its output schema is derived from the same
-registry, so the prompt and the schema can never drift apart.
+`name`, `description`, the weighted **capability requirements** that drive
+model selection, and the list of **tools** it may plan with. Prompts never
+hardcode tool descriptions — the `{{tools}}` placeholder in the prompt body is
+replaced with a section rendered from the tool configs, so adding a tool to an
+agent is a one-line frontmatter change. The planner's `tool` enum in its output
+schema is derived from the same registry, so the prompt and the schema can
+never drift apart.
 
-### Semantic model router (`core/models.ts`)
+### Capability-based model router (`config/models.ts` + `core/models.ts`)
 
-Each *role* maps to an [AI SDK](https://sdk.vercel.ai) model, so cheap/local
-models handle routing and capable (paid) models can later handle execution.
-The **selection** (which model id per role) is configuration and lives in
-`config/modelConfig.ts`; `core/models.ts` only wires those ids onto provider
-instances. Change the model per role there without touching agent code.
+Agents never name a concrete model. Instead:
 
-| Role     | Purpose                                   | Current model            |
-| -------- | ----------------------------------------- | ------------------------ |
-| `triage` | Triage the request (cheap, local)         | Ollama `qwen3:8b`        |
-| `plan`   | Draft a step-by-step plan                 | Ollama `qwen3:8b`        |
+- **Registered models** (`config/models/*.md`) score how good each model is at
+  a set of capabilities — `reasoning`, `coding`, `classification`, `planning`,
+  `speed`, `structured-output` — each 0–1.
+- **Agents** (`config/agents/*.md`) declare the same capabilities as
+  *weights*: how much each one matters to that agent.
+- `selectModel` (`config/models.ts`) picks the registered model with the
+  highest weighted score (Σ weight × score; an unscored capability counts
+  as 0), and `resolveModel` (`core/models.ts`) wires the winner onto an
+  [AI SDK](https://sdk.vercel.ai) provider instance, memoised per model.
+
+Retune an agent by editing its weights, and upgrade the whole system by
+registering a stronger model — no agent code changes either way. Only register
+models that are actually available (pulled in Ollama): selection assumes every
+registered model can run.
+
+| Agent     | Weights (what it cares about)                                | Currently selects |
+| --------- | ------------------------------------------------------------ | ----------------- |
+| `triage`  | classification 1, speed 0.8, structured-output 0.5           | Ollama `qwen3:8b` |
+| `planner` | planning 1, reasoning 0.8, structured-output 0.6, speed 0.3  | Ollama `qwen3:14b`|
+
+```yaml
+# config/models/qwen3-14b.md — a registered model (scores):
+id: qwen3-14b
+provider: ollama
+model: qwen3:14b
+capabilities:
+  reasoning: 0.75
+  planning: 0.8
+  speed: 0.6
+  # …
+
+# config/agents/planner.md — an agent's requirements (weights):
+capabilities:
+  planning: 1
+  reasoning: 0.8
+  structured-output: 0.6
+  speed: 0.3
+```
 
 ```ts
-// config/modelConfig.ts — the selection (data):
-export const modelConfig = {
-  triage: { provider: 'ollama', model: 'qwen3:8b' },
-  plan: { provider: 'ollama', model: 'qwen3:8b' },
-} as const;
+// core/triage.ts / core/planner.ts — the dynamic wiring:
+model: resolveModel(agents.planner.capabilities),
 
-// core/models.ts — the wiring (today both roles run on local Ollama):
-export const models = {
-  triage: ollama(modelConfig.triage.model),
-  plan: ollama(modelConfig.plan.model),
-} as const;
-
-// …and how a paid provider would slot in for execution later:
+// …and how a paid provider would slot in later: add it to the registry's
+// provider enum and a factory in core/models.ts:
 //   import { createAnthropic } from '@ai-sdk/anthropic';
 //   const anthropic = createAnthropic({ apiKey: /* … */ });
-//   plan: anthropic(modelConfig.plan.model),
+//   const factories = { ollama: …, anthropic: (model) => anthropic(model) };
 ```
 
 ### Tools (`tools/`)
@@ -171,11 +207,13 @@ Out of the box, `@devteam <prompt>`:
 1. Folds any attached files/selections into the prompt and starts a run of the
    dev-team workflow.
 2. Streams "Understanding your request…" when the triage step starts.
-3. Triages the prompt as `oneshot` or `planning` via the local Ollama model.
+3. Triages the prompt as `oneshot` or `planning` via the capability-routed
+   local Ollama model (currently `qwen3:8b`).
 4. Renders the **detected intent and reason** back to the panel.
 5. For `planning` requests, streams "Drafting a plan…" and renders an ordered,
    tool-aware **plan** (`summary` + at most 8 numbered steps, each hinting
-   which workspace tool it would use) via `models.plan`.
+   which workspace tool it would use) via the planner's routed model
+   (currently `qwen3:14b`).
 
 The four workspace tools are registered and callable by any VS Code chat model
 that supports tool calling; the workflow itself does not yet drive a
@@ -183,17 +221,22 @@ tool-calling loop. A followup provider is attached, but the handler never
 emits followups yet, so no suggestion chips appear after a reply.
 
 If Ollama is not reachable, the failed run is rendered with the step that
-failed and a reminder to start Ollama with `qwen3:8b` pulled.
+failed and a reminder to start Ollama with the model the router selected for
+that agent pulled.
 
 ## Prerequisites
 
 - **VS Code** ^1.95.0
 - **Node.js** 20.x
-- **[Ollama](https://ollama.com)** running locally for request triage:
+- **[Ollama](https://ollama.com)** running locally, with the registered models
+  pulled (the router assumes every model in `config/models/` can run):
 
   ```bash
   ollama serve                 # listens on http://localhost:11434
-  ollama pull qwen3:8b         # the model used by core/models.ts
+  ollama pull qwen3:8b         # currently selected for triage
+  ollama pull qwen3:14b        # currently selected for the planner
+  ollama pull gemma3:4b        # registered fast fallback
+  ollama pull qwen3-coder      # registered code specialist
   ```
 
 ## Run it
@@ -217,7 +260,7 @@ Scripts:
 | ----------------------- | --------------------------------------------------------------- |
 | `npm run compile`       | Type-check / emit with `tsc`                                     |
 | `npm run watch`         | `tsc` in watch mode                                             |
-| `npm run build`         | Bundle to `dist/extension.js` with esbuild (alias of `package`) |
+| `npm run build`         | Bundle to `dist/extension.js` via `esbuild.mjs` (alias of `package`) |
 | `npm test`              | Run the Vitest unit suite once                                  |
 | `npm run test:watch`    | Vitest in watch mode                                            |
 | `npm run test:coverage` | Run the suite with a v8 coverage report                        |
@@ -228,8 +271,11 @@ Unit tests live in `test/` and run on [Vitest](https://vitest.dev) in plain
 Node — no editor required. The extension imports the `vscode` module (which only
 exists inside a running editor), so `vitest.config.ts` aliases it to an
 in-memory fake in `test/mocks/vscode.ts`; the fakes are real classes so the
-source's `instanceof` checks still hold. Mastra agents are stubbed so tests
-never construct a model or reach Ollama. Coverage of the agent core, tools, UI
+source's `instanceof` checks still hold. The config also mirrors the bundle's
+markdown handling: a `markdown-as-text` transform for plain `.md` imports and
+an `md-glob` plugin (sharing `md-glob.mjs` with `esbuild.mjs`) for the
+`glob:./dir/*.md` discovery imports. Mastra agents are stubbed so tests never
+construct a model or reach Ollama. Coverage of the agent core, tools, UI
 handler, and `config/` is comprehensive — run `npm run test:coverage` to see it.
 
 ## Tech stack
@@ -237,18 +283,19 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 - **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (triage, planner) + the orchestrating workflow
 - **[Vercel AI SDK](https://sdk.vercel.ai)** (`ai`) — model interface
 - **`ollama-ai-provider-v2`** — AI SDK provider for local Ollama models
-- **`zod`** — structured-output schemas for the triage agent and planner, plus the workflow's step I/O schemas
+- **`zod`** — structured-output schemas for the triage agent and planner, the workflow's step I/O schemas, and validation of the `.md` config frontmatter (agents, models, tools)
 - **VS Code Chat + Language Model Tools APIs** — the front end and tool surface
 
 ## Roadmap
 
 - **Wire the executor.** The planner is live: the workflow branches on intent
-  and, for `planning`, drafts a plan with `models.plan` (`core/planner.ts`).
-  What's left is an executor step in `core/workflow.ts` that walks the plan's
-  steps and runs a tool-calling loop over the registered tools (with
-  `Approver`-gated side effects) — e.g. a capable model from `core/models.ts`
-  via the Anthropic provider, or `vscode.lm` to reuse the model the user
-  already has.
+  and, for `planning`, drafts a plan with the capability-routed planner model
+  (`core/planner.ts`). What's left is an executor step in `core/workflow.ts`
+  that walks the plan's steps and runs a tool-calling loop over the registered
+  tools (with `Approver`-gated side effects) — an executor agent would simply
+  declare `coding`-heavy capability weights and let the router pick (e.g. the
+  registered `qwen3-coder`, or a paid Anthropic model once that provider is
+  added to the registry).
 - **Add a Webview front end.**
   1. Add a `WebviewApprover implements Approver` with a diff/confirm UI.
   2. Pass it instead of `ChatApprover` in `extension.ts`.
