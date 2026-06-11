@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { StubBackend } from './core/backend';
 import { IntentClassifier } from './core/intentClassifier';
 import { Planner } from './core/planner';
+import { createDevTeamWorkflow } from './core/workflow';
 import { registerTools } from './tools/registerTools';
 import {
   PARTICIPANT_ID,
@@ -12,11 +12,10 @@ import {
 
 export function activate(context: vscode.ExtensionContext) {
   // --- Agent core (UI-agnostic) ---
-  // The intent classifier uses a cheap/local model from the semantic router
-  // in `core/models.ts`; swap models there, not here.
-  const classifier = new IntentClassifier();
-  const planner = new Planner();
-  const backend = new StubBackend(classifier, planner);
+  // The agents use cheap/local models from the semantic router in
+  // `core/models.ts`; swap models there, not here. The Mastra workflow
+  // orchestrates them: classify → branch → draft a plan / answer directly.
+  const workflow = createDevTeamWorkflow(new IntentClassifier(), new Planner());
 
   // --- Approval seam: Phase 1 uses the chat-based approver ---
   const approver = new ChatApprover();
@@ -29,7 +28,7 @@ export function activate(context: vscode.ExtensionContext) {
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {
       approver.setStream(stream); // wire approver to this request's stream
-      const handler = createHandler(backend);
+      const handler = createHandler(workflow);
       return handler(request, ctx, stream, token);
     }
   );

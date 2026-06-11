@@ -5,8 +5,9 @@ import {
   attachFollowups,
   PARTICIPANT_ID,
 } from '../src/ui/chatParticipant';
-import { Backend } from '../src/core/backend';
-import { ChatTurn, OutputSink } from '../src/core/types';
+import { createDevTeamWorkflow } from '../src/core/workflow';
+import { IntentResult } from '../src/core/intentClassifier';
+import { PlanResult } from '../src/core/planner';
 import {
   __reset,
   __state,
@@ -15,9 +16,6 @@ import {
   Location,
   Position,
   Range,
-  ChatRequestTurn,
-  ChatResponseTurn,
-  ChatResponseMarkdownPart,
 } from './mocks/vscode';
 
 beforeEach(() => {
@@ -28,19 +26,40 @@ function fakeStream() {
   return { markdown: vi.fn(), progress: vi.fn() };
 }
 
-/** Backend double that records what history/sink it received. */
-function recordingBackend(text = 'RESPONSE', followups?: string[]): Backend & {
-  lastHistory: ChatTurn[] | undefined;
-} {
-  const state = { lastHistory: undefined as ChatTurn[] | undefined };
-  return {
-    lastHistory: undefined,
-    async reply(history: ChatTurn[], _sink: OutputSink) {
-      state.lastHistory = history;
-      (this as any).lastHistory = history;
-      return { text, followups };
-    },
-  };
+const aPlan: PlanResult = {
+  summary: 'Add a feature',
+  steps: [
+    { title: 'Find the file', tool: 'search', detail: 'locate it' },
+    { title: 'Think', tool: 'none', detail: 'reason about it' },
+  ],
+};
+
+/**
+ * Build a real dev-team workflow over fake agents, and record the prompt the
+ * classifier receives so tests can assert on what the handler composed.
+ */
+function makeWorkflow(
+  classify: (prompt: string) => Promise<IntentResult> = async () => ({
+    intent: 'oneshot',
+    reason: 'simple',
+  }),
+  plan: (prompt: string) => Promise<PlanResult> = async () => aPlan
+) {
+  const seen = { prompt: undefined as string | undefined };
+  const workflow = createDevTeamWorkflow(
+    {
+      classify: async (prompt: string) => {
+        seen.prompt = prompt;
+        return classify(prompt);
+      },
+    } as any,
+    { plan } as any
+  );
+  return { workflow, seen };
+}
+
+function emitted(stream: ReturnType<typeof fakeStream>): string {
+  return stream.markdown.mock.calls.map((c) => c[0]).join('');
 }
 
 describe('ChatApprover', () => {
@@ -76,145 +95,185 @@ describe('ChatApprover', () => {
 });
 
 describe('createHandler', () => {
-  it('reconstructs prior turns into neutral ChatTurn history', async () => {
-    const backend = recordingBackend();
-    const handler = createHandler(backend);
-
-    const context = {
-      history: [
-        new ChatRequestTurn('earlier question'),
-        new ChatResponseTurn([new ChatResponseMarkdownPart('earlier answer')]),
-      ],
-    };
-    const request = { prompt: 'now', references: [] as any[], command: undefined };
+  it('renders the detected intent for a oneshot request', async () => {
+    const { workflow } = makeWorkflow(async () => ({
+      intent: 'oneshot',
+      reason: 'simple question',
+    }));
     const stream = fakeStream();
 
-    await handler(request as any, context as any, stream as any, {} as any);
+    await createHandler(workflow)(
+      { prompt: 'what is 2+2', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      {} as any
+    );
 
-    expect(backend.lastHistory).toEqual([
-      { role: 'user', content: 'earlier question' },
-      { role: 'assistant', content: 'earlier answer' },
-      { role: 'user', content: 'now' },
-    ]);
+    const text = emitted(stream);
+    expect(text).toContain('**Detected intent:** `oneshot`');
+    expect(text).toContain('**Reason:** simple question');
+    expect(text).toContain('answer the question directly');
+    expect(stream.progress).toHaveBeenCalledWith('Understanding your request…');
   });
 
-  it('streams the backend reply text to the chat', async () => {
-    const backend = recordingBackend('the answer');
-    const handler = createHandler(backend);
+  it('renders a planning request as a numbered checklist', async () => {
+    const { workflow } = makeWorkflow(async () => ({
+      intent: 'planning',
+      reason: 'needs steps',
+    }));
     const stream = fakeStream();
 
-    await handler(
+    await createHandler(workflow)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      {} as any
+    );
+
+    const text = emitted(stream);
+    expect(text).toContain('**Detected intent:** `planning`');
+    expect(text).toContain('**Plan:** Add a feature');
+    expect(text).toContain('1. **Find the file** _(search)_ — locate it');
+    // tool "none" must not render a tool suffix.
+    expect(text).toContain('2. **Think** — reason about it');
+    expect(text).not.toContain('Think** _(none)_');
+    expect(stream.progress).toHaveBeenCalledWith('Drafting a plan…');
+  });
+
+  it('surfaces a classifier failure with the Ollama hint', async () => {
+    const { workflow } = makeWorkflow(async () => {
+      throw new Error('connection refused');
+    });
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
       { prompt: 'hi', references: [] } as any,
       { history: [] } as any,
       stream as any,
       {} as any
     );
-    expect(stream.markdown).toHaveBeenCalledWith('the answer');
+
+    const text = emitted(stream);
+    expect(text).toContain('**Intent classifier error:**');
+    expect(text).toContain('connection refused');
+    expect(text).toContain('Ollama');
   });
 
-  it('returns followups in the chat result', async () => {
-    const backend = recordingBackend('x', ['next?', 'or this?']);
-    const handler = createHandler(backend);
+  it('surfaces a planner failure with the Ollama hint', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'planning', reason: 'x' }),
+      async () => {
+        throw new Error('model not found');
+      }
+    );
+    const stream = fakeStream();
 
-    const result = await handler(
-      { prompt: 'hi', references: [] } as any,
+    await createHandler(workflow)(
+      { prompt: 'do work', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      {} as any
+    );
+
+    const text = emitted(stream);
+    expect(text).toContain('**Planner error:**');
+    expect(text).toContain('model not found');
+    expect(text).toContain('Ollama');
+  });
+
+  it('returns the command in the chat result metadata', async () => {
+    const { workflow } = makeWorkflow();
+
+    const result = await createHandler(workflow)(
+      { prompt: 'hi', references: [], command: 'explain' } as any,
       { history: [] } as any,
       fakeStream() as any,
       {} as any
     );
-    expect((result as any).followups).toEqual(['next?', 'or this?']);
-    expect((result as any).metadata.command).toBe('');
+    expect((result as any).metadata.command).toBe('explain');
   });
 
-  it('inlines an attached file (Uri reference) into the user turn', async () => {
+  it('inlines an attached file (Uri reference) into the prompt', async () => {
     const uri = __setFile('src/a.ts', 'file body');
-    const backend = recordingBackend();
-    const handler = createHandler(backend);
+    const { workflow, seen } = makeWorkflow();
 
-    await handler(
+    await createHandler(workflow)(
       { prompt: 'look at this', references: [{ value: uri }] } as any,
       { history: [] } as any,
       fakeStream() as any,
       {} as any
     );
 
-    const last = backend.lastHistory!.at(-1)!;
-    expect(last.content).toContain('look at this');
-    expect(last.content).toContain('--- Attached context ---');
-    expect(last.content).toContain('File: src/a.ts');
-    expect(last.content).toContain('file body');
+    expect(seen.prompt).toContain('look at this');
+    expect(seen.prompt).toContain('--- Attached context ---');
+    expect(seen.prompt).toContain('File: src/a.ts');
+    expect(seen.prompt).toContain('file body');
   });
 
   it('inlines a selection (Location reference) with its line number', async () => {
     const uri = __setFile('src/b.ts', 'line0\nline1\nline2');
     const location = new Location(uri, new Range(new Position(1, 0), new Position(1, 5)));
-    const backend = recordingBackend();
-    const handler = createHandler(backend);
+    const { workflow, seen } = makeWorkflow();
 
-    await handler(
+    await createHandler(workflow)(
       { prompt: 'explain', references: [{ value: location }] } as any,
       { history: [] } as any,
       fakeStream() as any,
       {} as any
     );
 
-    const last = backend.lastHistory!.at(-1)!;
-    expect(last.content).toContain('Selection from src/b.ts (line 2)');
-    expect(last.content).toContain('line1');
+    expect(seen.prompt).toContain('Selection from src/b.ts (line 2)');
+    expect(seen.prompt).toContain('line1');
   });
 
   it('inlines a plain string reference', async () => {
-    const backend = recordingBackend();
-    const handler = createHandler(backend);
+    const { workflow, seen } = makeWorkflow();
 
-    await handler(
+    await createHandler(workflow)(
       { prompt: 'q', references: [{ value: 'raw snippet' }] } as any,
       { history: [] } as any,
       fakeStream() as any,
       {} as any
     );
-    expect(backend.lastHistory!.at(-1)!.content).toContain('raw snippet');
+    expect(seen.prompt).toContain('raw snippet');
   });
 
   it('reports an unreadable attachment instead of throwing', async () => {
     const ghost = Uri.joinPath(__state.workspaceFolders![0].uri, 'ghost.ts');
-    const backend = recordingBackend();
-    const handler = createHandler(backend);
+    const { workflow, seen } = makeWorkflow();
 
-    await handler(
+    await createHandler(workflow)(
       { prompt: 'q', references: [{ value: ghost }] } as any,
       { history: [] } as any,
       fakeStream() as any,
       {} as any
     );
-    expect(backend.lastHistory!.at(-1)!.content).toContain('could not read attachment');
+    expect(seen.prompt).toContain('could not read attachment');
   });
 
   it('truncates very large attachments', async () => {
-    const backend = recordingBackend();
-    const handler = createHandler(backend);
+    const { workflow, seen } = makeWorkflow();
     const huge = 'z'.repeat(25_000);
 
-    await handler(
+    await createHandler(workflow)(
       { prompt: 'q', references: [{ value: huge }] } as any,
       { history: [] } as any,
       fakeStream() as any,
       {} as any
     );
-    expect(backend.lastHistory!.at(-1)!.content).toContain('…(truncated)');
+    expect(seen.prompt).toContain('…(truncated)');
   });
 
   it('does not add an attachments block when there are no references', async () => {
-    const backend = recordingBackend();
-    const handler = createHandler(backend);
+    const { workflow, seen } = makeWorkflow();
 
-    await handler(
+    await createHandler(workflow)(
       { prompt: 'plain', references: [] } as any,
       { history: [] } as any,
       fakeStream() as any,
       {} as any
     );
-    expect(backend.lastHistory!.at(-1)!.content).toBe('plain');
+    expect(seen.prompt).toBe('plain');
   });
 });
 

@@ -12,7 +12,7 @@ confirmation can later be swapped for a rich Webview diff dialog **without
 touching the agent core**.
 
 > **Status:** the routing layer (intent classification) and the **planner** are
-> live; the **executor is not wired up yet**. Today the backend classifies your
+> live; the **executor is not wired up yet**. Today the workflow classifies your
 > request and, for `planning` requests, drafts a step-by-step plan — but it does
 > not yet execute that plan with tools. See
 > [Current behavior](#current-behavior) and [Roadmap](#roadmap).
@@ -32,8 +32,8 @@ src/
     messages.ts           user-facing chat copy (progress, errors, templates)
     modelConfig.ts        model id + provider per semantic role
   core/
-    types.ts              ChatTurn, Approver, OutputSink, AgentReply
-    backend.ts            Backend interface + StubBackend (swap this)
+    types.ts              Approver — the approval seam
+    workflow.ts           Mastra workflow: classify -> branch -> plan | answer
     models.ts             semantic model router (wires modelConfig -> AI SDK)
     intentClassifier.ts   Mastra agent: classify request as oneshot | planning
     planner.ts            Mastra agent: draft an ordered, tool-aware plan
@@ -58,24 +58,23 @@ Three layers, deliberately decoupled:
 @devteam <prompt>
         │
         ▼
-ui/chatParticipant.ts          reconstruct ChatTurn[] history from chat context,
-  createHandler                bridge OutputSink onto the chat stream
-        │
+ui/chatParticipant.ts          fold attachments into the prompt, start a run of
+  createHandler                the workflow, bridge its step events onto the
+        │                      chat stream as progress labels
         ▼
-core/backend.ts                Backend.reply(history, sink)
-  StubBackend                  ── sink.progress("Understanding your request…")
-        │
+core/workflow.ts               Mastra workflow (createWorkflow + createStep)
+  classify-intent              ── IntentClassifier.classify(prompt)
+        │                         → { intent: "oneshot" | "planning", reason }
+        ▼                         (uses models.intent — local Ollama)
+      branch
+        ├─▶ draft-plan         ── Planner.plan(prompt)   (intent = "planning")
+        │                         → { summary, steps[] } (uses models.plan)
+        └─▶ answer-directly    ── placeholder: reports the routing decision
+        │                         (the executor is the next roadmap item)
         ▼
-core/intentClassifier.ts       Mastra Agent + zod structured output
-  IntentClassifier.classify    → { intent: "oneshot" | "planning", reason }
-        │                        (uses models.intent — local Ollama)
-        ▼
-core/planner.ts                Planner.plan(prompt)  (only for "planning")
-  Planner                       → { summary, steps[] }  (uses models.plan)
-        │                        oneshot answers directly; planning drafts a plan.
-        ▼
-  (stub) renders the intent + reason, and for planning the drafted plan,
-  back to the chat panel. An executor would walk the plan's steps here.
+  the UI renders the structured reply (intent + reason, and for planning the
+  drafted plan) back to the chat panel. An executor step would walk the
+  plan's steps here.
 ```
 
 ### Configuration vs. code (`config/`)
@@ -90,7 +89,7 @@ inline.
 | `config/prompts/*.md`        | System prompts as plain Markdown (one file per agent)         |
 | `config/prompts.ts`          | Loads the `.md` files, re-exports them as the typed `prompts` |
 | `config/settings.ts`         | Operational limits: run timeout, search caps, truncation      |
-| `config/messages.ts`         | Progress labels, error text, and the stub's markdown templates|
+| `config/messages.ts`         | Progress labels, error text, and reply markdown templates     |
 | `config/modelConfig.ts`      | Which model id + provider each semantic role uses             |
 
 **Prompts are real `.md` files.** esbuild's text loader inlines them into the
@@ -151,19 +150,20 @@ preview so the approval prompt shows what will change.
 
 Out of the box, `@devteam <prompt>`:
 
-1. Reconstructs the conversation history.
-2. Streams "Understanding your request…".
+1. Folds any attached files/selections into the prompt and starts a run of the
+   dev-team workflow.
+2. Streams "Understanding your request…" when the classify step starts.
 3. Classifies the prompt as `oneshot` or `planning` via the local Ollama model.
-4. Echoes your prompt plus the **detected intent and reason** back to the panel.
+4. Renders the **detected intent and reason** back to the panel.
 5. For `planning` requests, streams "Drafting a plan…" and renders an ordered,
    tool-aware **plan** (`summary` + numbered steps) via `models.plan`.
 
 The four workspace tools are registered and callable by any VS Code chat model
-that supports tool calling; the stub backend itself does not yet drive a
+that supports tool calling; the workflow itself does not yet drive a
 tool-calling loop.
 
-If Ollama is not reachable, the stub reports the classifier error and reminds
-you to start Ollama with `qwen3:8b` pulled.
+If Ollama is not reachable, the failed run is rendered with the step that
+failed and a reminder to start Ollama with `qwen3:8b` pulled.
 
 ## Prerequisites
 
@@ -210,7 +210,7 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Tech stack
 
-- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agent abstraction for the classifier
+- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (classifier, planner) + the orchestrating workflow
 - **[Vercel AI SDK](https://sdk.vercel.ai)** (`ai`) — model interface
 - **`ollama-ai-provider-v2`** — AI SDK provider for local Ollama models
 - **`zod`** — structured-output schema for the intent classifier
@@ -218,16 +218,13 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Roadmap
 
-- **Wire the executor.** The planner is live: `StubBackend` branches on intent
+- **Wire the executor.** The planner is live: the workflow branches on intent
   and, for `planning`, drafts a plan with `models.plan` (`core/planner.ts`).
-  What's left is an executor that walks the plan's steps and runs a tool-calling
-  loop over the registered tools (with `Approver`-gated side effects).
-- **Swap the backend** for a real model client. The `Backend` interface only
-  needs `reply(history, sink)`; candidates:
-  - **vscode.lm** — `vscode.lm.selectChatModels()` + `sendRequest()` to reuse
-    the model the user already has.
-  - **Anthropic API** — POST to `/v1/messages` with `tools[]`, loop while
-    `stop_reason === "tool_use"`.
+  What's left is an executor step in `core/workflow.ts` that walks the plan's
+  steps and runs a tool-calling loop over the registered tools (with
+  `Approver`-gated side effects) — e.g. a capable model from `core/models.ts`
+  via the Anthropic provider, or `vscode.lm` to reuse the model the user
+  already has.
 - **Add a Webview front end.**
   1. Add a `WebviewApprover implements Approver` with a diff/confirm UI.
   2. Pass it instead of `ChatApprover` in `extension.ts`.

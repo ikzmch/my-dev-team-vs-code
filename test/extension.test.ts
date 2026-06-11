@@ -63,7 +63,7 @@ describe('activate', () => {
     logSpy.mockRestore();
   });
 
-  it('the wired handler drives the backend through the approver', async () => {
+  it('the wired handler drives the workflow and streams the reply', async () => {
     generateMock.mockResolvedValue({
       object: { intent: 'oneshot', reason: 'simple' },
     });

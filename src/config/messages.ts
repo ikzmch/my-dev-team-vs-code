@@ -1,6 +1,6 @@
 /**
  * User-facing copy for the chat UI: progress labels, error text, and the
- * markdown templates the stub backend renders. Kept out of the logic so the
+ * markdown templates the reply renderer uses. Kept out of the logic so the
  * wording (and the Ollama troubleshooting hint) can be tuned without editing
  * control flow. Functions take only the dynamic bits; static prose lives here.
  */
@@ -42,17 +42,15 @@ export const messages = {
   },
 
   plan: {
-    noPlannerNextStep:
-      '**Next step (not yet implemented):** draft a plan, then execute it with tools.\n\n',
     error: (detail: string) => `**Planner error:** ${detail}\n\n` + ollamaHint(),
     nextStep:
       '**Next step (not yet implemented):** execute these steps with tools.\n\n',
     header: (summary: string) => `**Plan:** ${summary}\n\n`,
   },
 
-  stub: {
-    youSaid: (quotedPrompt: string) =>
-      `**(stub backend)** You said:\n\n> ${quotedPrompt}\n\n`,
-    footer: 'The executor is not wired up yet, so I stop after planning for now.',
+  run: {
+    /** Shown when the workflow run ends in a state we do not render yet. */
+    unexpectedStatus: (status: string) =>
+      `**The workflow run ended with status \`${status}\`.**\n\n`,
   },
 } as const;

@@ -25,10 +25,6 @@ describe('messages templates', () => {
     expect(text).toContain(OLLAMA_ENDPOINT);
   });
 
-  it('wraps the quoted prompt in the stub preamble', () => {
-    expect(messages.stub.youSaid('hi there')).toContain('> hi there');
-  });
-
   it('renders the plan header from the summary', () => {
     expect(messages.plan.header('Do the thing')).toContain('**Plan:** Do the thing');
   });
@@ -45,9 +41,8 @@ describe('messages templates', () => {
     expect(messages.notApproved.write).toMatch(/not.*approved/i);
   });
 
-  it('marks every not-yet-implemented next step so the stub stays honest', () => {
+  it('marks every not-yet-implemented next step so the reply stays honest', () => {
     expect(messages.intent.oneshotNextStep).toContain('not yet implemented');
-    expect(messages.plan.noPlannerNextStep).toContain('not yet implemented');
     expect(messages.plan.nextStep).toContain('not yet implemented');
   });
 
