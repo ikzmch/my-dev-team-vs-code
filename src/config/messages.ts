@@ -4,14 +4,20 @@
  * wording (and the Ollama troubleshooting hint) can be tuned without editing
  * control flow. Functions take only the dynamic bits; static prose lives here.
  */
-import { modelConfig } from './modelConfig';
+import { selectModel } from './models';
+import { agents, AgentName } from './agents';
 
 /** Where the local Ollama server is expected to be listening. */
 export const OLLAMA_ENDPOINT = 'http://localhost:11434';
 
-/** Shared hint appended to triage/planner errors. */
-function ollamaHint(): string {
-  return `Is Ollama running on ${OLLAMA_ENDPOINT} with \`${modelConfig.triage.model}\` pulled?\n\n`;
+/**
+ * Hint appended to triage/planner errors, naming the model the router
+ * actually selected for that agent so the troubleshooting text can never
+ * drift from the model in use.
+ */
+function ollamaHint(agent: AgentName): string {
+  const { model } = selectModel(agents[agent].capabilities);
+  return `Is Ollama running on ${OLLAMA_ENDPOINT} with \`${model}\` pulled?\n\n`;
 }
 
 export const messages = {
@@ -38,11 +44,11 @@ export const messages = {
     oneshotNextStep:
       '**Next step (not yet implemented):** answer the question directly.\n\n',
     error: (detail: string) =>
-      `**Triage error:** ${detail}\n\n` + ollamaHint(),
+      `**Triage error:** ${detail}\n\n` + ollamaHint('triage'),
   },
 
   plan: {
-    error: (detail: string) => `**Planner error:** ${detail}\n\n` + ollamaHint(),
+    error: (detail: string) => `**Planner error:** ${detail}\n\n` + ollamaHint('planner'),
     nextStep:
       '**Next step (not yet implemented):** execute these steps with tools.\n\n',
     header: (summary: string) => `**Plan:** ${summary}\n\n`,

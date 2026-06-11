@@ -2,7 +2,10 @@
 id: triage
 name: Triage
 description: Routes a user request to a direct answer or to the planning path.
-model: triage
+capabilities:
+  classification: 1
+  speed: 0.8
+  structured-output: 0.5
 tools: []
 ---
 

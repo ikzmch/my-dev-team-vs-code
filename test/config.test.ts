@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { messages, OLLAMA_ENDPOINT } from '../src/config/messages';
 import { settings } from '../src/config/settings';
-import { modelConfig } from '../src/config/modelConfig';
+import {
+  capabilityNames,
+  modelRegistry,
+  scoreModel,
+  selectModel,
+} from '../src/config/models';
 import { parseFrontmatter } from '../src/config/frontmatter';
 import { agents } from '../src/config/agents';
 import { toolConfigs, toolNames, renderToolsSection } from '../src/config/tools';
@@ -18,7 +23,7 @@ describe('messages templates', () => {
     const text = messages.triage.error('connection refused');
     expect(text).toContain('**Triage error:** connection refused');
     expect(text).toContain(OLLAMA_ENDPOINT);
-    expect(text).toContain(modelConfig.triage.model);
+    expect(text).toContain(selectModel(agents.triage.capabilities).model);
   });
 
   it('appends the Ollama troubleshooting hint to planner errors', () => {
@@ -48,11 +53,15 @@ describe('messages templates', () => {
     expect(messages.plan.nextStep).toContain('not yet implemented');
   });
 
-  it('keeps the Ollama hint sourced from modelConfig, not a hardcoded id', () => {
-    // The hint must name whatever model the router is configured with, so the
-    // troubleshooting text can never drift from the actual model in use.
-    expect(messages.triage.error('x')).toContain(modelConfig.triage.model);
-    expect(messages.plan.error('x')).toContain(modelConfig.triage.model);
+  it('keeps the Ollama hint sourced from the router, not a hardcoded id', () => {
+    // The hint must name whatever model the router selects for the failing
+    // agent, so the troubleshooting text can never drift from the model in use.
+    expect(messages.triage.error('x')).toContain(
+      selectModel(agents.triage.capabilities).model
+    );
+    expect(messages.plan.error('x')).toContain(
+      selectModel(agents.planner.capabilities).model
+    );
   });
 });
 
@@ -74,10 +83,64 @@ describe('settings', () => {
   });
 });
 
-describe('modelConfig', () => {
-  it.each(['triage', 'plan'] as const)('defines provider and model for %s', (role) => {
-    expect(modelConfig[role].provider).toBeTruthy();
-    expect(modelConfig[role].model).toBeTruthy();
+describe('model registry and selection', () => {
+  it('registers models with provider, model name, and at least one capability', () => {
+    expect(modelRegistry.length).toBeGreaterThan(0);
+    for (const info of modelRegistry) {
+      expect(info.id).toBeTruthy();
+      expect(info.provider).toBeTruthy();
+      expect(info.model).toBeTruthy();
+      expect(Object.keys(info.capabilities).length).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps registry ids unique', () => {
+    const ids = modelRegistry.map((info) => info.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('keeps every capability score within [0, 1]', () => {
+    for (const info of modelRegistry) {
+      for (const score of Object.values(info.capabilities)) {
+        expect(score).toBeGreaterThanOrEqual(0);
+        expect(score).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it('scores a model as the weight-by-score sum, missing capabilities as 0', () => {
+    const info = {
+      id: 'x',
+      provider: 'ollama',
+      model: 'x',
+      description: '',
+      capabilities: { reasoning: 0.5, speed: 1 },
+    } as const;
+    // 0.8 * 0.5 (reasoning) + 0.2 * 1 (speed) + 1 * 0 (coding, unscored)
+    expect(scoreModel(info, { reasoning: 0.8, speed: 0.2, coding: 1 })).toBeCloseTo(0.6);
+  });
+
+  it('selects the registered model with the highest weighted score', () => {
+    for (const requirements of [
+      agents.triage.capabilities,
+      agents.planner.capabilities,
+    ]) {
+      const selected = selectModel(requirements);
+      const best = Math.max(
+        ...modelRegistry.map((info) => scoreModel(info, requirements))
+      );
+      expect(scoreModel(selected, requirements)).toBe(best);
+    }
+  });
+
+  it('routes triage to a faster model than the planner cares about', () => {
+    // The point of capability routing: triage (speed-weighted) and planning
+    // (reasoning-weighted) should be free to land on different models.
+    const triageModel = selectModel(agents.triage.capabilities);
+    const plannerModel = selectModel(agents.planner.capabilities);
+    expect((triageModel.capabilities.speed ?? 0)).toBeGreaterThanOrEqual(
+      plannerModel.capabilities.speed ?? 0
+    );
   });
 });
 
@@ -106,6 +169,22 @@ describe('parseFrontmatter', () => {
     expect(parseFrontmatter('---\ntools: []\n---\nbody').data).toEqual({ tools: [] });
   });
 
+  it('parses a one-level nested map of scalars', () => {
+    const { data } = parseFrontmatter(
+      '---\ncapabilities:\n  reasoning: 0.8\n  speed: 1\nname: x\n---\nbody'
+    );
+    expect(data).toEqual({ capabilities: { reasoning: 0.8, speed: 1 }, name: 'x' });
+  });
+
+  it('rejects mixing list items and map entries under one key', () => {
+    expect(() =>
+      parseFrontmatter('---\nthings:\n  - a\n  b: 1\n---\nbody')
+    ).toThrow(/Cannot mix/);
+    expect(() =>
+      parseFrontmatter('---\nthings:\n  b: 1\n  - a\n---\nbody')
+    ).toThrow(/Cannot mix/);
+  });
+
   it('treats a file without frontmatter as all body', () => {
     expect(parseFrontmatter('just text')).toEqual({ data: {}, body: 'just text' });
   });
@@ -118,8 +197,9 @@ describe('parseFrontmatter', () => {
 });
 
 describe('tool configs', () => {
-  it('loads the four workspace tools', () => {
-    expect(toolNames).toEqual(['read', 'search', 'run', 'write']);
+  it('discovers the four workspace tools', () => {
+    // Order follows the config filenames, so compare as a sorted set.
+    expect([...toolNames].sort()).toEqual(['read', 'run', 'search', 'write']);
   });
 
   it('marks run and write as side-effecting, read and search as not', () => {
@@ -154,13 +234,28 @@ describe('agent configs', () => {
     expect(agents.triage.id).toBe('triage');
     expect(agents.triage.name).toBe('Triage');
     expect(agents.triage.description).toBeTruthy();
-    expect(agents.triage.model).toBe('triage');
     expect(agents.planner.id).toBe('planner');
     expect(agents.planner.name).toBe('Planner');
     expect(agents.planner.description).toBeTruthy();
-    expect(agents.planner.model).toBe('plan');
     expect(agents.triage.instructions).toContain('triage agent');
     expect(agents.planner.instructions).toContain('planner');
+  });
+
+  it('declares only known capabilities with weights in [0, 1] for each agent', () => {
+    for (const agent of Object.values(agents)) {
+      const entries = Object.entries(agent.capabilities);
+      expect(entries.length).toBeGreaterThan(0);
+      for (const [capability, weight] of entries) {
+        expect(capabilityNames).toContain(capability);
+        expect(weight).toBeGreaterThanOrEqual(0);
+        expect(weight).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it('weights triage toward fast classification and the planner toward planning', () => {
+    expect(agents.triage.capabilities.classification).toBe(1);
+    expect(agents.planner.capabilities.planning).toBe(1);
   });
 
   // The prose lives in standalone .md files, so these lock the structural
@@ -176,7 +271,7 @@ describe('agent configs', () => {
   });
 
   it('keeps the planner contract: all four tools, the step cap, and JSON output', () => {
-    expect(agents.planner.tools).toEqual(toolNames);
+    expect([...agents.planner.tools].sort()).toEqual([...toolNames].sort());
     const p = agents.planner.instructions;
     expect(p).toContain('never more than 8');
     expect(p).toMatch(/JSON object/i);

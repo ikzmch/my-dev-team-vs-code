@@ -1,6 +1,6 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
-import { models } from './models';
+import { resolveModel } from './models';
 import { agents } from '../config/agents';
 import { toolNames } from '../config/tools';
 
@@ -48,7 +48,7 @@ export class Planner {
     name: agents.planner.name,
     description: agents.planner.description,
     instructions: agents.planner.instructions,
-    model: models[agents.planner.model],
+    model: resolveModel(agents.planner.capabilities),
   });
 
   async plan(prompt: string): Promise<PlanResult> {

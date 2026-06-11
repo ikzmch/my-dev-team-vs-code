@@ -2,7 +2,11 @@
 id: planner
 name: Planner
 description: Drafts a minimal ordered plan of concrete steps for multi-step requests.
-model: plan
+capabilities:
+  planning: 1
+  reasoning: 0.8
+  structured-output: 0.6
+  speed: 0.3
 tools:
   - read
   - search

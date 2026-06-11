@@ -12,8 +12,9 @@ import {
 
 export function activate(context: vscode.ExtensionContext) {
   // --- Agent core (UI-agnostic) ---
-  // The agents use cheap/local models from the semantic router in
-  // `core/models.ts`; swap models there, not here. The Mastra workflow
+  // Each agent declares weighted capability requirements and the router
+  // (`config/models.ts` + `core/models.ts`) wires the best registered model;
+  // tune capabilities and the registry there, not here. The Mastra workflow
   // orchestrates them: triage → branch → draft a plan / answer directly.
   const workflow = createDevTeamWorkflow(new Triage(), new Planner());
 

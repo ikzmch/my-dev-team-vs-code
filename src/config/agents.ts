@@ -6,6 +6,10 @@
  * `package` script and config/markdown.d.ts), so this is all resolved on
  * import with no runtime file I/O.
  *
+ * Agents do not name a concrete model. Their frontmatter declares weighted
+ * capability requirements (see ./models), and the router picks the best
+ * registered model for that profile at wiring time (core/models.ts).
+ *
  * The body never hardcodes tool descriptions: a `{{tools}}` placeholder (or,
  * absent one, the end of the prompt) is filled with a section rendered from
  * the frontmatter `tools` list and the configs in ./tools. Agent classes in
@@ -13,7 +17,7 @@
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
-import { modelConfig, ModelRole } from './modelConfig';
+import { CapabilityScoresSchema } from './models';
 import { toolNames, renderToolsSection } from './tools';
 import triage from './agents/triage.md';
 import planner from './agents/planner.md';
@@ -27,8 +31,12 @@ const AgentFrontmatterSchema = z.object({
   name: z.string(),
   /** One-line summary of what the agent does. */
   description: z.string(),
-  /** Which semantic model role drives this agent (see modelConfig). */
-  model: z.enum(Object.keys(modelConfig) as [ModelRole, ...ModelRole[]]),
+  /**
+   * How much each capability matters to this agent (0–1 weights). The router
+   * matches these against the scores in the model registry (see models.ts)
+   * and wires the best-fitting model — agents never name a concrete model.
+   */
+  capabilities: CapabilityScoresSchema,
   /** Names of the tools (see ./tools) this agent may plan with. */
   tools: z.array(z.enum(toolNames as [string, ...string[]])).default([]),
 });

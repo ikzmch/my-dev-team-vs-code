@@ -1,11 +1,16 @@
 /**
- * Minimal frontmatter parser for the `.md` config files in config/agents and
- * config/tools. Supports only the YAML subset those files use — scalar
- * `key: value` pairs and block lists of strings — so the extension bundle
- * does not need a full YAML dependency. Callers validate the parsed data
- * with a zod schema, so unknown keys or missing fields fail fast on import.
+ * Minimal frontmatter parser for the `.md` config files in config/agents,
+ * config/models and config/tools. Supports only the YAML subset those files
+ * use — scalar `key: value` pairs, block lists of strings, and one-level
+ * nested maps of scalars — so the extension bundle does not need a full YAML
+ * dependency. Callers validate the parsed data with a zod schema, so unknown
+ * keys or missing fields fail fast on import.
  */
-export type FrontmatterValue = string | number | boolean | string[];
+export type FrontmatterScalar = string | number | boolean;
+export type FrontmatterValue =
+  | FrontmatterScalar
+  | string[]
+  | Record<string, FrontmatterScalar>;
 export type Frontmatter = Record<string, FrontmatterValue>;
 
 export interface ParsedMarkdown {
@@ -32,16 +37,36 @@ export function parseFrontmatter(raw: string): ParsedMarkdown {
   }
 
   const data: Frontmatter = {};
-  // Set while consuming the items of a block list, e.g. `tools:` then `- read`.
-  let listKey: string | undefined;
+  // Set while consuming the children of a bare `key:` line. The first child
+  // decides the shape: a `- item` makes it a list, a `sub: value` a map.
+  let blockKey: string | undefined;
 
   for (const line of match[1].split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#')) continue;
 
     const item = line.match(/^\s+-\s+(.+)$/);
-    if (item && listKey) {
-      (data[listKey] as string[]).push(String(parseScalar(item[1])));
+    if (item && blockKey) {
+      const block = data[blockKey];
+      if (!Array.isArray(block)) {
+        throw new Error(`Cannot mix list items and map entries under "${blockKey}".`);
+      }
+      block.push(String(parseScalar(item[1])));
+      continue;
+    }
+
+    const nested = line.match(/^\s+([A-Za-z][\w-]*):\s*(.+)$/);
+    if (nested && blockKey) {
+      let block = data[blockKey];
+      if (Array.isArray(block)) {
+        if (block.length > 0) {
+          throw new Error(`Cannot mix list items and map entries under "${blockKey}".`);
+        }
+        // A bare `key:` defaults to an empty list; the first map entry
+        // reshapes it.
+        block = data[blockKey] = {};
+      }
+      (block as Record<string, FrontmatterScalar>)[nested[1]] = parseScalar(nested[2]);
       continue;
     }
 
@@ -52,10 +77,10 @@ export function parseFrontmatter(raw: string): ParsedMarkdown {
     const [, key, value] = pair;
     if (value === '' || value === '[]') {
       data[key] = [];
-      listKey = value === '' ? key : undefined;
+      blockKey = value === '' ? key : undefined;
     } else {
       data[key] = parseScalar(value);
-      listKey = undefined;
+      blockKey = undefined;
     }
   }
 

@@ -1,6 +1,6 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
-import { models } from './models';
+import { resolveModel } from './models';
 import { agents } from '../config/agents';
 
 /**
@@ -25,7 +25,7 @@ export class Triage {
     name: agents.triage.name,
     description: agents.triage.description,
     instructions: agents.triage.instructions,
-    model: models[agents.triage.model],
+    model: resolveModel(agents.triage.capabilities),
   });
 
   async classify(prompt: string): Promise<TriageResult> {

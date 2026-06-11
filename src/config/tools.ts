@@ -1,6 +1,7 @@
 /**
  * Tool configuration registry. Each tool the agents can plan with is described
- * by a `.md` file in ./tools: frontmatter carries the structured fields (name,
+ * by a `.md` file in ./tools, discovered by the glob import at build time:
+ * frontmatter carries the structured fields (name,
  * displayName, the Language Model Tools API id it registers as, whether it is
  * side-effecting), and the markdown body is the model-facing description.
  *
@@ -12,10 +13,7 @@
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
-import read from './tools/read.md';
-import search from './tools/search.md';
-import run from './tools/run.md';
-import write from './tools/write.md';
+import toolFiles from 'glob:./tools/*.md';
 
 const ToolFrontmatterSchema = z.object({
   /** Short name agents and plan steps refer to the tool by. */
@@ -38,13 +36,13 @@ function loadTool(raw: string): ToolConfig {
   return { ...ToolFrontmatterSchema.parse(data), description: body.trim() };
 }
 
-const all = [read, search, run, write].map(loadTool);
+const all = toolFiles.map(loadTool);
 
 export const toolConfigs: Record<string, ToolConfig> = Object.fromEntries(
   all.map((tool) => [tool.name, tool])
 );
 
-/** Tool names in declaration order; the source of truth for tool enums. */
+/** Tool names in config-filename order; the source of truth for tool enums. */
 export const toolNames = all.map((tool) => tool.name);
 
 /**
