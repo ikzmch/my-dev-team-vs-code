@@ -1,7 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
 import { models } from './models';
-import { prompts } from '../config/prompts';
+import { agents } from '../config/agents';
 
 /**
  * Routing decision for a user request:
@@ -21,10 +21,11 @@ export type IntentResult = z.infer<typeof IntentSchema>;
 
 export class IntentClassifier {
   private readonly agent = new Agent({
-    id: 'intent-classifier',
-    name: 'Intent Classifier',
-    instructions: prompts.intentClassifier,
-    model: models.intent,
+    id: agents.intentClassifier.id,
+    name: agents.intentClassifier.name,
+    description: agents.intentClassifier.description,
+    instructions: agents.intentClassifier.instructions,
+    model: models[agents.intentClassifier.model],
   });
 
   async classify(prompt: string): Promise<IntentResult> {

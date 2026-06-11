@@ -1,10 +1,13 @@
 import * as vscode from 'vscode';
 import { Approver } from '../core/types';
+import { toolConfigs } from '../config/tools';
 import { readFile, searchFiles, runCommand, writeFile } from './workspaceTools';
 
 /**
  * Registers the four tools so the model can invoke them via the Language Model
- * Tools API. Side-effecting tools receive the shared Approver.
+ * Tools API, under the ids the tool configs declare (config/tools/*.md, which
+ * must match the package.json contribution). Side-effecting tools receive the
+ * shared Approver.
  *
  * Returns disposables for cleanup on deactivate.
  */
@@ -13,7 +16,7 @@ export function registerTools(
   approver: Approver
 ): void {
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam__read', {
+    vscode.lm.registerTool(toolConfigs.read.lmTool, {
       async invoke(options) {
         const { path } = options.input as { path: string };
         const text = await readFile(path);
@@ -25,7 +28,7 @@ export function registerTools(
   );
 
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam__search', {
+    vscode.lm.registerTool(toolConfigs.search.lmTool, {
       async invoke(options) {
         const { query, mode } = options.input as {
           query: string;
@@ -42,7 +45,7 @@ export function registerTools(
   );
 
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam__run', {
+    vscode.lm.registerTool(toolConfigs.run.lmTool, {
       async invoke(options) {
         const { command } = options.input as { command: string };
         const output = await runCommand(command, approver);
@@ -54,7 +57,7 @@ export function registerTools(
   );
 
   context.subscriptions.push(
-    vscode.lm.registerTool('devteam__write', {
+    vscode.lm.registerTool(toolConfigs.write.lmTool, {
       async invoke(options) {
         const { path, contents } = options.input as {
           path: string;

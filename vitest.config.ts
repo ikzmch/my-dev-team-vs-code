@@ -3,9 +3,9 @@ import { fileURLToPath } from 'node:url';
 
 /**
  * Inline `.md` imports as plain strings, mirroring esbuild's text loader that
- * the production bundle uses for the system-prompt files in config/prompts.
- * Without this, importing the agents (which pull in those prompts) would fail
- * under Vitest.
+ * the production bundle uses for the config files in config/agents and
+ * config/tools. Without this, importing the agents (which pull in those
+ * configs) would fail under Vitest.
  */
 const markdownAsText = {
   name: 'markdown-as-text',
