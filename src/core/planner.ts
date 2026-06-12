@@ -7,8 +7,8 @@ import { toolNames } from '../config/tools';
 /**
  * A step-by-step plan for a "planning" request. The classifier decides a request
  * needs planning; the Planner turns it into an ordered list of concrete steps,
- * each optionally hinting which workspace tool it will use. An executor (next
- * roadmap item) would walk these steps and drive the tool-calling loop.
+ * each optionally hinting which workspace tool it will use. The Executor
+ * (core/executor.ts) then walks these steps and drives the tool-calling loop.
  *
  * The `tool` hint enum is derived from the tool configs in config/tools (the
  * same registry the planner's prompt section is rendered from), plus "none"

@@ -102,6 +102,16 @@ export const settings = {
   /** Max characters of a file shown in the write-approval before/after preview. */
   writePreviewMaxChars: 800,
 
+  /** Limits on the executor's tool-calling loop and its transcript previews. */
+  executor: {
+    /** Max model->tools->model iterations before the loop is cut off. */
+    maxSteps: 12,
+    /** Max characters of a tool call's argument JSON kept in the transcript. */
+    inputPreviewMaxChars: 200,
+    /** Max characters of a tool result kept in the transcript. */
+    resultPreviewMaxChars: 400,
+  },
+
   /** Max characters of an attached file/selection inlined into the prompt. */
   maxAttachmentChars: 20_000,
 

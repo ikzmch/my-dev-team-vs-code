@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { Triage } from './core/triage';
 import { Planner } from './core/planner';
 import { Answerer } from './core/answerer';
+import { Executor } from './core/executor';
 import { createDevTeamWorkflow } from './core/workflow';
 import { registerTools } from './tools/registerTools';
 import {
@@ -17,15 +18,22 @@ export function activate(context: vscode.ExtensionContext) {
   // failing on the first chat request. Never blocks activation.
   void checkOllamaAtStartup();
 
+  // --- Approval seam: Phase 1 uses the chat-based approver ---
+  // Created before the agents because the Executor's side-effecting tools
+  // (run, write) are gated by it.
+  const approver = new ChatApprover();
+
   // --- Agent core (UI-agnostic) ---
   // Each agent declares weighted capability requirements and the router
   // (`config/models.ts` + `core/models.ts`) wires the best registered model;
   // tune capabilities and the registry there, not here. The Mastra workflow
-  // orchestrates them: triage → branch → draft a plan / answer directly.
-  const workflow = createDevTeamWorkflow(new Triage(), new Planner(), new Answerer());
-
-  // --- Approval seam: Phase 1 uses the chat-based approver ---
-  const approver = new ChatApprover();
+  // orchestrates them: triage → draft a plan and execute it / answer directly.
+  const workflow = createDevTeamWorkflow(
+    new Triage(),
+    new Planner(),
+    new Answerer(),
+    new Executor(approver)
+  );
 
   // --- Tools: model can call read/search/run/write ---
   registerTools(context, approver);

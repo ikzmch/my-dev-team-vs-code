@@ -24,6 +24,7 @@ export const messages = {
     understanding: 'Understanding your request…',
     drafting: 'Drafting a plan…',
     answering: 'Answering…',
+    executing: 'Executing the plan…',
   },
 
   /** Approval-dialog titles for side-effecting tools. */
@@ -55,11 +56,23 @@ export const messages = {
 
   plan: {
     error: (detail: string) => `**Planner error:** ${detail}\n\n` + ollamaHint('planner'),
-    nextStep:
-      '**Next step (not yet implemented):** execute these steps with tools.\n\n',
     // A prefix rather than a template: the renderer streams the summary in
     // behind it while the planner is still writing it.
     header: '**Plan:** ',
+  },
+
+  execution: {
+    error: (detail: string) =>
+      `**Executor error:** ${detail}\n\n` + ollamaHint('executor'),
+    // A prefix rather than a template: the transcript streams in behind it
+    // while the executor is still working.
+    header: '**Execution:**',
+    /** One transcript line per tool call; the result is appended when it lands. */
+    call: (tool: string, input: string) => `\n\n- **${tool}** \`${input}\``,
+    result: (preview: string, failed: boolean) =>
+      failed ? ` → **failed** \`${preview}\`` : ` → \`${preview}\``,
+    /** Shown in a result slot when the tool produced no output at all. */
+    emptyResult: '(no output)',
   },
 
   run: {

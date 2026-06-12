@@ -2,8 +2,9 @@ import { createWorkflow, createStep } from '@mastra/core/workflows';
 import type { RequestContext } from '@mastra/core/request-context';
 import { z } from 'zod';
 import { Triage, TriageSchema } from './triage';
-import { Planner, PlanSchema, PartialPlan } from './planner';
+import { Planner, PlanSchema, PlanResult, PartialPlan } from './planner';
 import { Answerer } from './answerer';
+import { Executor, ExecutionSchema, PartialExecution } from './executor';
 
 /**
  * Step ids of the dev-team workflow. Exported so the UI layer can map the
@@ -14,6 +15,8 @@ export const stepIds = {
   triage: 'triage',
   plan: 'draft-plan',
   answer: 'answer-directly',
+  execute: 'execute-plan',
+  deliver: 'deliver-answer',
 } as const;
 
 /** One attached file/selection: a short label naming it plus its (already truncated) text. */
@@ -64,34 +67,62 @@ export function fullPrompt(input: RequestInput): string {
   return `${input.prompt}\n\n--- Attached context ---\n${blocks.join('\n\n')}`;
 }
 
+/**
+ * The prompt the executor sees: the full request (prompt + attachment text,
+ * same as the planner saw) plus the plan it is asked to carry out, rendered
+ * as a numbered list with the tool hints.
+ */
+export function executionPrompt(input: RequestInput, plan: PlanResult): string {
+  const steps = plan.steps
+    .map(
+      (step, i) =>
+        `${i + 1}. ${step.title}` +
+        (step.tool !== 'none' ? ` (tool: ${step.tool})` : '') +
+        ` - ${step.detail}`
+    )
+    .join('\n');
+  return `${fullPrompt(input)}\n\n--- Drafted plan ---\n${plan.summary}\n${steps}`;
+}
+
 /** Triage decision carried forward to the branch steps. */
 const TriagedSchema = RequestSchema.extend(TriageSchema.shape);
 
 /**
  * What the workflow produces: the routing decision plus, for "planning"
- * requests, the drafted plan, or, for "oneshot" requests, the direct answer.
- * Rendering this into chat markdown is the UI layer's job (see
- * ui/chatParticipant.ts).
+ * requests, the drafted plan and the execution transcript, or, for "oneshot"
+ * requests, the direct answer. Rendering this into chat markdown is the UI
+ * layer's job (see ui/chatParticipant.ts).
  */
 export const ReplySchema = z.object({
   intent: TriageSchema.shape.intent,
   reason: z.string(),
   plan: PlanSchema.optional(),
   answer: z.string().optional(),
+  execution: ExecutionSchema.optional(),
 });
 export type ReplyResult = z.infer<typeof ReplySchema>;
+
+/**
+ * The reply plus the original request, used between the two branch stages:
+ * the execute step still needs the prompt and attachments to brief the
+ * executor, so the branch steps carry them forward and the final steps strip
+ * them off again.
+ */
+const StagedReplySchema = RequestSchema.extend(ReplySchema.shape);
+type StagedReply = z.infer<typeof StagedReplySchema>;
 
 /**
  * A snapshot of the reply while the run is still producing it: the triage
  * decision is always complete (it comes from buffered structured output), the
  * plan grows as the planner streams it, the answer grows as the answerer
- * streams it.
+ * streams it, and the execution transcript grows as the executor calls tools.
  */
 export type ReplyProgress = {
   intent: ReplyResult['intent'];
   reason: string;
   plan?: PartialPlan;
   answer?: string;
+  execution?: PartialExecution;
 };
 
 /** Receives reply snapshots as the workflow streams them. Must not throw. */
@@ -112,16 +143,21 @@ function progressSink(requestContext: RequestContext): ReplyProgressSink | undef
  * The agent's orchestration as a Mastra workflow:
  *
  *   triage ──▶ branch ──▶ draft-plan       (intent === "planning")
- *                     └─▶ answer-directly  (intent === "oneshot")
+ *          │          └─▶ answer-directly  (intent === "oneshot")
+ *          ▼
+ *             branch ──▶ execute-plan      (a plan was drafted)
+ *                    └─▶ deliver-answer    (the oneshot path; pass-through)
  *
- * "answer-directly" streams a real answer from the Answerer agent. An
- * executor step that walks the drafted plan with the workspace tools is the
- * next roadmap item.
+ * "answer-directly" streams a real answer from the Answerer agent;
+ * "execute-plan" walks the drafted plan with the Executor's tool-calling
+ * loop. The second branch is a branch rather than a plain step so a oneshot
+ * run never starts (or reports progress for) an executor step.
  */
 export function createDevTeamWorkflow(
   triage: Triage,
   planner: Planner,
-  answerer: Answerer
+  answerer: Answerer,
+  executor: Executor
 ) {
   const triageStep = createStep({
     id: stepIds.triage,
@@ -137,9 +173,9 @@ export function createDevTeamWorkflow(
   const draftPlan = createStep({
     id: stepIds.plan,
     inputSchema: TriagedSchema,
-    outputSchema: ReplySchema,
+    outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { intent, reason } = inputData;
+      const { prompt, attachments, intent, reason } = inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every plan
       // snapshot the planner streams, so the UI can render tokens as they
@@ -149,16 +185,16 @@ export function createDevTeamWorkflow(
         fullPrompt(inputData),
         sink && ((partial) => sink({ intent, reason, plan: partial }))
       );
-      return { intent, reason, plan };
+      return { prompt, attachments, intent, reason, plan };
     },
   });
 
   const answerDirectly = createStep({
     id: stepIds.answer,
     inputSchema: TriagedSchema,
-    outputSchema: ReplySchema,
+    outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { intent, reason } = inputData;
+      const { prompt, attachments, intent, reason } = inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every answer
       // snapshot the answerer streams, mirroring the draft-plan step.
@@ -167,9 +203,46 @@ export function createDevTeamWorkflow(
         fullPrompt(inputData),
         sink && ((text) => sink({ intent, reason, answer: text }))
       );
-      return { intent, reason, answer };
+      return { prompt, attachments, intent, reason, answer };
     },
   });
+
+  const executePlan = createStep({
+    id: stepIds.execute,
+    inputSchema: StagedReplySchema,
+    outputSchema: ReplySchema,
+    execute: async ({ inputData, requestContext }) => {
+      const { prompt, attachments, intent, reason, plan } = inputData;
+      if (!plan) {
+        throw new Error('execute-plan reached without a drafted plan.');
+      }
+      const sink = progressSink(requestContext);
+      // Complete the plan render before execution output starts, then
+      // forward every transcript snapshot the executor produces.
+      sink?.({ intent, reason, plan });
+      const execution = await executor.execute(
+        executionPrompt({ prompt, attachments }, plan),
+        sink && ((partial) => sink({ intent, reason, plan, execution: partial }))
+      );
+      return { intent, reason, plan, execution };
+    },
+  });
+
+  // The oneshot path is already complete after answer-directly; this
+  // pass-through only strips the carried request fields back off.
+  const deliverAnswer = createStep({
+    id: stepIds.deliver,
+    inputSchema: StagedReplySchema,
+    outputSchema: ReplySchema,
+    execute: async ({ inputData }) => ({
+      intent: inputData.intent,
+      reason: inputData.reason,
+      answer: inputData.answer,
+    }),
+  });
+
+  const hasPlan = async ({ inputData }: { inputData: StagedReply }) =>
+    inputData.plan !== undefined;
 
   // The generics are explicit because TS cannot infer them from the zod
   // schemas: a zod v4 schema matches more than one member of Mastra's
@@ -184,8 +257,15 @@ export function createDevTeamWorkflow(
       [async ({ inputData }) => inputData.intent === 'planning', draftPlan],
       [async ({ inputData }) => inputData.intent !== 'planning', answerDirectly],
     ])
-    // branch() emits { [stepId]: output }; flatten to the single reply.
+    // branch() emits { [stepId]: output }; flatten to the single staged reply.
     .map(async ({ inputData }) => inputData[stepIds.plan] ?? inputData[stepIds.answer])
+    .branch([
+      [hasPlan, executePlan],
+      [async (args: { inputData: StagedReply }) => !(await hasPlan(args)), deliverAnswer],
+    ])
+    .map(
+      async ({ inputData }) => inputData[stepIds.execute] ?? inputData[stepIds.deliver]
+    )
     .commit();
 }
 

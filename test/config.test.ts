@@ -61,10 +61,11 @@ describe('messages templates', () => {
     expect(messages.answer.header).toBe('**Answer:**\n\n');
   });
 
-  it('labels all three progress phases', () => {
+  it('labels all four progress phases', () => {
     expect(messages.progress.understanding).toBeTruthy();
     expect(messages.progress.drafting).toBeTruthy();
     expect(messages.progress.answering).toBeTruthy();
+    expect(messages.progress.executing).toBeTruthy();
   });
 
   it('provides approval titles and decline replies for side-effecting tools', () => {
@@ -74,8 +75,22 @@ describe('messages templates', () => {
     expect(messages.notApproved.write).toMatch(/not.*approved/i);
   });
 
-  it('marks the not-yet-implemented executor step so the reply stays honest', () => {
-    expect(messages.plan.nextStep).toContain('not yet implemented');
+  it('appends the Ollama troubleshooting hint to executor errors', () => {
+    const text = messages.execution.error('model missing');
+    expect(text).toContain('**Executor error:** model missing');
+    expect(text).toContain(settings.ollamaEndpoint);
+    expect(text).toContain(selectModel(agents.executor.capabilities).model);
+  });
+
+  it('renders execution transcript lines as appendable fragments', () => {
+    // The renderer streams the transcript append-only: each call line must be
+    // self-prefixed (it follows arbitrary text) and each result a pure suffix.
+    const call = messages.execution.call('read', '{"path":"a.ts"}');
+    expect(call).toBe('\n\n- **read** `{"path":"a.ts"}`');
+    expect(messages.execution.result('ok', false)).toBe(' → `ok`');
+    expect(messages.execution.result('boom', true)).toBe(' → **failed** `boom`');
+    expect(messages.execution.emptyResult).toBeTruthy();
+    expect(messages.execution.header).toBe('**Execution:**');
   });
 
   it('keeps the Ollama hint sourced from the router, not a hardcoded id', () => {
@@ -105,6 +120,12 @@ describe('settings', () => {
 
   it('exposes a positive glob result cap', () => {
     expect(settings.search.globMaxResults).toBeGreaterThan(0);
+  });
+
+  it('exposes positive executor loop and preview limits', () => {
+    expect(settings.executor.maxSteps).toBeGreaterThan(0);
+    expect(settings.executor.inputPreviewMaxChars).toBeGreaterThan(0);
+    expect(settings.executor.resultPreviewMaxChars).toBeGreaterThan(0);
   });
 
   it('exposes the tool hardening limits', () => {
@@ -221,6 +242,7 @@ describe('model registry and selection', () => {
       agents.triage.capabilities,
       agents.planner.capabilities,
       agents.answerer.capabilities,
+      agents.executor.capabilities,
     ]) {
       const selected = selectModel(requirements);
       const best = Math.max(
@@ -238,6 +260,16 @@ describe('model registry and selection', () => {
     expect((triageModel.capabilities.speed ?? 0)).toBeGreaterThanOrEqual(
       plannerModel.capabilities.speed ?? 0
     );
+  });
+
+  it('routes the executor to the strongest coding model in the registry', () => {
+    // The executor weights coding hardest, so it must land on the registry's
+    // code specialist rather than a generalist.
+    const executorModel = selectModel(agents.executor.capabilities);
+    const bestCoding = Math.max(
+      ...modelRegistry.map((info) => info.capabilities.coding ?? 0)
+    );
+    expect(executorModel.capabilities.coding).toBe(bestCoding);
   });
 });
 
@@ -349,9 +381,13 @@ describe('agent configs', () => {
     expect(agents.answerer.id).toBe('answerer');
     expect(agents.answerer.name).toBe('Answerer');
     expect(agents.answerer.description).toBeTruthy();
+    expect(agents.executor.id).toBe('executor');
+    expect(agents.executor.name).toBe('Executor');
+    expect(agents.executor.description).toBeTruthy();
     expect(agents.triage.instructions).toContain('triage agent');
     expect(agents.planner.instructions).toContain('planner');
     expect(agents.answerer.instructions).toContain('answerer');
+    expect(agents.executor.instructions).toContain('executor');
   });
 
   it('declares only known capabilities with weights in [0, 1] for each agent', () => {
@@ -374,6 +410,19 @@ describe('agent configs', () => {
   it('weights the answerer toward reasoning with speed close behind', () => {
     expect(agents.answerer.capabilities.reasoning).toBe(1);
     expect(agents.answerer.capabilities.speed).toBeGreaterThan(0);
+  });
+
+  it('weights the executor toward coding', () => {
+    expect(agents.executor.capabilities.coding).toBe(1);
+  });
+
+  it('keeps the executor contract: all four tools, decline handling, a report', () => {
+    expect([...agents.executor.tools].sort()).toEqual([...toolNames].sort());
+    const p = agents.executor.instructions;
+    expect(p).not.toContain('{{tools}}');
+    expect(p).toContain('You have exactly 4 tools available:');
+    expect(p).toContain('not approved');
+    expect(p).toMatch(/report/i);
   });
 
   it('keeps the answerer contract: no tools, oneshot framing', () => {

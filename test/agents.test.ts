@@ -21,6 +21,9 @@ vi.mock('@mastra/core/agent', () => ({
 import { Triage, TriageSchema } from '../src/core/triage';
 import { Planner, PlanSchema, PartialPlan } from '../src/core/planner';
 import { Answerer } from '../src/core/answerer';
+import { Executor, PartialExecution } from '../src/core/executor';
+import { Approver } from '../src/core/types';
+import { settings } from '../src/config/settings';
 
 beforeEach(() => {
   generateMock.mockReset();
@@ -63,6 +66,25 @@ function fakeTextOutput(deltas: string[], final = deltas.join('')) {
     text: Promise.resolve(final),
   };
 }
+
+/**
+ * Fake of the MastraModelOutput the executor consumes: the full chunk stream
+ * the tool-calling loop produces.
+ */
+function fakeChunkOutput(chunks: Array<{ type: string; payload?: unknown }>) {
+  return {
+    fullStream: new ReadableStream({
+      start(controller) {
+        for (const chunk of chunks) {
+          controller.enqueue(chunk);
+        }
+        controller.close();
+      },
+    }),
+  };
+}
+
+const approverStub: Approver = { confirm: async () => true };
 
 describe('Triage', () => {
   it('returns the structured object from the model', async () => {
@@ -169,5 +191,239 @@ describe('Answerer', () => {
     const config = agentCtor.mock.calls[0][0] as { id: string; instructions: string };
     expect(config.id).toBe('answerer');
     expect(config.instructions).toContain('answerer');
+  });
+});
+
+describe('Executor', () => {
+  const toolLoop = [
+    { type: 'text-delta', payload: { id: 't1', text: 'Reading' } },
+    { type: 'text-delta', payload: { id: 't1', text: ' first.' } },
+    {
+      type: 'tool-call',
+      payload: { toolCallId: 'c1', toolName: 'read', args: { path: 'a.ts' } },
+    },
+    {
+      type: 'tool-result',
+      payload: { toolCallId: 'c1', toolName: 'read', result: 'const a = 1;' },
+    },
+    { type: 'text-delta', payload: { id: 't2', text: 'Done.' } },
+  ];
+
+  it('returns the transcript of text and tool calls in order', async () => {
+    streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
+    await expect(new Executor(approverStub).execute('do it')).resolves.toEqual({
+      events: [
+        { kind: 'text', text: 'Reading first.' },
+        { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}', result: 'const a = 1;' },
+        { kind: 'text', text: 'Done.' },
+      ],
+    });
+  });
+
+  it('forwards grow-only snapshots to the callback in order', async () => {
+    streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
+
+    const seen: PartialExecution[] = [];
+    await new Executor(approverStub).execute('do it', (partial) => seen.push(partial));
+
+    expect(seen).toEqual([
+      { events: [{ kind: 'text', text: 'Reading' }] },
+      { events: [{ kind: 'text', text: 'Reading first.' }] },
+      {
+        events: [
+          { kind: 'text', text: 'Reading first.' },
+          { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}' },
+        ],
+      },
+      {
+        events: [
+          { kind: 'text', text: 'Reading first.' },
+          { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}', result: 'const a = 1;' },
+        ],
+      },
+      {
+        events: [
+          { kind: 'text', text: 'Reading first.' },
+          { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}', result: 'const a = 1;' },
+          { kind: 'text', text: 'Done.' },
+        ],
+      },
+    ]);
+  });
+
+  it('snapshots are copies, not live views of later mutations', async () => {
+    streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
+
+    const seen: PartialExecution[] = [];
+    await new Executor(approverStub).execute('do it', (partial) => seen.push(partial));
+
+    // The first snapshot still shows the text as it was at emission time,
+    // even though the underlying event kept growing afterwards.
+    expect(seen[0].events[0]).toEqual({ kind: 'text', text: 'Reading' });
+  });
+
+  it('drains the stream even without a callback', async () => {
+    streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
+    const result = await new Executor(approverStub).execute('do it');
+    expect(result.events).toHaveLength(3);
+  });
+
+  it('passes the prompt and the step cap to the model', async () => {
+    streamMock.mockResolvedValue(fakeChunkOutput([]));
+    await new Executor(approverStub).execute('carry out the plan');
+
+    const [messages, options] = streamMock.mock.calls[0];
+    expect(messages).toEqual([{ role: 'user', content: 'carry out the plan' }]);
+    expect(options).toEqual({ maxSteps: settings.executor.maxSteps });
+  });
+
+  it('is configured with executor instructions and the four workspace tools', () => {
+    new Executor(approverStub);
+    const config = agentCtor.mock.calls[0][0] as {
+      id: string;
+      instructions: string;
+      tools: Record<string, unknown>;
+    };
+    expect(config.id).toBe('executor');
+    expect(config.instructions).toContain('executor');
+    expect(Object.keys(config.tools).sort()).toEqual(['read', 'run', 'search', 'write']);
+  });
+
+  it('strips Mastra metadata from the recorded tool input', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: {
+            toolCallId: 'c1',
+            toolName: 'read',
+            args: { path: 'a.ts', __mastraMetadata: { isStreaming: true } },
+          },
+        },
+      ])
+    );
+    const result = await new Executor(approverStub).execute('go');
+    expect(result.events[0]).toEqual({
+      kind: 'tool',
+      tool: 'read',
+      input: '{"path":"a.ts"}',
+    });
+  });
+
+  it('truncates oversized input and result previews', async () => {
+    const longPath = 'x'.repeat(settings.executor.inputPreviewMaxChars + 50);
+    const longResult = 'y'.repeat(settings.executor.resultPreviewMaxChars + 50);
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: { toolCallId: 'c1', toolName: 'read', args: { path: longPath } },
+        },
+        {
+          type: 'tool-result',
+          payload: { toolCallId: 'c1', toolName: 'read', result: longResult },
+        },
+      ])
+    );
+    const result = await new Executor(approverStub).execute('go');
+    const event = result.events[0] as { input: string; result?: string };
+    expect(event.input).toHaveLength(settings.executor.inputPreviewMaxChars + 1);
+    expect(event.input.endsWith('…')).toBe(true);
+    expect(event.result).toHaveLength(settings.executor.resultPreviewMaxChars + 1);
+    expect(event.result!.endsWith('…')).toBe(true);
+  });
+
+  it('stringifies a non-string tool result', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: { toolCallId: 'c1', toolName: 'search', args: { query: 'q' } },
+        },
+        {
+          type: 'tool-result',
+          payload: { toolCallId: 'c1', toolName: 'search', result: { hits: 2 } },
+        },
+      ])
+    );
+    const result = await new Executor(approverStub).execute('go');
+    expect((result.events[0] as { result?: string }).result).toBe('{"hits":2}');
+  });
+
+  it('marks an errored tool result as failed', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: { toolCallId: 'c1', toolName: 'read', args: { path: '../x' } },
+        },
+        {
+          type: 'tool-result',
+          payload: {
+            toolCallId: 'c1',
+            toolName: 'read',
+            result: 'Path is outside the workspace: ../x',
+            isError: true,
+          },
+        },
+      ])
+    );
+    const result = await new Executor(approverStub).execute('go');
+    expect(result.events[0]).toMatchObject({
+      kind: 'tool',
+      failed: true,
+      result: 'Path is outside the workspace: ../x',
+    });
+  });
+
+  it('records a tool-error chunk as a failed call with the error message', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: { toolCallId: 'c1', toolName: 'read', args: { path: '../x' } },
+        },
+        {
+          type: 'tool-error',
+          payload: {
+            toolCallId: 'c1',
+            toolName: 'read',
+            error: new Error('Path is outside the workspace: ../x'),
+          },
+        },
+      ])
+    );
+    const result = await new Executor(approverStub).execute('go');
+    expect(result.events[0]).toMatchObject({
+      kind: 'tool',
+      failed: true,
+      result: 'Path is outside the workspace: ../x',
+    });
+  });
+
+  it('rejects when the stream reports a run-level error', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        { type: 'text-delta', payload: { id: 't1', text: 'Hm' } },
+        { type: 'error', payload: { error: new Error('connection refused') } },
+      ])
+    );
+    await expect(new Executor(approverStub).execute('go')).rejects.toThrow(
+      'connection refused'
+    );
+  });
+
+  it('ignores unknown chunk types and orphan tool results', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        { type: 'step-start', payload: {} },
+        { type: 'tool-result', payload: { toolCallId: 'ghost', result: 'x' } },
+        { type: 'text-delta', payload: { id: 't1', text: 'ok' } },
+        { type: 'finish', payload: {} },
+      ])
+    );
+    await expect(new Executor(approverStub).execute('go')).resolves.toEqual({
+      events: [{ kind: 'text', text: 'ok' }],
+    });
   });
 });

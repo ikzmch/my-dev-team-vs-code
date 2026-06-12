@@ -10,6 +10,7 @@ import {
   stepIds,
 } from '../core/workflow';
 import { PartialPlan } from '../core/planner';
+import { PartialExecution } from '../core/executor';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 
@@ -113,6 +114,7 @@ const progressByStep: Record<string, string> = {
   [stepIds.triage]: messages.progress.understanding,
   [stepIds.plan]: messages.progress.drafting,
   [stepIds.answer]: messages.progress.answering,
+  [stepIds.execute]: messages.progress.executing,
 };
 
 /**
@@ -124,7 +126,7 @@ const progressByStep: Record<string, string> = {
  * model has moved on to the next one). That makes successive renders of
  * growing snapshots prefix-extensions of each other - exactly what the
  * append-only chat stream needs. With `done` true it renders the full
- * checklist plus the next-step footer.
+ * checklist.
  */
 function formatPlan(plan: PartialPlan, done: boolean): string {
   if (plan.summary === undefined) {
@@ -164,7 +166,38 @@ function formatPlan(plan: PartialPlan, done: boolean): string {
       text += '\n';
     }
   }
-  return done ? text + '\n\n' + messages.plan.nextStep : text;
+  return text;
+}
+
+/** Flatten a tool input/result preview onto one backtick-safe line. */
+function inlinePreview(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').replace(/`/g, "'").trim();
+  return flat || messages.execution.emptyResult;
+}
+
+/**
+ * Render a (possibly still streaming) execution transcript. Snapshots are
+ * grow-only (events are appended; the trailing text event grows, the trailing
+ * tool event gains its result), and each event's render is append-only too -
+ * the call line is emitted when the call starts and the result suffix when it
+ * lands - so successive renders stay prefix-extensions of each other. A tool
+ * call still waiting for its result ends the render unless `done`.
+ */
+function formatExecution(execution: PartialExecution, done: boolean): string {
+  let text = messages.execution.header;
+  for (const event of execution.events) {
+    if (event.kind === 'text') {
+      text += '\n\n' + event.text;
+    } else {
+      text += messages.execution.call(event.tool, inlinePreview(event.input));
+      if (event.result !== undefined) {
+        text += messages.execution.result(inlinePreview(event.result), !!event.failed);
+      } else if (!done) {
+        return text;
+      }
+    }
+  }
+  return text;
 }
 
 /**
@@ -175,7 +208,12 @@ function formatPlan(plan: PartialPlan, done: boolean): string {
 export function renderReply(reply: ReplyProgress | ReplyResult, done: boolean): string {
   let text = messages.triage.block(reply.intent, reply.reason);
   if (reply.plan) {
-    text += formatPlan(reply.plan, done);
+    // Once execution output exists the plan is necessarily complete, so it
+    // can be rendered unconservatively even while the run is still going.
+    text += formatPlan(reply.plan, done || reply.execution !== undefined);
+    if (reply.execution) {
+      text += '\n\n' + formatExecution(reply.execution, done);
+    }
   } else if (reply.answer !== undefined) {
     // The answer snapshots are grow-only accumulated text, so appending them
     // behind the header keeps successive renders prefix-extensions.
@@ -228,6 +266,9 @@ function renderFailure(
     typeof error === 'object' && error !== null && 'message' in error
       ? String((error as { message: unknown }).message)
       : String(error);
+  if (steps[stepIds.execute]?.status === 'failed') {
+    return messages.execution.error(detail);
+  }
   if (steps[stepIds.plan]?.status === 'failed') {
     return messages.plan.error(detail);
   }

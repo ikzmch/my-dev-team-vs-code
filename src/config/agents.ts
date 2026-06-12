@@ -22,6 +22,7 @@ import { toolNames, renderToolsSection } from './tools';
 import triage from './agents/triage.md';
 import planner from './agents/planner.md';
 import answerer from './agents/answerer.md';
+import executor from './agents/executor.md';
 
 const TOOLS_PLACEHOLDER = '{{tools}}';
 
@@ -64,6 +65,7 @@ export const agents = {
   triage: loadAgent(triage),
   planner: loadAgent(planner),
   answerer: loadAgent(answerer),
+  executor: loadAgent(executor),
 } as const;
 
 export type AgentName = keyof typeof agents;

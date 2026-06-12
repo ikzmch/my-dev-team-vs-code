@@ -10,6 +10,11 @@ import { TriageResult } from '../src/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/core/planner';
 import { AnswerProgress } from '../src/core/answerer';
 import {
+  ExecutionProgress,
+  ExecutionResult,
+  PartialExecution,
+} from '../src/core/executor';
+import {
   __reset,
   __state,
   __setFile,
@@ -43,6 +48,13 @@ const aPlan: PlanResult = {
   ],
 };
 
+const anExecution: ExecutionResult = {
+  events: [
+    { kind: 'tool', tool: 'search', input: '{"query":"*"}', result: 'src/a.ts' },
+    { kind: 'text', text: 'All steps are done.' },
+  ],
+};
+
 /**
  * Build a real dev-team workflow over fake agents, and record the prompt each
  * agent receives so tests can assert on what the handler and workflow
@@ -56,12 +68,17 @@ function makeWorkflow(
   plan: (prompt: string, onPartial?: PlanProgress) => Promise<PlanResult> = async () =>
     aPlan,
   answer: (prompt: string, onPartial?: AnswerProgress) => Promise<string> = async () =>
-    'It is 4.'
+    'It is 4.',
+  execute: (
+    prompt: string,
+    onPartial?: ExecutionProgress
+  ) => Promise<ExecutionResult> = async () => anExecution
 ) {
   const seen = {
     triage: undefined as string | undefined,
     planner: undefined as string | undefined,
     answerer: undefined as string | undefined,
+    executor: undefined as string | undefined,
   };
   const workflow = createDevTeamWorkflow(
     {
@@ -80,6 +97,12 @@ function makeWorkflow(
       answer: async (prompt: string, onPartial?: AnswerProgress) => {
         seen.answerer = prompt;
         return answer(prompt, onPartial);
+      },
+    } as any,
+    {
+      execute: async (prompt: string, onPartial?: ExecutionProgress) => {
+        seen.executor = prompt;
+        return execute(prompt, onPartial);
       },
     } as any
   );
@@ -170,7 +193,7 @@ describe('createHandler', () => {
     expect(stream.progress).toHaveBeenCalledWith('Answering…');
   });
 
-  it('renders a planning request as a numbered checklist', async () => {
+  it('renders a planning request as a checklist plus the execution transcript', async () => {
     const { workflow } = makeWorkflow(async () => ({
       intent: 'planning',
       reason: 'needs steps',
@@ -191,7 +214,45 @@ describe('createHandler', () => {
     // tool "none" must not render a tool suffix.
     expect(text).toContain('2. **Think** - reason about it');
     expect(text).not.toContain('Think** _(none)_');
+    // The execution transcript follows the plan: tool calls and the report.
+    expect(text).toContain('**Execution:**');
+    expect(text).toContain('- **search** `{"query":"*"}` → `src/a.ts`');
+    expect(text).toContain('All steps are done.');
     expect(stream.progress).toHaveBeenCalledWith('Drafting a plan…');
+    expect(stream.progress).toHaveBeenCalledWith('Executing the plan…');
+  });
+
+  it('does not show the executing progress label on a oneshot request', async () => {
+    const { workflow, seen } = makeWorkflow();
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'what is 2+2', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(stream.progress).not.toHaveBeenCalledWith('Executing the plan…');
+    expect(seen.executor).toBeUndefined();
+  });
+
+  it('hands the executor the prompt plus the drafted plan', async () => {
+    const { workflow, seen } = makeWorkflow(async () => ({
+      intent: 'planning',
+      reason: 'needs steps',
+    }));
+
+    await createHandler(workflow)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    expect(seen.executor).toContain('add a feature');
+    expect(seen.executor).toContain('--- Drafted plan ---');
+    expect(seen.executor).toContain('1. Find the file (tool: search) - locate it');
   });
 
   it('surfaces a triage failure with the Ollama hint', async () => {
@@ -233,6 +294,32 @@ describe('createHandler', () => {
     expect(text).toContain('**Planner error:**');
     expect(text).toContain('model not found');
     expect(text).toContain('Ollama');
+  });
+
+  it('surfaces an executor failure with the Ollama hint', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'planning', reason: 'x' }),
+      undefined,
+      undefined,
+      async () => {
+        throw new Error('model not found');
+      }
+    );
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'do work', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    const text = emitted(stream);
+    expect(text).toContain('**Executor error:**');
+    expect(text).toContain('model not found');
+    expect(text).toContain('Ollama');
+    // The failure must not be misattributed to the (successful) plan step.
+    expect(text).not.toContain('**Planner error:**');
   });
 
   it('surfaces an answerer failure with the Ollama hint', async () => {
@@ -480,10 +567,89 @@ describe('createHandler streaming', () => {
     // The concatenation is exactly the final reply, with nothing duplicated.
     const text = emitted(stream);
     expect(text).toBe(
-      renderReply({ intent: 'planning', reason: 'needs steps', plan: aPlan }, true)
+      renderReply(
+        {
+          intent: 'planning',
+          reason: 'needs steps',
+          plan: aPlan,
+          execution: anExecution,
+        },
+        true
+      )
     );
     expect(count(text, '**Plan:**')).toBe(1);
     expect(count(text, 'Find the file')).toBe(1);
+    expect(count(text, '**Execution:**')).toBe(1);
+  });
+
+  it('streams the execution transcript incrementally and never repeats content', async () => {
+    /** Growing snapshots the way the executor emits them. */
+    const executionPartials: PartialExecution[] = [
+      { events: [{ kind: 'text', text: 'Searching' }] },
+      { events: [{ kind: 'text', text: 'Searching first.' }] },
+      {
+        events: [
+          { kind: 'text', text: 'Searching first.' },
+          { kind: 'tool', tool: 'search', input: '{"query":"*"}' },
+        ],
+      },
+      {
+        events: [
+          { kind: 'text', text: 'Searching first.' },
+          { kind: 'tool', tool: 'search', input: '{"query":"*"}', result: 'src/a.ts' },
+        ],
+      },
+      {
+        events: [
+          { kind: 'text', text: 'Searching first.' },
+          { kind: 'tool', tool: 'search', input: '{"query":"*"}', result: 'src/a.ts' },
+          { kind: 'text', text: 'Done.' },
+        ],
+      },
+    ];
+    const finalExecution: ExecutionResult = {
+      events: executionPartials[executionPartials.length - 1]
+        .events as ExecutionResult['events'],
+    };
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'planning', reason: 'needs steps' }),
+      undefined,
+      undefined,
+      async (_prompt, onPartial) => {
+        for (const partial of executionPartials) {
+          onPartial?.(partial);
+        }
+        return finalExecution;
+      }
+    );
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    // The transcript arrived in several appended chunks, not one blob.
+    expect(stream.markdown.mock.calls.length).toBeGreaterThan(2);
+
+    // The concatenation is exactly the final reply, with nothing duplicated.
+    const text = emitted(stream);
+    expect(text).toBe(
+      renderReply(
+        {
+          intent: 'planning',
+          reason: 'needs steps',
+          plan: aPlan,
+          execution: finalExecution,
+        },
+        true
+      )
+    );
+    expect(count(text, '**Execution:**')).toBe(1);
+    expect(count(text, 'src/a.ts')).toBe(1);
+    expect(count(text, 'Searching first.')).toBe(1);
   });
 
   it('streams a oneshot answer incrementally and never repeats content', async () => {
@@ -650,12 +816,136 @@ describe('renderReply', () => {
     expect(mid.endsWith('1. **Fi')).toBe(true);
   });
 
-  it('appends the plan footer only when done', () => {
-    const planning = renderReply(progress(aPlan), false);
-    expect(planning).not.toContain('**Next step');
-    expect(renderReply(progress(aPlan), true)).toContain(
-      '**Next step (not yet implemented):** execute these steps with tools.'
+  it('no longer advertises a not-yet-implemented executor step', () => {
+    expect(renderReply(progress(aPlan), true)).not.toContain('not yet implemented');
+  });
+
+  const withExecution = (execution: PartialExecution): ReplyProgress => ({
+    intent: 'planning',
+    reason: 'needs steps',
+    plan: aPlan,
+    execution,
+  });
+
+  it('renders the execution transcript behind its header after the plan', () => {
+    const text = renderReply(withExecution(anExecution), true);
+    expect(text).toContain('**Plan:** Add a feature');
+    const planAt = text.indexOf('**Plan:**');
+    const executionAt = text.indexOf('**Execution:**');
+    expect(executionAt).toBeGreaterThan(planAt);
+    expect(text).toContain('- **search** `{"query":"*"}` → `src/a.ts`');
+    expect(text).toContain('All steps are done.');
+  });
+
+  it('renders growing execution snapshots as prefix-extensions of each other', () => {
+    const snapshots: PartialExecution[] = [
+      { events: [] },
+      { events: [{ kind: 'text', text: 'Sear' }] },
+      { events: [{ kind: 'text', text: 'Searching.' }] },
+      {
+        events: [
+          { kind: 'text', text: 'Searching.' },
+          { kind: 'tool', tool: 'search', input: '{"query":"*"}' },
+        ],
+      },
+      {
+        events: [
+          { kind: 'text', text: 'Searching.' },
+          { kind: 'tool', tool: 'search', input: '{"query":"*"}', result: 'src/a.ts' },
+        ],
+      },
+      {
+        events: [
+          { kind: 'text', text: 'Searching.' },
+          { kind: 'tool', tool: 'search', input: '{"query":"*"}', result: 'src/a.ts' },
+          { kind: 'text', text: 'Done.' },
+        ],
+      },
+    ];
+
+    let previous = '';
+    for (const snapshot of snapshots) {
+      const rendered = renderReply(withExecution(snapshot), false);
+      expect(rendered.startsWith(previous)).toBe(true);
+      previous = rendered;
+    }
+    const final = renderReply(
+      withExecution(snapshots[snapshots.length - 1]),
+      true
     );
+    expect(final.startsWith(previous)).toBe(true);
+  });
+
+  it('stays a prefix-extension across the plan-to-execution transition', () => {
+    // While the plan streams, then once execution starts, the render must
+    // keep extending what was already emitted.
+    const stages = [
+      renderReply(progress({ summary: 'Add a feature', steps: [] }), false),
+      renderReply(progress(aPlan), false),
+      renderReply(withExecution({ events: [] }), false),
+      renderReply(
+        withExecution({ events: [{ kind: 'tool', tool: 'read', input: '{}' }] }),
+        false
+      ),
+    ];
+    for (let i = 1; i < stages.length; i++) {
+      expect(stages[i].startsWith(stages[i - 1])).toBe(true);
+    }
+  });
+
+  it('ends the render at a tool call that has no result yet', () => {
+    const text = renderReply(
+      withExecution({
+        events: [{ kind: 'tool', tool: 'run', input: '{"command":"npm test"}' }],
+      }),
+      false
+    );
+    expect(text.endsWith('- **run** `{"command":"npm test"}`')).toBe(true);
+  });
+
+  it('marks a failed tool call in the transcript', () => {
+    const text = renderReply(
+      withExecution({
+        events: [
+          {
+            kind: 'tool',
+            tool: 'read',
+            input: '{"path":"../x"}',
+            result: 'Path is outside the workspace: ../x',
+            failed: true,
+          },
+        ],
+      }),
+      true
+    );
+    expect(text).toContain('→ **failed** `Path is outside the workspace: ../x`');
+  });
+
+  it('flattens result previews onto one backtick-safe line', () => {
+    const text = renderReply(
+      withExecution({
+        events: [
+          {
+            kind: 'tool',
+            tool: 'read',
+            input: '{"path":"a.md"}',
+            result: 'line `one`\nline two',
+          },
+        ],
+      }),
+      true
+    );
+    expect(text).toContain("→ `line 'one' line two`");
+  });
+
+  it('labels an empty tool result instead of rendering empty backticks', () => {
+    const text = renderReply(
+      withExecution({
+        events: [{ kind: 'tool', tool: 'read', input: '{"path":"a.md"}', result: '' }],
+      }),
+      true
+    );
+    expect(text).toContain('→ `(no output)`');
   });
 
   it('renders the answer behind its header', () => {

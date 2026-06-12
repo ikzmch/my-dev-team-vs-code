@@ -14,12 +14,13 @@ actions (run command, write file) are gated by an **approval seam**, so the chat
 confirmation can later be swapped for a rich Webview diff dialog **without
 touching the agent core**.
 
-> **Status:** the routing layer (triage), the **planner**, and the **oneshot
-> answerer** are live; the **executor is not wired up yet**. Today the workflow
-> classifies your request, answers `oneshot` questions directly, and drafts a
-> step-by-step plan for `planning` requests — but it does not yet execute that
-> plan with tools. See [Current behavior](#current-behavior) and
-> [Roadmap](#roadmap).
+> **Status:** the full pipeline is live - the routing layer (triage), the
+> **planner**, the **oneshot answerer**, and the **executor**. The workflow
+> classifies your request, answers `oneshot` questions directly, and for
+> `planning` requests drafts a step-by-step plan and then **executes it**: the
+> executor's capability-routed model drives a tool-calling loop over the four
+> workspace tools, with side effects gated by the approval seam. See
+> [Current behavior](#current-behavior) and [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -31,6 +32,7 @@ src/
       triage.md           triage config: frontmatter + system prompt
       planner.md          planner config: frontmatter + system prompt
       answerer.md         answerer config: frontmatter + system prompt
+      executor.md         executor config: frontmatter + system prompt
     models/
       *.md                one registered model per file: provider, model id, capability scores
     tools/
@@ -44,14 +46,16 @@ src/
     messages.ts           user-facing chat copy (progress, errors, warnings, templates)
   core/
     types.ts              Approver — the approval seam
-    workflow.ts           Mastra workflow: triage -> branch -> plan | answer; streams reply progress to a per-run sink
+    workflow.ts           Mastra workflow: triage -> plan -> execute | answer; streams reply progress to a per-run sink
     models.ts             provider wiring: turns the selected registry entry into an AI SDK model
     triage.ts             Mastra agent: triage request as oneshot | planning
     planner.ts            Mastra agent: draft an ordered, tool-aware plan, streamed as partial snapshots
     answerer.ts           Mastra agent: answer a oneshot request directly, streamed as accumulated text
+    executor.ts           Mastra agent: walk the plan in a tool-calling loop, streamed as a transcript
   tools/
     workspaceTools.ts     read / search / run / write (UI-agnostic)
     registerTools.ts      registers tools with vscode.lm
+    agentTools.ts         the same four tools as Mastra createTool()s for the executor's loop
   ui/
     chatParticipant.ts    chat handler, streaming reply renderer + Phase-1 ChatApprover
     startupCheck.ts       activation health check: ping Ollama, verify routed models are pulled
@@ -97,11 +101,25 @@ core/workflow.ts               Mastra workflow (createWorkflow + createStep)
         │                         pushes the triage decision and the growing
         │                         answer text to the sink as the model streams
         ▼
+      branch
+        ├─▶ execute-plan       ── Executor.execute(executionPrompt, onPartial)  (a plan was drafted)
+        │                         prompt + attachment text + the numbered plan;
+        │                         Mastra runs the tool-calling loop over the four
+        │                         workspace tools (run/write Approver-gated);
+        │                         → { events[] } transcript (capability-routed model);
+        │                         pushes every transcript snapshot to the sink
+        └─▶ deliver-answer     ── pass-through for the oneshot path, so a oneshot
+        │                         run never starts (or shows progress for) an
+        ▼                         executor step
   the UI streams the reply onto the chat panel as it forms: each snapshot is
   rendered conservatively and only the newly appended markdown is emitted,
-  then the validated final result completes the render. An executor step
-  would walk the plan's steps here.
+  then the validated final result completes the render.
 ```
+
+The branch steps carry the original `prompt`/`attachments` forward (the
+`StagedReplySchema` superset of the reply), because the execute step still
+needs them to brief the executor; the final steps strip them off again so the
+workflow's output is just the reply.
 
 ### Configuration vs. code (`config/`)
 
@@ -119,7 +137,7 @@ inline.
 | `config/models.ts`           | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
 | `config/frontmatter.ts`      | Minimal parser for the frontmatter subset the config files use |
-| `config/settings.ts`         | Operational limits: run timeout/output buffer, read cap, search caps + excludes, truncation. The Ollama endpoint, run timeout, and search caps are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/settings.ts`         | Operational limits: run timeout/output buffer, read cap, search caps + excludes, truncation, and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths). The Ollama endpoint, run timeout, and search caps are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
 | `config/messages.ts`         | Progress labels, error text, startup warnings, and reply markdown templates |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
@@ -199,6 +217,7 @@ registered model can run.
 | `triage`   | classification 1, speed 0.8, structured-output 0.5           | Ollama `qwen3:8b` |
 | `planner`  | planning 1, reasoning 0.8, structured-output 0.6, speed 0.3  | Ollama `qwen3:14b`|
 | `answerer` | reasoning 1, speed 0.9                                       | Ollama `qwen3:8b` |
+| `executor` | coding 1, reasoning 0.7, speed 0.3                           | Ollama `qwen3-coder` |
 
 ```yaml
 # config/models/qwen3-14b.md — a registered model (scores):
@@ -230,11 +249,68 @@ model: resolveModel(agents.planner.capabilities),
 //   const factories = { ollama: …, anthropic: (model) => anthropic(model) };
 ```
 
+### Executor (`core/executor.ts` + `tools/agentTools.ts`)
+
+The executor is the step that turns a drafted plan into actual work. Design
+decisions, in the order they matter:
+
+- **Mastra drives the loop, not hand-rolled control flow.** The `Executor`
+  wraps a Mastra `Agent` constructed with `tools: buildAgentTools(approver)`
+  and calls `agent.stream(prompt, { maxSteps: settings.executor.maxSteps })`.
+  Mastra handles the model→tool-calls→results→model iteration; the step cap
+  bounds a runaway loop. The executor itself only *observes* the run.
+- **Briefing.** The executor's prompt (`executionPrompt` in
+  `core/workflow.ts`) is the full request - prompt plus inlined attachment
+  text, exactly what the planner saw - followed by a `--- Drafted plan ---`
+  section: the plan summary and the numbered steps with their tool hints
+  (`1. Find the file (tool: search) - locate it`; a `none` hint is a schema
+  artifact and is omitted). The plan is guidance, not a script: the system
+  prompt tells the model to follow it in order but skip steps already covered
+  by earlier results.
+- **The product is a transcript.** `Executor.execute` drains the run's
+  `fullStream` of chunks and folds them into an ordered list of events
+  (`ExecutionSchema`): `text` events (the model's commentary and final
+  report, accumulated from `text-delta` chunks) interleaved with `tool`
+  events (`tool-call` chunks open one with the tool name and a compact-JSON
+  args preview; the matching `tool-result`/`tool-error` chunk - correlated by
+  `toolCallId` - completes it with a result preview and a `failed` flag).
+  Order is preserved because "searched, then wrote, then reported" *is* the
+  answer. Previews are bounded (`settings.executor.*PreviewMaxChars`): the
+  model saw the full values, the transcript only shows the user what
+  happened. A run-level `error` chunk throws, failing the workflow step so
+  the UI renders the executor error with the Ollama hint.
+- **Streaming snapshots.** Like the planner's partial plans, the executor
+  forwards grow-only snapshots to an optional `onPartial` callback: events
+  are only appended, and only the last event still changes (a text event
+  grows, a tool event gains its result). Each emission is a shallow copy, so
+  a sink sees the state as of that moment, not a live view. Draining the
+  stream is what drives the loop, so it runs even with no listener.
+- **Rendering.** `renderReply` appends an `**Execution:**` section after the
+  (now complete, so unconservatively rendered) plan. Each event's markdown is
+  itself append-only - the call line is emitted when the call starts and the
+  result suffix when it lands - so successive renders stay prefix-extensions
+  of each other, which is exactly what the append-only `ReplyStreamer`
+  needs. A tool call still awaiting its result ends a partial render.
+  Previews are flattened to one backtick-safe line; an empty result renders
+  as `(no output)`.
+- **Approvals are unchanged.** `agentTools.ts` wraps the same
+  `workspaceTools.ts` implementations the editor-wide registrations use, so
+  `run` and `write` invoke the same `Approver` with the same command echo /
+  before-after preview. A decline is not an error: the tool returns the
+  "not approved" message and the system prompt tells the model to skip that
+  action and note it in the report.
+
 ### Tools (`tools/`)
 
 Declared in `package.json` under `contributes.languageModelTools` and
 registered with `vscode.lm.registerTool` in `registerTools.ts`. The
-implementations in `workspaceTools.ts` are UI-agnostic.
+implementations in `workspaceTools.ts` are UI-agnostic, and they are exposed
+on **two surfaces** that share them: `registerTools.ts` adapts them to the
+Language Model Tools API (so any tool-calling chat model in the editor can
+invoke them), and `agentTools.ts` adapts the same functions to Mastra
+`createTool()`s with zod input schemas mirroring the package.json
+contribution - that is the toolset the executor's tool-calling loop runs
+over. Either way the same Approver gates the same side effects.
 
 | Tool                   | Effect                          | Approval        |
 | ---------------------- | ------------------------------- | --------------- |
@@ -294,10 +370,23 @@ Out of the box, `@devteam <prompt>`:
    writes it. The partial-JSON snapshots are rendered conservatively so the
    already-emitted markdown is never revised, and the validated final result
    completes the reply.
+7. Then streams "Executing the plan…" and **executes the plan**: the
+   executor's routed model (currently `qwen3-coder`) is briefed with the full
+   request plus the numbered plan and runs a Mastra tool-calling loop over
+   `read`/`search`/`run`/`write` (up to `settings.executor.maxSteps`
+   iterations). The transcript streams in behind an "**Execution:**" header
+   as it happens: the model's commentary, one line per tool call
+   (`- **tool** \`args\``) completed with a flattened, truncated result
+   preview (`→ \`…\``, or `→ **failed** \`…\`` when the tool errored), and
+   the executor's closing report of what changed.
+8. Side effects still ask first: when the loop reaches a `run` or `write`
+   call, the `ChatApprover` echoes the command / file diff preview into the
+   chat and gates it behind a modal. Declining does not abort the run - the
+   tool returns "not approved" to the model, which is instructed to skip that
+   action and carry on, noting the skip in its report.
 
-The four workspace tools are registered and callable by any VS Code chat model
-that supports tool calling; the workflow itself does not yet drive a
-tool-calling loop.
+The four workspace tools also stay registered with `vscode.lm`, callable by
+any VS Code chat model that supports tool calling.
 
 Cancelling the chat request cancels the workflow run (and with it the model
 call) instead of letting it finish in the background; a cancelled turn stops
@@ -319,8 +408,8 @@ model the router selected for that agent pulled.
   ollama serve                 # listens on http://localhost:11434
   ollama pull qwen3:8b         # currently selected for triage and the answerer
   ollama pull qwen3:14b        # currently selected for the planner
+  ollama pull qwen3-coder      # currently selected for the executor
   ollama pull gemma3:4b        # registered fast fallback
-  ollama pull qwen3-coder      # registered code specialist
   ```
 
   If your server listens elsewhere, set `myDevTeam.ollama.endpoint`; the
@@ -339,8 +428,8 @@ npm run build      # esbuild bundle -> dist/extension.js
 
 In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 An `/explain` slash command is declared in `package.json`, but it has no
-dedicated handling yet — its prompt flows through the same triage → plan
-workflow as any other message.
+dedicated handling yet — its prompt flows through the same
+triage → plan → execute workflow as any other message.
 
 Scripts:
 
@@ -368,23 +457,19 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Tech stack
 
-- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (triage, planner, answerer) + the orchestrating workflow
+- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (triage, planner, answerer, executor), the executor's tool-calling loop (`createTool` + `agent.stream` with `maxSteps`), and the orchestrating workflow
 - **[Vercel AI SDK](https://sdk.vercel.ai)** (`ai`) — model interface
 - **`ollama-ai-provider-v2`** — AI SDK provider for local Ollama models
-- **`zod`** — structured-output schemas for the triage agent and planner, the workflow's step I/O schemas, and validation of the `.md` config frontmatter (agents, models, tools)
+- **`zod`** — structured-output schemas for the triage agent and planner, the executor's transcript and tool-input schemas, the workflow's step I/O schemas, and validation of the `.md` config frontmatter (agents, models, tools)
 - **VS Code Chat + Language Model Tools APIs** — the front end and tool surface
 
 ## Roadmap
 
-- **Wire the executor.** The planner and the oneshot answerer are live: the
-  workflow branches on intent, answers `oneshot` requests directly
-  (`core/answerer.ts`), and drafts a plan with the capability-routed planner
-  model (`core/planner.ts`) for `planning` requests. What's left is an
-  executor step in `core/workflow.ts` that walks the plan's steps and runs a
-  tool-calling loop over the registered tools (with `Approver`-gated side
-  effects) — an executor agent would simply declare `coding`-heavy capability
-  weights and let the router pick (e.g. the registered `qwen3-coder`, or a
-  paid Anthropic model once that provider is added to the registry).
+- **Use conversation history.** The handler ignores `ChatContext.history`, so
+  every turn starts from scratch: "now rename it too" has no idea what "it"
+  is. Fold prior turns into the workflow input (with a size cap like the
+  attachment truncation); this would also make the `/explain` command
+  meaningful.
 - **Add a Webview front end.**
   1. Add a `WebviewApprover implements Approver` with a diff/confirm UI.
   2. Pass it instead of `ChatApprover` in `extension.ts`.

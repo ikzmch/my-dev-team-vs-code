@@ -6,6 +6,7 @@ import {
   replyProgressKey,
   triagePrompt,
   fullPrompt,
+  executionPrompt,
   Attachment,
   DevTeamWorkflow,
   ReplyProgress,
@@ -14,6 +15,7 @@ import {
 import { TriageResult } from '../src/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/core/planner';
 import { AnswerProgress } from '../src/core/answerer';
+import { ExecutionProgress, ExecutionResult, PartialExecution } from '../src/core/executor';
 
 function fakeTriage(impl: (prompt: string) => Promise<TriageResult>) {
   return { classify: impl } as any;
@@ -32,9 +34,25 @@ function fakeAnswerer(
   return { answer: impl } as any;
 }
 
+function fakeExecutor(
+  impl: (
+    prompt: string,
+    onPartial?: ExecutionProgress
+  ) => Promise<ExecutionResult> = async () => anExecution
+) {
+  return { execute: impl } as any;
+}
+
 const aPlan: PlanResult = {
   summary: 'Add a feature',
   steps: [{ title: 'Find the file', tool: 'search', detail: 'locate it' }],
+};
+
+const anExecution: ExecutionResult = {
+  events: [
+    { kind: 'tool', tool: 'search', input: '{"query":"*"}', result: 'src/a.ts' },
+    { kind: 'text', text: 'Done.' },
+  ],
 };
 
 async function runWorkflow(workflow: DevTeamWorkflow, prompt: string) {
@@ -43,15 +61,20 @@ async function runWorkflow(workflow: DevTeamWorkflow, prompt: string) {
 }
 
 describe('dev-team workflow routing', () => {
-  it('routes a oneshot request to the answerer and skips the planner', async () => {
+  it('routes a oneshot request to the answerer and skips planner and executor', async () => {
     let plannerCalled = false;
+    let executorCalled = false;
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'oneshot', reason: 'simple question' })),
       fakePlanner(async () => {
         plannerCalled = true;
         return aPlan;
       }),
-      fakeAnswerer(async () => 'It is 4.')
+      fakeAnswerer(async () => 'It is 4.'),
+      fakeExecutor(async () => {
+        executorCalled = true;
+        return anExecution;
+      })
     );
 
     const result = await runWorkflow(workflow, 'what is 2+2');
@@ -65,9 +88,10 @@ describe('dev-team workflow routing', () => {
       });
     }
     expect(plannerCalled).toBe(false);
+    expect(executorCalled).toBe(false);
   });
 
-  it('routes a planning request through the planner and skips the answerer', async () => {
+  it('routes a planning request through the planner and the executor', async () => {
     let answererCalled = false;
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'planning', reason: 'multi-step' })),
@@ -75,7 +99,8 @@ describe('dev-team workflow routing', () => {
       fakeAnswerer(async () => {
         answererCalled = true;
         return 'unused';
-      })
+      }),
+      fakeExecutor()
     );
 
     const result = await runWorkflow(workflow, 'add a feature');
@@ -85,6 +110,7 @@ describe('dev-team workflow routing', () => {
       expect(result.result.intent).toBe('planning');
       expect(result.result.reason).toBe('multi-step');
       expect(result.result.plan).toEqual(aPlan);
+      expect(result.result.execution).toEqual(anExecution);
       expect(result.result.answer).toBeUndefined();
     }
     expect(answererCalled).toBe(false);
@@ -101,13 +127,34 @@ describe('dev-team workflow routing', () => {
         seen.planner = p;
         return aPlan;
       }),
-      fakeAnswerer()
+      fakeAnswerer(),
+      fakeExecutor()
     );
 
     await runWorkflow(workflow, 'refactor the module');
 
     expect(seen.triage).toBe('refactor the module');
     expect(seen.planner).toBe('refactor the module');
+  });
+
+  it('hands the executor the prompt plus the drafted plan', async () => {
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async (p) => {
+        seen.executor = p;
+        return anExecution;
+      })
+    );
+
+    await runWorkflow(workflow, 'refactor the module');
+
+    expect(seen.executor).toContain('refactor the module');
+    expect(seen.executor).toContain('--- Drafted plan ---');
+    expect(seen.executor).toContain('Add a feature');
+    expect(seen.executor).toContain('1. Find the file (tool: search) - locate it');
   });
 
   it('hands the original prompt to the answerer on the oneshot path', async () => {
@@ -118,7 +165,8 @@ describe('dev-team workflow routing', () => {
       fakeAnswerer(async (p) => {
         seen.answerer = p;
         return 'ok';
-      })
+      }),
+      fakeExecutor()
     );
 
     await runWorkflow(workflow, 'what is a closure');
@@ -126,7 +174,7 @@ describe('dev-team workflow routing', () => {
     expect(seen.answerer).toBe('what is a closure');
   });
 
-  it('gives triage attachment labels only and the planner the full text', async () => {
+  it('gives triage attachment labels only; planner and executor the full text', async () => {
     const attachments: Attachment[] = [
       { label: 'File: src/a.ts', text: 'file body' },
     ];
@@ -140,7 +188,11 @@ describe('dev-team workflow routing', () => {
         seen.planner = p;
         return aPlan;
       }),
-      fakeAnswerer()
+      fakeAnswerer(),
+      fakeExecutor(async (p) => {
+        seen.executor = p;
+        return anExecution;
+      })
     );
 
     const run = await workflow.createRun();
@@ -151,6 +203,8 @@ describe('dev-team workflow routing', () => {
     expect(seen.triage).not.toContain('file body');
     expect(seen.planner).toContain('--- Attached context ---');
     expect(seen.planner).toContain('file body');
+    expect(seen.executor).toContain('file body');
+    expect(seen.executor).toContain('--- Drafted plan ---');
   });
 
   it('gives the answerer the full attachment text on the oneshot path', async () => {
@@ -164,7 +218,8 @@ describe('dev-team workflow routing', () => {
       fakeAnswerer(async (p) => {
         seen.answerer = p;
         return 'ok';
-      })
+      }),
+      fakeExecutor()
     );
 
     const run = await workflow.createRun();
@@ -179,7 +234,8 @@ describe('dev-team workflow routing', () => {
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'planning', reason: 'x' })),
       fakePlanner(async () => aPlan),
-      fakeAnswerer()
+      fakeAnswerer(),
+      fakeExecutor()
     );
 
     const startedSteps: string[] = [];
@@ -194,6 +250,31 @@ describe('dev-team workflow routing', () => {
 
     expect(startedSteps).toContain(stepIds.triage);
     expect(startedSteps).toContain(stepIds.plan);
+    expect(startedSteps).toContain(stepIds.execute);
+  });
+
+  it('never starts the executor step on the oneshot path', async () => {
+    // The UI maps a step start onto a progress label, so an executor step
+    // starting on a oneshot run would flash a wrong "Executing…" label.
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor()
+    );
+
+    const startedSteps: string[] = [];
+    const run = await workflow.createRun();
+    const unwatch = run.watch((event) => {
+      if (event.type === 'workflow-step-start') {
+        startedSteps.push(event.payload.id);
+      }
+    });
+    await run.start({ inputData: { prompt: 'what is 2+2' } });
+    unwatch();
+
+    expect(startedSteps).toContain(stepIds.answer);
+    expect(startedSteps).not.toContain(stepIds.execute);
   });
 });
 
@@ -226,6 +307,25 @@ describe('prompt assembly', () => {
     expect(prompt).toContain('File: src/a.ts\n```\nconst a = 1;\n```');
     expect(prompt).toContain('Selection from src/b.ts (line 2)\n```\nline1\n```');
   });
+
+  it('appends the numbered plan with tool hints to the execution prompt', () => {
+    const plan: PlanResult = {
+      summary: 'Do the work',
+      steps: [
+        { title: 'Find the file', tool: 'search', detail: 'locate it' },
+        { title: 'Think', tool: 'none', detail: 'reason about it' },
+      ],
+    };
+    const prompt = executionPrompt({ prompt: 'refactor', attachments }, plan);
+    expect(prompt).toContain('refactor');
+    expect(prompt).toContain('--- Attached context ---');
+    expect(prompt).toContain('const a = 1;');
+    expect(prompt).toContain('--- Drafted plan ---\nDo the work\n');
+    expect(prompt).toContain('1. Find the file (tool: search) - locate it');
+    // "none" is a schema artifact, not a real tool; the executor must not see it.
+    expect(prompt).toContain('2. Think - reason about it');
+    expect(prompt).not.toContain('(tool: none)');
+  });
 });
 
 describe('dev-team workflow reply progress', () => {
@@ -248,7 +348,8 @@ describe('dev-team workflow reply progress', () => {
         }
         return aPlan;
       }),
-      fakeAnswerer()
+      fakeAnswerer(),
+      fakeExecutor(async () => anExecution)
     );
 
     const seen: ReplyProgress[] = [];
@@ -258,10 +359,46 @@ describe('dev-team workflow reply progress', () => {
       requestContext: sinkContext((progress) => seen.push(progress)),
     });
 
-    expect(seen).toEqual([
+    expect(seen.slice(0, 3)).toEqual([
       { intent: 'planning', reason: 'multi-step' },
       { intent: 'planning', reason: 'multi-step', plan: partials[0] },
       { intent: 'planning', reason: 'multi-step', plan: partials[1] },
+    ]);
+  });
+
+  it('streams the completed plan and every execution snapshot through the sink', async () => {
+    const partials: PartialExecution[] = [
+      { events: [{ kind: 'tool', tool: 'search', input: '{"query":"*"}' }] },
+      {
+        events: [
+          { kind: 'tool', tool: 'search', input: '{"query":"*"}', result: 'src/a.ts' },
+        ],
+      },
+    ];
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'multi-step' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async (_prompt, onPartial) => {
+        for (const partial of partials) {
+          onPartial?.(partial);
+        }
+        return anExecution;
+      })
+    );
+
+    const seen: ReplyProgress[] = [];
+    const run = await workflow.createRun();
+    await run.start({
+      inputData: { prompt: 'add a feature' },
+      requestContext: sinkContext((progress) => seen.push(progress)),
+    });
+
+    const base = { intent: 'planning', reason: 'multi-step', plan: aPlan };
+    expect(seen.slice(-3)).toEqual([
+      base,
+      { ...base, execution: partials[0] },
+      { ...base, execution: partials[1] },
     ]);
   });
 
@@ -275,7 +412,8 @@ describe('dev-team workflow reply progress', () => {
           onPartial?.(snapshot);
         }
         return 'It is 4.';
-      })
+      }),
+      fakeExecutor()
     );
 
     const seen: ReplyProgress[] = [];
@@ -301,7 +439,25 @@ describe('dev-team workflow reply progress', () => {
         receivedCallback = onPartial;
         return aPlan;
       }),
-      fakeAnswerer()
+      fakeAnswerer(),
+      fakeExecutor()
+    );
+
+    const result = await runWorkflow(workflow, 'add a feature');
+    expect(result.status).toBe('success');
+    expect(receivedCallback).toBeUndefined();
+  });
+
+  it('hands the executor no callback when no sink was provided', async () => {
+    let receivedCallback: ExecutionProgress | undefined | 'unset' = 'unset';
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async (_prompt, onPartial) => {
+        receivedCallback = onPartial;
+        return anExecution;
+      })
     );
 
     const result = await runWorkflow(workflow, 'add a feature');
@@ -317,7 +473,8 @@ describe('dev-team workflow reply progress', () => {
       fakeAnswerer(async (_prompt, onPartial) => {
         receivedCallback = onPartial;
         return 'ok';
-      })
+      }),
+      fakeExecutor()
     );
 
     const result = await runWorkflow(workflow, 'what is 2+2');
@@ -333,7 +490,8 @@ describe('dev-team workflow failures', () => {
         throw new Error('connection refused');
       }),
       fakePlanner(async () => aPlan),
-      fakeAnswerer()
+      fakeAnswerer(),
+      fakeExecutor()
     );
 
     const result = await runWorkflow(workflow, 'hi');
@@ -351,7 +509,8 @@ describe('dev-team workflow failures', () => {
       fakePlanner(async () => {
         throw new Error('model not found');
       }),
-      fakeAnswerer()
+      fakeAnswerer(),
+      fakeExecutor()
     );
 
     const result = await runWorkflow(workflow, 'do work');
@@ -363,13 +522,34 @@ describe('dev-team workflow failures', () => {
     }
   });
 
+  it('fails the run on the execute step when the executor throws', async () => {
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'needs steps' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async () => {
+        throw new Error('model not found');
+      })
+    );
+
+    const result = await runWorkflow(workflow, 'do work');
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') {
+      expect(result.error.message).toContain('model not found');
+      expect(result.steps[stepIds.execute]?.status).toBe('failed');
+      expect(result.steps[stepIds.plan]?.status).toBe('success');
+    }
+  });
+
   it('fails the run on the answer step when the answerer throws', async () => {
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'oneshot', reason: 'simple' })),
       fakePlanner(async () => aPlan),
       fakeAnswerer(async () => {
         throw new Error('model not found');
-      })
+      }),
+      fakeExecutor()
     );
 
     const result = await runWorkflow(workflow, 'what is 2+2');
