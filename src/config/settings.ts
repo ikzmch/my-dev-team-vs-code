@@ -99,9 +99,6 @@ export const settings = {
     maxFileSizeBytes: 1024 * 1024,
   },
 
-  /** Max characters of a file shown in the write-approval before/after preview. */
-  writePreviewMaxChars: 800,
-
   /** Limits on the executor's tool-calling loop and its transcript previews. */
   executor: {
     /** Max model->tools->model iterations before the loop is cut off. */

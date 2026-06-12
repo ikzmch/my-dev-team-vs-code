@@ -206,55 +206,28 @@ describe('runCommand', () => {
 });
 
 describe('writeFile', () => {
-  it('does not write when the user declines', async () => {
-    const approver = makeApprover(false);
-    const out = await writeFile('new.ts', 'content', approver);
-    expect(out).toBe('Write was not approved by the user.');
-    expect(__state.files.has('/ws/new.ts')).toBe(false);
-  });
-
-  it('writes the file and reports byte length when approved', async () => {
-    const out = await writeFile('new.ts', 'hello', makeApprover(true));
+  it('writes the file and reports byte length', async () => {
+    const out = await writeFile('new.ts', 'hello');
     expect(out).toBe('Wrote new.ts (5 bytes).');
     expect(__state.files.get('/ws/new.ts')).toBe('hello');
   });
 
   it('reports utf8 bytes, not characters, for multi-byte content', async () => {
     // "héllo" is 5 characters but 6 utf8 bytes.
-    const out = await writeFile('uni.ts', 'héllo', makeApprover(true));
+    const out = await writeFile('uni.ts', 'héllo');
     expect(out).toBe('Wrote uni.ts (6 bytes).');
   });
 
-  it('rejects a traversal path before asking for approval', async () => {
-    const approver = makeApprover(true);
-    await expect(writeFile('../evil.ts', 'x', approver)).rejects.toThrow(
+  it('overwrites an existing file with the new contents', async () => {
+    __setFile('exists.ts', 'old body');
+    await writeFile('exists.ts', 'new body');
+    expect(__state.files.get('/ws/exists.ts')).toBe('new body');
+  });
+
+  it('rejects a traversal path without writing', async () => {
+    await expect(writeFile('../evil.ts', 'x')).rejects.toThrow(
       /outside the workspace/
     );
-    expect(approver.calls).toHaveLength(0);
     expect([...__state.files.keys()].some((k) => k.includes('evil'))).toBe(false);
-  });
-
-  it('labels a brand-new file as "(new file)" in the approval preview', async () => {
-    const approver = makeApprover(true);
-    await writeFile('fresh.ts', 'x', approver);
-    expect(approver.calls[0].detail).toContain('--- current ---\n(new file)');
-    expect(approver.calls[0].detail).toContain('--- proposed ---\nx');
-  });
-
-  it('shows existing contents in the preview when overwriting', async () => {
-    __setFile('exists.ts', 'old body');
-    const approver = makeApprover(true);
-    await writeFile('exists.ts', 'new body', approver);
-    expect(approver.calls[0].detail).toContain('--- current ---\nold body');
-    expect(approver.calls[0].detail).toContain('--- proposed ---\nnew body');
-  });
-
-  it('truncates long previews to keep the prompt small', async () => {
-    const approver = makeApprover(true);
-    const big = 'a'.repeat(2000);
-    await writeFile('big.ts', big, approver);
-    expect(approver.calls[0].detail).toContain('…(truncated)');
-    // The seeded content is still written in full regardless of preview cap.
-    expect(__state.files.get('/ws/big.ts')).toBe(big);
   });
 });

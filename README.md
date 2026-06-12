@@ -9,10 +9,10 @@ The agent routes each request through a **local triage agent** (Ollama via
 the Vercel AI SDK + Mastra) before deciding how to respond. Agents don't name
 models: each declares **weighted capability requirements**, and a router picks
 the best match from a **registry of models scored per capability**, discovered
-from `.md` config files at build time. Side-effecting
-actions (run command, write file) are gated by an **approval seam**, so the chat
-confirmation can later be swapped for a rich Webview diff dialog **without
-touching the agent core**.
+from `.md` config files at build time. The side-effecting
+run-command action is gated by an **approval seam**, so the chat confirmation
+can later be swapped for a rich Webview dialog **without touching the agent
+core**; file writes apply directly without asking.
 
 > **Status:** the full pipeline is live - the routing layer (triage), the
 > **planner**, the **oneshot answerer**, and the **executor**. The workflow
@@ -105,7 +105,7 @@ core/workflow.ts               Mastra workflow (createWorkflow + createStep)
         ├─▶ execute-plan       ── Executor.execute(executionPrompt, onPartial)  (a plan was drafted)
         │                         prompt + attachment text + the numbered plan;
         │                         Mastra runs the tool-calling loop over the four
-        │                         workspace tools (run/write Approver-gated);
+        │                         workspace tools (run Approver-gated);
         │                         → { events[] } transcript (capability-routed model);
         │                         pushes every transcript snapshot to the sink
         └─▶ deliver-answer     ── pass-through for the oneshot path, so a oneshot
@@ -297,10 +297,10 @@ decisions, in the order they matter:
   as `(no output)`.
 - **Approvals are unchanged.** `agentTools.ts` wraps the same
   `workspaceTools.ts` implementations the editor-wide registrations use, so
-  `run` and `write` invoke the same `Approver` with the same command echo /
-  before-after preview. A decline is not an error: the tool returns the
-  "not approved" message and the system prompt tells the model to skip that
-  action and note it in the report.
+  `run` invokes the same `Approver` with the same command echo (`write`
+  applies directly, no approval). A decline is not an error: the tool returns
+  the "not approved" message and the system prompt tells the model to skip
+  that action and note it in the report.
 
 ### Tools (`tools/`)
 
@@ -319,7 +319,7 @@ over. Either way the same Approver gates the same side effects.
 | `devteam__read`        | Read a file's text              | none (read-only)|
 | `devteam__search`      | Glob file names or grep content | none (read-only)|
 | `devteam__run`         | Run a shell command (configurable timeout, 60s default) | **Approver** |
-| `devteam__write`       | Create/overwrite a file         | **Approver**    |
+| `devteam__write`       | Create/overwrite a file         | none            |
 
 The tools treat their inputs as untrusted (they are callable by any
 tool-calling chat model in the editor, not just `@devteam`):
@@ -336,16 +336,16 @@ tool-calling chat model in the editor, not just `@devteam`):
   buffer; a failed command's stdout and stderr are returned so a caller can
   diagnose it.
 
-Side-effecting tools call `approver.confirm(title, detail)`. The Phase-1
-`ChatApprover` renders the proposed action into the chat panel followed by
-**Approve / Decline buttons** (wired through the `myDevTeam.approval`
-command) and blocks the tool until one is clicked; a finished or cancelled
-request declines whatever is still pending so a run can never hang on an
-unanswered question. When a tool is invoked outside a `@devteam` turn (they
-are registered editor-wide, so any chat model can call them) there is no
-stream to ask in, and the approver falls back to a modal dialog. The
-`writeFile` tool builds a current/proposed preview so the approval question
-shows what will change.
+The side-effecting `run` tool calls `approver.confirm(title, detail)`. The
+Phase-1 `ChatApprover` renders the proposed action into the chat panel
+followed by **Approve / Decline buttons** (wired through the
+`myDevTeam.approval` command) and blocks the tool until one is clicked; a
+finished or cancelled request declines whatever is still pending so a run can
+never hang on an unanswered question. When a tool is invoked outside a
+`@devteam` turn (they are registered editor-wide, so any chat model can call
+them) there is no stream to ask in, and the approver falls back to a modal
+dialog. The `write` tool is not gated: it validates the path and writes
+immediately.
 
 ## Current behavior
 
@@ -398,14 +398,14 @@ Out of the box, `@devteam <prompt>`:
    `previewArg` fall back to compact args JSON) completed with a flattened,
    truncated result preview (`→ \`…\``, or `→ **failed** \`…\`` when the
    tool errored), and the executor's closing report of what changed.
-8. Side effects still ask first: when the loop reaches a `run` or `write`
-   call, the `ChatApprover` renders the command / file preview into the chat
-   followed by Approve and Decline buttons and waits for the click. A
-   cancelled request declines pending approvals automatically, and a tool
-   invoked outside a `@devteam` turn falls back to a modal dialog. Declining
-   does not abort the run - the tool returns "not approved" to the model,
-   which is instructed to skip that action and carry on, noting the skip in
-   its report.
+8. Shell commands still ask first: when the loop reaches a `run` call, the
+   `ChatApprover` renders the command into the chat followed by Approve and
+   Decline buttons and waits for the click. A cancelled request declines
+   pending approvals automatically, and a tool invoked outside a `@devteam`
+   turn falls back to a modal dialog. Declining does not abort the run - the
+   tool returns "not approved" to the model, which is instructed to skip that
+   action and carry on, noting the skip in its report. `write` calls apply
+   directly without an approval prompt.
 
 The four workspace tools also stay registered with `vscode.lm`, callable by
 any VS Code chat model that supports tool calling.

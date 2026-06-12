@@ -75,8 +75,9 @@ describe('registerTools', () => {
     expect(out).toBe('Command was not approved by the user.');
   });
 
-  it('write tool persists the file when approved', async () => {
-    registerTools(fakeContext() as any, makeApprover(true));
+  it('write tool persists the file without asking for approval', async () => {
+    // A declining approver proves the write path never consults it.
+    registerTools(fakeContext() as any, makeApprover(false));
     const out = await invokeTool('devteam__write', {
       path: 'out.ts',
       contents: 'hello',

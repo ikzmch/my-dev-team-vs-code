@@ -99,25 +99,14 @@ describe('buildAgentTools', () => {
     expect(execMock).not.toHaveBeenCalled();
   });
 
-  it('write creates the file when the approver accepts', async () => {
+  it('write creates the file without consulting the approver', async () => {
     const approver = makeApprover(true);
     const tools = buildAgentTools(approver);
 
     const result = await invoke(tools.write, { path: 'src/new.ts', contents: 'x = 1' });
     expect(result).toContain('Wrote src/new.ts');
     expect(__state.files.get('/ws/src/new.ts')).toBe('x = 1');
-    expect(approver.calls[0].title).toBe('Write file');
-    expect(approver.calls[0].detail).toContain('--- proposed ---');
-  });
-
-  it('write leaves the file untouched when the approver declines', async () => {
-    __setFile('src/keep.ts', 'original');
-    const tools = buildAgentTools(makeApprover(false));
-
-    await expect(
-      invoke(tools.write, { path: 'src/keep.ts', contents: 'overwritten' })
-    ).resolves.toBe('Write was not approved by the user.');
-    expect(__state.files.get('/ws/src/keep.ts')).toBe('original');
+    expect(approver.calls).toHaveLength(0);
   });
 
   it('validates tool input against the schema instead of calling through', async () => {

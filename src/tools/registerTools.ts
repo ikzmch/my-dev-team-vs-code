@@ -64,7 +64,7 @@ export function registerTools(
           path: string;
           contents: string;
         };
-        const result = await writeFile(path, contents, approver);
+        const result = await writeFile(path, contents);
         return new vscode.LanguageModelToolResult([
           new vscode.LanguageModelTextPart(result),
         ]);

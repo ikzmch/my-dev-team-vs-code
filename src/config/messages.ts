@@ -30,7 +30,6 @@ export const messages = {
   /** Copy for the side-effecting tools' approval gate. */
   approval: {
     runCommandTitle: 'Run command',
-    writeFileTitle: 'Write file',
     /** The in-chat approval question: the action title plus its preview. */
     block: (title: string, detail: string) =>
       `\n\n**${title}?**\n\n\`\`\`\n${detail}\n\`\`\`\n`,
@@ -42,7 +41,6 @@ export const messages = {
   /** Returned to the model when the user declines a side-effecting tool. */
   notApproved: {
     run: 'Command was not approved by the user.',
-    write: 'Write was not approved by the user.',
   },
 
   triage: {

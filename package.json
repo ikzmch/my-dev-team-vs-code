@@ -139,7 +139,7 @@
       {
         "name": "devteam__write",
         "displayName": "Write File",
-        "modelDescription": "Create or overwrite a file in the workspace with the given contents. This is a side-effecting action and requires user confirmation.",
+        "modelDescription": "Create or overwrite a file in the workspace with the given contents.",
         "tags": [
           "myDevTeam"
         ],

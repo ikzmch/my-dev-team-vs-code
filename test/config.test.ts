@@ -68,17 +68,15 @@ describe('messages templates', () => {
     expect(messages.progress.executing).toBeTruthy();
   });
 
-  it('provides approval titles and decline replies for side-effecting tools', () => {
+  it('provides an approval title and decline reply for the run tool', () => {
     expect(messages.approval.runCommandTitle).toBeTruthy();
-    expect(messages.approval.writeFileTitle).toBeTruthy();
     expect(messages.notApproved.run).toMatch(/not.*approved/i);
-    expect(messages.notApproved.write).toMatch(/not.*approved/i);
   });
 
   it('renders the in-chat approval question with the detail fenced', () => {
-    const block = messages.approval.block('Write file', 'File: a.py');
-    expect(block).toContain('**Write file?**');
-    expect(block).toContain('```\nFile: a.py\n```');
+    const block = messages.approval.block('Run command', '$ ls');
+    expect(block).toContain('**Run command?**');
+    expect(block).toContain('```\n$ ls\n```');
     expect(messages.approval.approve).toBe('Approve');
     expect(messages.approval.decline).toBe('Decline');
   });
@@ -116,7 +114,6 @@ describe('messages templates', () => {
 describe('settings', () => {
   it('exposes positive operational limits', () => {
     expect(settings.runCommandTimeoutMs).toBeGreaterThan(0);
-    expect(settings.writePreviewMaxChars).toBeGreaterThan(0);
     expect(settings.maxAttachmentChars).toBeGreaterThan(0);
   });
 
@@ -345,11 +342,11 @@ describe('tool configs', () => {
     expect([...toolNames].sort()).toEqual(['read', 'run', 'search', 'write']);
   });
 
-  it('marks run and write as side-effecting, read and search as not', () => {
+  it('marks only run as side-effecting; write, read and search are not', () => {
     expect(toolConfigs.read.sideEffecting).toBe(false);
     expect(toolConfigs.search.sideEffecting).toBe(false);
     expect(toolConfigs.run.sideEffecting).toBe(true);
-    expect(toolConfigs.write.sideEffecting).toBe(true);
+    expect(toolConfigs.write.sideEffecting).toBe(false);
   });
 
   it('maps each tool to its Language Model Tools API id', () => {
@@ -370,12 +367,16 @@ describe('tool configs', () => {
   });
 
   it('renders a tools section with one line per tool', () => {
-    const section = renderToolsSection(['read', 'write']);
+    const section = renderToolsSection(['read', 'run']);
     expect(section).toContain('You have exactly 2 tools available:');
     expect(section).toContain('- "read": Read the full text of one workspace file.');
-    expect(section).toContain(
-      '- "write": Create or overwrite a file. Requires user approval.'
-    );
+    expect(section).toContain('Requires user approval.');
+  });
+
+  it('does not flag the write tool as needing approval', () => {
+    const section = renderToolsSection(['write']);
+    expect(section).toContain('- "write": Create or overwrite a file.');
+    expect(section).not.toContain('Requires user approval');
   });
 
   it('rejects an unknown tool name', () => {

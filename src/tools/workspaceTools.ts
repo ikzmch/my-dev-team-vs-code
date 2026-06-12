@@ -141,34 +141,9 @@ function combineOutput(stdout: string, stderr: string): string {
   return (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
 }
 
-/** Create or overwrite a file. SIDE-EFFECTING: gated by the Approver. */
-export async function writeFile(
-  relPath: string,
-  contents: string,
-  approver: Approver
-): Promise<string> {
+/** Create or overwrite a file. Writes without asking for approval. */
+export async function writeFile(relPath: string, contents: string): Promise<string> {
   const uri = resolveWorkspaceUri(relPath);
-
-  // Build a simple before/after preview for the approval prompt.
-  let existing = '';
-  try {
-    existing = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
-  } catch {
-    existing = '(new file)';
-  }
-  const preview =
-    `File: ${relPath}\n\n--- current ---\n${truncate(existing)}\n\n` +
-    `--- proposed ---\n${truncate(contents)}`;
-
-  const ok = await approver.confirm(messages.approval.writeFileTitle, preview);
-  if (!ok) {
-    return messages.notApproved.write;
-  }
-
   await vscode.workspace.fs.writeFile(uri, Buffer.from(contents, 'utf8'));
   return `Wrote ${relPath} (${Buffer.byteLength(contents, 'utf8')} bytes).`;
-}
-
-function truncate(s: string, max = settings.writePreviewMaxChars): string {
-  return s.length > max ? s.slice(0, max) + '\n…(truncated)' : s;
 }

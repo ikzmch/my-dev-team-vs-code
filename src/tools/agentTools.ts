@@ -60,7 +60,7 @@ export function buildAgentTools(approver: Approver) {
           .describe('Workspace-relative path of the file to create or update.'),
         contents: z.string().describe('The full new contents of the file.'),
       }),
-      execute: async ({ path, contents }) => writeFile(path, contents, approver),
+      execute: async ({ path, contents }) => writeFile(path, contents),
     }),
   };
 }

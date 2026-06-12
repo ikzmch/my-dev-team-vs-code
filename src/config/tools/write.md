@@ -2,7 +2,7 @@
 name: write
 displayName: Write File
 lmTool: devteam__write
-sideEffecting: true
+sideEffecting: false
 previewArg: path
 ---
 
