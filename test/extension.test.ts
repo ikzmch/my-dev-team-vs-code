@@ -9,11 +9,14 @@ vi.mock('@mastra/core/agent', () => ({
 }));
 
 import { activate, deactivate } from '../src/extension';
+import { EVAL_LOG_FILENAME } from '../src/client/evalLog';
 import {
   __reset,
+  __setConfig,
   __state,
   chat,
   ChatResultFeedbackKind,
+  Uri,
 } from './mocks/vscode';
 
 // activate() fires the Ollama startup health check; stub fetch so tests never
@@ -30,7 +33,10 @@ beforeEach(() => {
 });
 
 function fakeContext() {
-  return { subscriptions: [] as unknown[] };
+  return {
+    subscriptions: [] as unknown[],
+    globalStorageUri: Uri.file('/global'),
+  };
 }
 
 describe('activate', () => {
@@ -76,6 +82,40 @@ describe('activate', () => {
 
     expect(logSpy).toHaveBeenCalledWith('[My Dev Team] feedback: helpful');
     expect(logSpy).toHaveBeenCalledWith('[My Dev Team] feedback: unhelpful');
+    logSpy.mockRestore();
+  });
+
+  it('forwards feedback to the eval log, paired through the result metadata', async () => {
+    __setConfig('myDevTeam.telemetry.evalLog', true);
+    const participant = {
+      followupProvider: undefined as unknown,
+      onDidReceiveFeedback: vi.fn(),
+      dispose: vi.fn(),
+    };
+    vi.mocked(chat.createChatParticipant).mockReturnValueOnce(participant as any);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    activate(fakeContext() as any);
+
+    const feedbackCb = participant.onDidReceiveFeedback.mock.calls[0][0] as (
+      fb: unknown
+    ) => void;
+    feedbackCb({
+      kind: ChatResultFeedbackKind.Helpful,
+      result: { metadata: { command: 'explain', runId: 'r1', intent: 'planning' } },
+    });
+    // The record write is fire-and-forget; let its microtasks drain.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const stored = __state.files.get(`/global/${EVAL_LOG_FILENAME}`);
+    expect(stored).toBeDefined();
+    expect(JSON.parse(stored!.trim())).toMatchObject({
+      record: 'feedback',
+      kind: 'helpful',
+      runId: 'r1',
+      intent: 'planning',
+      command: 'explain',
+    });
     logSpy.mockRestore();
   });
 

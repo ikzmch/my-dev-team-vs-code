@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import { Approver } from '../tools/types';
 import {
   Attachment,
   HistoryTurn,
+  Intent,
   PartialExecution,
   PartialPlan,
   PROTOCOL_VERSION,
@@ -12,6 +14,7 @@ import {
 import { ReplyFolder, RunEvent } from '../protocol/events';
 import { clientTools, ToolHost } from '../protocol/toolContract';
 import { Engine, RunCancelledError, RunFailedError } from '../protocol/engine';
+import { EvalLog, UsageEntry } from '../client/evalLog';
 import { environment } from '../config/environment';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
@@ -372,22 +375,48 @@ function renderFailure(error: RunFailedError): string {
 }
 
 /**
+ * What the handler stores in each turn's chat result metadata: the pairing
+ * key the feedback listener needs to attribute a later 👍/👎 click to the run
+ * (and route) it judges. VS Code hands the metadata back on
+ * `onDidReceiveFeedback` via `feedback.result`.
+ */
+export interface TurnMetadata {
+  command: string;
+  runId: string;
+  intent?: Intent;
+}
+
+/**
  * Builds the chat handler. The handler is thin: it resolves attachments and
  * the conversation history into a protocol run request, starts a run on
  * whichever engine the provider currently selects, folds the run's events
  * back into reply snapshots, and streams each render's new suffix onto the
  * chat. It neither knows nor cares whether the engine is in-process or
- * remote - that is the point of the protocol.
+ * remote - that is the point of the protocol. When an `EvalLog` is supplied,
+ * each run's route, per-step usage, and outcome are recorded to it (the log
+ * itself is opt-in and stores nothing unless its setting is on).
  */
 export function createHandler(
   getEngine: () => Engine,
-  toolHost: ToolHost
+  toolHost: ToolHost,
+  evalLog?: EvalLog
 ): vscode.ChatRequestHandler {
   return async (request, context, stream, token) => {
     // Resolve attached files/selections and the prior turns; the engine
     // folds them into each step's prompt as that step's model needs them.
     const attachments = await collectAttachments(request.references);
     const history = collectHistory(context.history);
+
+    // What this turn contributes to the eval log: a fresh run id (also the
+    // feedback pairing key), the route once triage decides it, and the
+    // usage events as they arrive.
+    const runId = randomUUID();
+    let intent: Intent | undefined;
+    const usage: UsageEntry[] = [];
+    const chatResult = (): vscode.ChatResult => {
+      const metadata: TurnMetadata = { command: request.command ?? '', runId, intent };
+      return { metadata };
+    };
 
     // Stream the reply as the engine produces it: events fold back into
     // grow-only snapshots, and the streamer appends each render's new suffix
@@ -396,16 +425,26 @@ export function createHandler(
     const streamer = new ReplyStreamer(stream);
     const folder = new ReplyFolder();
     const onEvent = (event: RunEvent) => {
-      if (token.isCancellationRequested) {
-        return;
-      }
       if (event.type === 'usage') {
-        // The billing seam, surfaced locally as a log line for now.
+        // The billing seam. Collected before the cancellation check: tokens
+        // already spent by a cancelled run still count.
+        usage.push({
+          step: event.step,
+          model: event.model,
+          inputTokens: event.inputTokens,
+          outputTokens: event.outputTokens,
+        });
         console.log(
           `[My Dev Team] usage: ${event.step}` +
             (event.model ? ` (${event.model})` : '') +
             ` in=${event.inputTokens ?? '?'} out=${event.outputTokens ?? '?'}`
         );
+        return;
+      }
+      if (event.type === 'triaged') {
+        intent = event.intent;
+      }
+      if (token.isCancellationRequested) {
         return;
       }
       const progress = folder.apply(event);
@@ -437,6 +476,18 @@ export function createHandler(
     // pending write is dropped rather than completing.
     const cancellation = token.onCancellationRequested(() => handle.cancel());
 
+    // Fire-and-forget by design: the log never rejects, and a slow disk must
+    // not delay the turn's result.
+    const recordRun = (outcome: 'ok' | 'error' | 'cancelled', errorStep?: string) =>
+      void evalLog?.recordRun({
+        runId,
+        command: request.command ?? '',
+        intent,
+        outcome,
+        errorStep,
+        usage,
+      });
+
     let reply: Reply;
     try {
       reply = await handle.result;
@@ -444,22 +495,26 @@ export function createHandler(
       // A cancelled request renders nothing: VS Code marks the turn
       // cancelled and the stream may already be closed.
       if (token.isCancellationRequested || err instanceof RunCancelledError) {
-        return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
+        recordRun('cancelled');
+        return chatResult();
       }
       if (err instanceof RunFailedError) {
+        recordRun('error', err.step);
         const separator = streamer.hasEmitted ? '\n\n' : '';
         stream.markdown(separator + renderFailure(err));
-        return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
+        return chatResult();
       }
       throw err;
     } finally {
       cancellation.dispose();
     }
 
+    intent = reply.intent;
+    recordRun('ok');
     if (!token.isCancellationRequested) {
       // Emits whatever the streaming path has not already rendered.
       streamer.finish(renderReply(reply, true));
     }
-    return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
+    return chatResult();
   };
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   APPROVAL_COMMAND_ID,
   ChatApprover,
@@ -6,9 +6,15 @@ import {
   renderReply,
   PARTICIPANT_ID,
 } from '../src/ui/chatParticipant';
-import { ReplyProgress } from '../src/protocol/types';
-import { Engine } from '../src/protocol/engine';
+import { Reply, ReplyProgress } from '../src/protocol/types';
+import { RunEvent } from '../src/protocol/events';
+import {
+  Engine,
+  RunCancelledError,
+  RunFailedError,
+} from '../src/protocol/engine';
 import { ToolHost } from '../src/protocol/toolContract';
+import { EvalLog, EVAL_LOG_FILENAME } from '../src/client/evalLog';
 import { LocalEngine } from '../src/engine/localEngine';
 import { TriageResult } from '../src/engine/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/engine/core/planner';
@@ -21,6 +27,7 @@ import {
 import { settings } from '../src/config/settings';
 import {
   __reset,
+  __setConfig,
   __state,
   __setFile,
   ChatRequestTurn,
@@ -419,7 +426,7 @@ describe('createHandler', () => {
     expect(text).toContain('Ollama');
   });
 
-  it('returns the command in the chat result metadata', async () => {
+  it('returns the command, a run id, and the intent in the chat result metadata', async () => {
     const { engine } = makeEngine();
 
     const result = await createHandler(() => engine, hostStub)(
@@ -428,7 +435,12 @@ describe('createHandler', () => {
       fakeStream() as any,
       fakeToken() as any
     );
-    expect((result as any).metadata.command).toBe('explain');
+    const metadata = (result as any).metadata;
+    expect(metadata.command).toBe('explain');
+    // The run id pairs a later 👍/👎 click with this turn's eval log record.
+    expect(typeof metadata.runId).toBe('string');
+    expect(metadata.runId.length).toBeGreaterThan(0);
+    expect(metadata.intent).toBe('oneshot');
   });
 
   it('inlines an attached file (Uri reference) into the answerer prompt', async () => {
@@ -583,6 +595,149 @@ describe('createHandler', () => {
       )
     ).resolves.toBeDefined();
     expect(stream.markdown).not.toHaveBeenCalled();
+  });
+});
+
+describe('createHandler eval log recording', () => {
+  const FILE = `/global/${EVAL_LOG_FILENAME}`;
+  const aReply: Reply = { intent: 'oneshot', reason: 'simple', answer: 'It is 4.' };
+
+  beforeEach(() => {
+    __setConfig('myDevTeam.telemetry.evalLog', true);
+    // Silence the usage log lines the scripted engines produce.
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.mocked(console.log).mockRestore();
+  });
+
+  /** An engine that emits the given events and settles with the given result. */
+  function scriptedEngine(events: RunEvent[], result: Promise<Reply>): Engine {
+    return {
+      kind: 'local',
+      startRun: (_request, client) => {
+        for (const event of events) {
+          client.onEvent(event);
+        }
+        return { result, cancel: vi.fn() };
+      },
+      startupWarnings: async () => [],
+    };
+  }
+
+  /** The record writes are fire-and-forget; let the queued microtasks drain. */
+  function flush(): Promise<void> {
+    return new Promise((resolve) => setImmediate(resolve));
+  }
+
+  function storedRecords(): Array<Record<string, any>> {
+    return (__state.files.get(FILE) ?? '')
+      .split('\n')
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line));
+  }
+
+  it('records a successful run with its route and collected usage', async () => {
+    const engine = scriptedEngine(
+      [
+        { type: 'triaged', intent: 'oneshot', reason: 'simple' },
+        { type: 'usage', step: 'triage', model: 'qwen3:8b', inputTokens: 12, outputTokens: 3 },
+        { type: 'usage', step: 'answer', model: 'qwen3:8b', outputTokens: 40 },
+        { type: 'done', reply: aReply },
+      ],
+      Promise.resolve(aReply)
+    );
+
+    const result = await createHandler(() => engine, hostStub, new EvalLog(Uri.file('/global')))(
+      { prompt: 'what is 2+2', references: [], command: 'explain' } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    await flush();
+
+    const records = storedRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({
+      record: 'run',
+      runId: (result as any).metadata.runId,
+      command: 'explain',
+      intent: 'oneshot',
+      outcome: 'ok',
+      usage: [
+        { step: 'triage', model: 'qwen3:8b', inputTokens: 12, outputTokens: 3 },
+        { step: 'answer', model: 'qwen3:8b', outputTokens: 40 },
+      ],
+    });
+    expect(records[0].errorStep).toBeUndefined();
+  });
+
+  it('records a failed run with the failing step and the usage spent', async () => {
+    const failure = new RunFailedError('plan', 'model not found', 'hint');
+    const result: Promise<Reply> = Promise.reject(failure);
+    result.catch(() => {}); // pre-handled; the handler attaches its own catch
+    const engine = scriptedEngine(
+      [
+        { type: 'triaged', intent: 'planning', reason: 'needs steps' },
+        { type: 'usage', step: 'triage', model: 'qwen3:8b', inputTokens: 9 },
+      ],
+      result
+    );
+
+    await createHandler(() => engine, hostStub, new EvalLog(Uri.file('/global')))(
+      { prompt: 'do work', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    await flush();
+
+    expect(storedRecords()[0]).toMatchObject({
+      record: 'run',
+      intent: 'planning',
+      outcome: 'error',
+      errorStep: 'plan',
+      usage: [{ step: 'triage', model: 'qwen3:8b', inputTokens: 9 }],
+    });
+  });
+
+  it('records a cancelled run, keeping usage that was already spent', async () => {
+    const result: Promise<Reply> = Promise.reject(new RunCancelledError());
+    result.catch(() => {});
+    const engine = scriptedEngine(
+      [{ type: 'usage', step: 'triage', model: 'qwen3:8b', inputTokens: 7 }],
+      result
+    );
+
+    await createHandler(() => engine, hostStub, new EvalLog(Uri.file('/global')))(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken(true) as any
+    );
+    await flush();
+
+    expect(storedRecords()[0]).toMatchObject({
+      record: 'run',
+      outcome: 'cancelled',
+      usage: [{ step: 'triage', model: 'qwen3:8b', inputTokens: 7 }],
+    });
+  });
+
+  it('runs without an eval log exactly as before', async () => {
+    const { engine } = makeEngine();
+    const stream = fakeStream();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'what is 2+2', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).toContain('It is 4.');
+    expect(__state.files.has(FILE)).toBe(false);
   });
 });
 

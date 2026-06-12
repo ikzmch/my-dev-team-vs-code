@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.16.0",
+  "version": "0.17.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -67,6 +67,11 @@
           "default": 5,
           "minimum": 0,
           "description": "Number of leading lines of a written file's contents shown as a snippet under the write call in the execution transcript. 0 hides the snippet."
+        },
+        "myDevTeam.telemetry.evalLog": {
+          "type": "boolean",
+          "default": false,
+          "description": "Store a local eval log of @devteam runs (route, per-step model and token usage, outcome) and thumbs up/down feedback as JSON lines in the extension's global storage. No prompts, file contents, or replies are recorded, and nothing leaves your machine."
         }
       }
     },

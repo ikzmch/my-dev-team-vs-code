@@ -175,6 +175,17 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.search.contentScanLimit).toBe(defaults.search.contentScanLimit);
     expect(settings.search.contentMaxMatches).toBe(defaults.search.contentMaxMatches);
     expect(settings.executor.snippetLines).toBe(defaults.chat.toolSnippetLines);
+    expect(settings.telemetry.evalLogEnabled).toBe(defaults.telemetry.evalLog);
+  });
+
+  it('treats the eval log as opt-in: only the literal true enables it', () => {
+    expect(settings.telemetry.evalLogEnabled).toBe(false);
+    __setConfig('myDevTeam.telemetry.evalLog', true);
+    expect(settings.telemetry.evalLogEnabled).toBe(true);
+    __setConfig('myDevTeam.telemetry.evalLog', 'yes');
+    expect(settings.telemetry.evalLogEnabled).toBe(false);
+    __setConfig('myDevTeam.telemetry.evalLog', 1);
+    expect(settings.telemetry.evalLogEnabled).toBe(false);
   });
 
   it('reads the snippet line count live, accepting 0 to hide snippets', () => {

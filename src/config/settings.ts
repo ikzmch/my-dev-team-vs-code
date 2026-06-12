@@ -31,6 +31,9 @@ export const defaults = {
   chat: {
     toolSnippetLines: 5,
   },
+  telemetry: {
+    evalLog: false,
+  },
 } as const;
 
 /** Read a user-set integer (at least `min`), falling back when unset or invalid. */
@@ -147,6 +150,24 @@ export const settings = {
     get snippetLines(): number {
       return userLimit('chat.toolSnippetLines', defaults.chat.toolSnippetLines, 0);
     },
+  },
+
+  /** The local eval log run/feedback records land in (client/evalLog.ts). */
+  telemetry: {
+    /**
+     * Whether finished runs and 👍/👎 feedback are appended to the local eval
+     * log (`myDevTeam.telemetry.evalLog`). Off by default - storing the
+     * signal is opt-in. Anything but the literal `true` counts as off.
+     */
+    get evalLogEnabled(): boolean {
+      return (
+        vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<unknown>('telemetry.evalLog') === true
+      );
+    },
+    /** Cap on the eval log file, in characters; the oldest records are dropped past it. */
+    evalLogMaxChars: 1_000_000,
   },
 
   /** Max characters of an attached file/selection inlined into the prompt. */

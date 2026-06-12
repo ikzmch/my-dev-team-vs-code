@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-06-12
+
+### Added
+
+- **Local eval log for feedback and usage**. The opt-in
+  `myDevTeam.telemetry.evalLog` setting stores each run's route, per-step
+  model and token usage, and outcome, plus the 👍/👎 feedback paired to its
+  run, as JSON lines in the extension's global storage - so routing and
+  prompt changes can be measured against real feedback. No prompt or reply
+  text is recorded and nothing leaves the machine.
+
 ## [0.16.0] - 2026-06-12
 
 ### Changed

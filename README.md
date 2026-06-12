@@ -67,6 +67,7 @@ src/
   client/
     engineFactory.ts      the myDevTeam.engine switch: LocalEngine today, RemoteEngine in Phase B
     auth.ts               AuthProvider implementations (anonymous today; real credentials in Phase B)
+    evalLog.ts            opt-in local JSONL eval store: per-run route/usage/outcome records + 👍/👎 feedback
   config/                 client-side configuration, kept out of the logic (see below)
     settings.ts           operational limits; engine/endpoint/timeout/search caps read live from VS Code settings
     messages.ts           user-facing chat copy (errors, warnings, templates)
@@ -301,6 +302,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
 | `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
 | `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file shown under a `write` call in the transcript (`0` hides the snippet) |
+| `myDevTeam.telemetry.evalLog`        | `false`                  | Opt-in local eval log: store per-run route/usage/outcome records and 👍/👎 feedback as JSON lines in extension storage (no prompt or reply text; nothing leaves the machine) |
 
 Invalid values (wrong type, non-positive numbers, an endpoint that is not an
 http(s) URL) silently fall back to the defaults, so the tools always see sane
@@ -584,8 +586,16 @@ any VS Code chat model that supports tool calling - every call goes through
 the same `WorkspaceToolHost` validation and approval gate the engine uses.
 
 Each step's model call also emits a protocol `usage` event (model + token
-counts when the SDK reports them); the chat handler currently logs them to
-the console - the data the future backend's billing meters.
+counts when the SDK reports them); the chat handler logs them to the console
+and collects them per run - the data the future backend's billing meters.
+With `myDevTeam.telemetry.evalLog` enabled (it is off by default), every
+finished run lands as one JSON line in an `eval-log.jsonl` under the
+extension's global storage - run id, slash command, triage route, outcome,
+and the collected per-step usage - and every 👍/👎 click on a reply is
+recorded next to it, paired with its run through the turn's chat result
+metadata, so routing and prompt changes can be measured against real feedback
+per token spent. The records carry no prompt text, file contents, or reply
+text, and the log never leaves your machine.
 
 Cancelling the chat request cancels the engine run (and with it the model
 call) instead of letting it finish in the background; a cancelled turn stops
@@ -694,8 +704,6 @@ is comprehensive - run `npm run test:coverage` to see it.
   3. Optionally add a Webview panel as a second front-end calling the same core.
 
   The engine and tools require **no changes**.
-- **Feedback telemetry.** `participant.onDidReceiveFeedback` currently logs
-  👍/👎; forward it to telemetry/eval storage.
 
 ## License
 

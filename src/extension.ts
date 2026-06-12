@@ -2,10 +2,12 @@ import * as vscode from 'vscode';
 import { registerTools } from './tools/registerTools';
 import { WorkspaceToolHost } from './tools/toolHost';
 import { createEngineProvider } from './client/engineFactory';
+import { EvalLog } from './client/evalLog';
 import {
   PARTICIPANT_ID,
   ChatApprover,
   createHandler,
+  TurnMetadata,
 } from './ui/chatParticipant';
 import { TerminalRunMirror } from './ui/runTerminal';
 import { checkEngineAtStartup } from './ui/startupCheck';
@@ -41,8 +43,14 @@ export function activate(context: vscode.ExtensionContext) {
   const getEngine = createEngineProvider();
   void checkEngineAtStartup(getEngine());
 
+  // --- Telemetry/eval seam: the local, opt-in eval log ---
+  // Run records (route, per-step usage, outcome) and 👍/👎 feedback land in
+  // one JSONL file under the extension's global storage when
+  // myDevTeam.telemetry.evalLog is on. It stores no prompt or reply text.
+  const evalLog = new EvalLog(context.globalStorageUri);
+
   // --- UI layer: the chat participant ---
-  const handler = createHandler(getEngine, toolHost);
+  const handler = createHandler(getEngine, toolHost, evalLog);
   const participant = vscode.chat.createChatParticipant(
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {
@@ -59,12 +67,20 @@ export function activate(context: vscode.ExtensionContext) {
     }
   );
 
-  // Built-in feedback: 👍/👎 from the native chat panel arrive here.
+  // Built-in feedback: 👍/👎 from the native chat panel arrive here. The
+  // handler put the run id and route into the judged turn's result metadata,
+  // so the click can be paired with the run record it grades.
   participant.onDidReceiveFeedback((fb) => {
     const kind =
       fb.kind === vscode.ChatResultFeedbackKind.Helpful ? 'helpful' : 'unhelpful';
     console.log(`[My Dev Team] feedback: ${kind}`);
-    // TODO: forward to telemetry / store for evals.
+    const metadata = (fb.result?.metadata ?? {}) as Partial<TurnMetadata>;
+    void evalLog.recordFeedback({
+      kind,
+      runId: metadata.runId,
+      intent: metadata.intent,
+      command: metadata.command,
+    });
   });
 
   context.subscriptions.push(participant);

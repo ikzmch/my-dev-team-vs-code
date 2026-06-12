@@ -211,6 +211,10 @@ export const workspace = {
       __state.files.set(uri.path, new TextDecoder().decode(bytes));
     }),
 
+    createDirectory: vi.fn(async (_uri: Uri): Promise<void> => {
+      // Directories are implicit in the flat file map.
+    }),
+
     stat: vi.fn(async (uri: Uri): Promise<{ type: number; size: number }> => {
       if (!__state.files.has(uri.path)) {
         throw new Error(`ENOENT: ${uri.path}`);
