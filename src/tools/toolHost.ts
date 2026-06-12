@@ -43,7 +43,7 @@ export class WorkspaceToolHost implements ToolHost {
       }
       case 'write': {
         const { path, contents } = clientTools.write.inputSchema.parse(args);
-        return writeFile(path, contents, signal);
+        return writeFile(path, contents, this.approver, signal);
       }
       default:
         throw new Error(`Unknown tool "${tool}".`);

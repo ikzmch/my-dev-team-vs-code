@@ -206,15 +206,37 @@ function combineOutput(stdout: string, stderr: string): string {
   return (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
 }
 
-/** Create or overwrite a file. Writes without asking for approval. */
+/**
+ * Create or overwrite a file. SIDE-EFFECTING: gated by the Approver. An
+ * in-workspace overwrite is destructive (source, configs, dotfiles) and has
+ * no undo, so the user approves the target path and a capped preview of the
+ * new contents before anything lands on disk.
+ */
 export async function writeFile(
   relPath: string,
   contents: string,
+  approver: Approver,
   signal?: AbortSignal
 ): Promise<string> {
+  // Resolve (and so validate) the path first: a traversal or symlink target
+  // is rejected outright and never reaches the approval prompt.
   const uri = await resolveWorkspaceUri(relPath);
-  // A cancelled request must not land a file on disk; check after resolution
-  // so a still-pending write is dropped rather than applied.
+  // A request cancelled before (or during) the approval prompt must not land
+  // a file on disk.
+  if (signal?.aborted) {
+    return messages.cancelled.write;
+  }
+  const preview =
+    contents.length > settings.writeApprovalPreviewMaxChars
+      ? contents.slice(0, settings.writeApprovalPreviewMaxChars) + '\n…(truncated)'
+      : contents;
+  const ok = await approver.confirm(
+    messages.approval.writeFileTitle,
+    messages.approval.writeFileDetail(relPath, preview)
+  );
+  if (!ok) {
+    return messages.notApproved.write;
+  }
   if (signal?.aborted) {
     return messages.cancelled.write;
   }

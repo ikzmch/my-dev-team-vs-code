@@ -127,14 +127,25 @@ describe('registerTools', () => {
     expect(entries).toEqual(['begin:echo hi', 'end:(command completed)']);
   });
 
-  it('write tool persists the file without asking for approval', async () => {
-    // A declining approver proves the write path never consults it.
-    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(false)));
+  it('write tool persists the file when the approver approves', async () => {
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(true)));
     const out = await invokeTool('devteam__write', {
       path: 'out.ts',
       contents: 'hello',
     });
     expect(out).toBe('Wrote out.ts (5 bytes).');
     expect(__state.files.get('/ws/out.ts')).toBe('hello');
+  });
+
+  it('write tool respects a declining approver', async () => {
+    // The editor-wide registration goes through the same gate as the engine's
+    // executor loop: a decline leaves the workspace untouched.
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(false)));
+    const out = await invokeTool('devteam__write', {
+      path: 'out.ts',
+      contents: 'hello',
+    });
+    expect(out).toBe('Write was not approved by the user; the file was not changed.');
+    expect(__state.files.has('/ws/out.ts')).toBe(false);
   });
 });

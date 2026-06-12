@@ -19,6 +19,23 @@ scripts table - they name concrete files and models and drift easily.
 Pure refactors that change no structure or behavior, and test-only changes, do
 not require a README update.
 
+## Keep CHANGELOG.md in sync
+
+Every time a significant change is made, add a CHANGELOG.md entry in the same
+piece of work, following the file's existing Keep a Changelog format (newest
+version first, `## [x.y.z] - date`, changes under `### Added` / `### Changed`
+/ `### Fixed` / `### Security` / `### Removed`):
+
+- one entry per change: a bold short title plus 1-2 sentences - what changed
+  and why it matters, no commit hashes, no implementation detail
+- skip negligible changes entirely: pure renames, documentation-only changes,
+  test-only changes, formatting, and minor tweaks get no entry
+- propose the version with the entry: bump the minor version when the change
+  is significant (a new feature, a behavior change, an architecture change),
+  bump only the patch version for fixes, hardening, and refactors; propose a
+  major version bump only when it is really justified (e.g. a breaking change
+  or a milestone like the first stable release)
+
 ## Keep unit tests in sync
 
 When a change needs it, update the affected unit tests and add new ones in the

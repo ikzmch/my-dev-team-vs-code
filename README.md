@@ -10,9 +10,9 @@ the Vercel AI SDK + Mastra) before deciding how to respond. Agents don't name
 models: each declares **weighted capability requirements**, and a router picks
 the best match from a **registry of models scored per capability**, discovered
 from `.md` config files at build time. The side-effecting
-run-command action is gated by an **approval seam**, so the chat confirmation
-can later be swapped for a rich Webview dialog **without touching the agent
-core**; file writes apply directly without asking.
+actions - running a command and writing a file - are gated by an **approval
+seam**, so the chat confirmation can later be swapped for a rich Webview
+dialog **without touching the agent core**.
 
 The whole agent pipeline sits behind an **engine protocol**
 (`src/protocol/`): the UI starts a run, receives a stream of typed events,
@@ -158,7 +158,7 @@ engine/core/workflow.ts        Mastra workflow (createWorkflow + createStep)
         │                         conversation + prompt + attachment text + the
         │                         numbered plan;
         │                         Mastra runs the tool-calling loop over the four
-        │                         workspace tools (run Approver-gated);
+        │                         workspace tools (run/write Approver-gated);
         │                         → { events[] } transcript (capability-routed model);
         │                         pushes every transcript snapshot to the sink
         └─▶ deliver-answer     ── pass-through for the oneshot path, so a oneshot
@@ -198,9 +198,9 @@ without the client changing:
   its Mastra tools are proxies that delegate to the client's **`ToolHost`**
   (`tools/toolHost.ts`), which validates the arguments against the
   protocol's input schemas and runs the implementations - including the
-  approval gate. A compromised or buggy engine can request a command, but it
-  cannot run one without the user's click, and it never learns how approval
-  happened. The tool contract (`protocol/toolContract.ts`) carries the
+  approval gate. A compromised or buggy engine can request a command or a
+  file write, but it cannot land either without the user's click, and it
+  never learns how approval happened. The tool contract (`protocol/toolContract.ts`) carries the
   client-facing half of each tool (input schema, `devteam__*` id, display
   name); the engine's configs keep the model-facing half (description,
   preview hints).
@@ -429,11 +429,11 @@ decisions, in the order they matter:
   as `(no output)`.
 - **Approvals live in the host, not the engine.** The proxies delegate to
   the same `WorkspaceToolHost` the editor-wide registrations use, so `run`
-  invokes the same `Approver` with the same command echo (`write` applies
-  directly, no approval) - and the engine never learns how the decision was
-  made. A decline is not an error: the tool returns the "not approved"
-  message and the system prompt tells the model to skip that action and note
-  it in the report.
+  invokes the same `Approver` with the same command echo and `write` with
+  the same path + contents preview - and the engine never learns how the
+  decision was made. A decline is not an error: the tool returns the "not
+  approved" message and the system prompt tells the model to skip that
+  action and note it in the report.
 
 ### Tools (`tools/`)
 
@@ -453,7 +453,7 @@ Either way the same Approver gates the same side effects.
 | `devteam__read`        | Read a file's text              | none (read-only)|
 | `devteam__search`      | Glob file names or grep content | none (read-only)|
 | `devteam__run`         | Run a shell command (configurable timeout, 60s default) | **Approver** |
-| `devteam__write`       | Create/overwrite a file         | none            |
+| `devteam__write`       | Create/overwrite a file         | **Approver**    |
 
 The tools treat their inputs as untrusted (they are callable by any
 tool-calling chat model in the editor, not just `@devteam`):
@@ -485,7 +485,10 @@ tool-calling chat model in the editor, not just `@devteam`):
   visible whenever the user looks. Declined commands never ran, so they
   never appear.
 
-The side-effecting `run` tool calls `approver.confirm(title, detail)`. The
+The side-effecting tools call `approver.confirm(title, detail)`: `run` with
+the command echo, `write` with the target path above a capped preview of the
+new contents (`settings.writeApprovalPreviewMaxChars`), so an in-workspace
+overwrite - itself destructive, with no undo - never lands silently. The
 Phase-1 `ChatApprover` renders the proposed action into the chat panel
 followed by **Approve / Decline buttons** (wired through the
 `myDevTeam.approval` command) and blocks the tool until one is clicked; a
@@ -493,8 +496,8 @@ finished or cancelled request declines whatever is still pending so a run can
 never hang on an unanswered question. When a tool is invoked outside a
 `@devteam` turn (they are registered editor-wide, so any chat model can call
 them) there is no stream to ask in, and the approver falls back to a modal
-dialog. The `write` tool is not gated: it validates the path and writes
-immediately.
+dialog. A declined `write` returns "not approved" to the model and leaves
+the file untouched.
 
 ## Current behavior
 
@@ -560,14 +563,16 @@ Out of the box, `@devteam <prompt>`:
    completed `write` call additionally shows the first lines of the written
    file in a fenced snippet under its line (`myDevTeam.chat.toolSnippetLines`,
    default 5; `0` hides it); a longer file ends in an `…(truncated)` line.
-7. Shell commands still ask first: when the loop reaches a `run` call, the
-   `ChatApprover` renders the command into the chat followed by Approve and
-   Decline buttons and waits for the click. A cancelled request declines
-   pending approvals automatically, and a tool invoked outside a `@devteam`
-   turn falls back to a modal dialog. Declining does not abort the run - the
-   tool returns "not approved" to the model, which is instructed to skip that
-   action and carry on, noting the skip in its report. `write` calls apply
-   directly without an approval prompt.
+7. Side effects still ask first: when the loop reaches a `run` call the
+   `ChatApprover` renders the command into the chat, and when it reaches a
+   `write` call it renders the target path above a capped preview of the new
+   contents (`settings.writeApprovalPreviewMaxChars`), each followed by
+   Approve and Decline buttons, and waits for the click. A cancelled request
+   declines pending approvals automatically, and a tool invoked outside a
+   `@devteam` turn falls back to a modal dialog. Declining does not abort the
+   run - the tool returns "not approved" to the model, which is instructed to
+   skip that action and carry on, noting the skip in its report; a declined
+   `write` leaves the file untouched.
 8. Every approved command's real output also streams into the **"Dev Team"
    terminal** in the terminal panel: open the tab to watch commands run live,
    or later to read the session log of everything the agent executed

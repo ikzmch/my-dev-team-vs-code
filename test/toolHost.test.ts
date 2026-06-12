@@ -117,14 +117,17 @@ describe('WorkspaceToolHost', () => {
   it('passes the signal to write, so a cancelled request skips it', async () => {
     const controller = new AbortController();
     controller.abort();
-    const host = new WorkspaceToolHost(makeApprover(true));
+    const approver = makeApprover(true);
+    const host = new WorkspaceToolHost(approver);
     await expect(
       host.execute('write', { path: 'src/new.ts', contents: 'x = 1' }, controller.signal)
     ).resolves.toBe('Write was cancelled; the file was not changed.');
     expect(__state.files.has('/ws/src/new.ts')).toBe(false);
+    // The cancelled write never reached the approval prompt either.
+    expect(approver.calls).toHaveLength(0);
   });
 
-  it('write creates the file without consulting the approver', async () => {
+  it('write creates the file through the given approver', async () => {
     const approver = makeApprover(true);
     const host = new WorkspaceToolHost(approver);
 
@@ -134,7 +137,19 @@ describe('WorkspaceToolHost', () => {
     });
     expect(result).toContain('Wrote src/new.ts');
     expect(__state.files.get('/ws/src/new.ts')).toBe('x = 1');
-    expect(approver.calls).toHaveLength(0);
+    expect(approver.calls).toEqual([
+      { title: 'Write file', detail: 'src/new.ts\n\nx = 1' },
+    ]);
+  });
+
+  it('write does not touch the file when the approver declines', async () => {
+    __setFile('src/exists.ts', 'old');
+    const host = new WorkspaceToolHost(makeApprover(false));
+
+    await expect(
+      host.execute('write', { path: 'src/exists.ts', contents: 'new' })
+    ).resolves.toBe('Write was not approved by the user; the file was not changed.');
+    expect(__state.files.get('/ws/src/exists.ts')).toBe('old');
   });
 
   it('rejects an unknown tool before touching anything', async () => {

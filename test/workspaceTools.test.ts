@@ -358,41 +358,107 @@ describe('runCommand mirroring', () => {
 });
 
 describe('writeFile', () => {
-  it('writes the file and reports byte length', async () => {
-    const out = await writeFile('new.ts', 'hello');
+  it('writes the file and reports byte length when approved', async () => {
+    const out = await writeFile('new.ts', 'hello', makeApprover(true));
     expect(out).toBe('Wrote new.ts (5 bytes).');
     expect(__state.files.get('/ws/new.ts')).toBe('hello');
   });
 
+  it('asks the approver with the path and the pending contents', async () => {
+    const approver = makeApprover(true);
+    await writeFile('src/new.ts', 'const a = 1;', approver);
+    expect(approver.calls).toEqual([
+      { title: 'Write file', detail: 'src/new.ts\n\nconst a = 1;' },
+    ]);
+  });
+
+  it('does not write when the user declines', async () => {
+    const approver = makeApprover(false);
+    const out = await writeFile('new.ts', 'hello', approver);
+    expect(out).toBe('Write was not approved by the user; the file was not changed.');
+    expect(__state.files.has('/ws/new.ts')).toBe(false);
+    expect(approver.calls).toHaveLength(1);
+  });
+
+  it('keeps the old contents when an overwrite is declined', async () => {
+    __setFile('exists.ts', 'old body');
+    await writeFile('exists.ts', 'new body', makeApprover(false));
+    expect(__state.files.get('/ws/exists.ts')).toBe('old body');
+  });
+
+  it('truncates the approval preview but writes the full contents', async () => {
+    const big = 'a'.repeat(settings.writeApprovalPreviewMaxChars + 10);
+    const approver = makeApprover(true);
+    await writeFile('big.ts', big, approver);
+
+    const detail = approver.calls[0].detail;
+    expect(detail).toContain('…(truncated)');
+    expect(detail.length).toBeLessThan(
+      settings.writeApprovalPreviewMaxChars + 100
+    );
+    // The cap bounds only the preview; the file itself lands complete.
+    expect(__state.files.get('/ws/big.ts')).toBe(big);
+  });
+
+  it('shows the complete contents in the preview when under the cap', async () => {
+    const approver = makeApprover(true);
+    await writeFile('small.ts', 'short body', approver);
+    expect(approver.calls[0].detail).toBe('small.ts\n\nshort body');
+    expect(approver.calls[0].detail).not.toContain('truncated');
+  });
+
   it('reports utf8 bytes, not characters, for multi-byte content', async () => {
     // "héllo" is 5 characters but 6 utf8 bytes.
-    const out = await writeFile('uni.ts', 'héllo');
+    const out = await writeFile('uni.ts', 'héllo', makeApprover(true));
     expect(out).toBe('Wrote uni.ts (6 bytes).');
   });
 
-  it('overwrites an existing file with the new contents', async () => {
+  it('overwrites an existing file with the new contents when approved', async () => {
     __setFile('exists.ts', 'old body');
-    await writeFile('exists.ts', 'new body');
+    await writeFile('exists.ts', 'new body', makeApprover(true));
     expect(__state.files.get('/ws/exists.ts')).toBe('new body');
   });
 
-  it('rejects a traversal path without writing', async () => {
-    await expect(writeFile('../evil.ts', 'x')).rejects.toThrow(
+  it('rejects a traversal path before consulting the approver', async () => {
+    const approver = makeApprover(true);
+    await expect(writeFile('../evil.ts', 'x', approver)).rejects.toThrow(
       /outside the workspace/
     );
     expect([...__state.files.keys()].some((k) => k.includes('evil'))).toBe(false);
+    expect(approver.calls).toHaveLength(0);
   });
 
-  it('rejects writing through a symbolic link', async () => {
+  it('rejects writing through a symbolic link before consulting the approver', async () => {
     __setSymlink('link.ts', 'old');
-    await expect(writeFile('link.ts', 'new')).rejects.toThrow(/symbolic link/);
+    const approver = makeApprover(true);
+    await expect(writeFile('link.ts', 'new', approver)).rejects.toThrow(
+      /symbolic link/
+    );
     expect(__state.files.get('/ws/link.ts')).toBe('old');
+    expect(approver.calls).toHaveLength(0);
   });
 
-  it('does not write when the request was cancelled', async () => {
+  it('does not write or prompt when the request was already cancelled', async () => {
     const controller = new AbortController();
     controller.abort();
-    const out = await writeFile('new.ts', 'hello', controller.signal);
+    const approver = makeApprover(true);
+    const out = await writeFile('new.ts', 'hello', approver, controller.signal);
+    expect(out).toBe('Write was cancelled; the file was not changed.');
+    expect(__state.files.has('/ws/new.ts')).toBe(false);
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('does not write when the request is cancelled while the prompt is open', async () => {
+    // The user may approve a write whose request was cancelled while the
+    // buttons were showing; the approval must not resurrect the side effect.
+    const controller = new AbortController();
+    const approver: Approver = {
+      async confirm() {
+        controller.abort();
+        return true;
+      },
+    };
+    const out = await writeFile('new.ts', 'hello', approver, controller.signal);
     expect(out).toBe('Write was cancelled; the file was not changed.');
     expect(__state.files.has('/ws/new.ts')).toBe(false);
   });

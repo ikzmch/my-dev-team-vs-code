@@ -66,6 +66,19 @@ describe('messages templates', () => {
     expect(messages.notApproved.run).toMatch(/not.*approved/i);
   });
 
+  it('provides an approval title and decline reply for the write tool', () => {
+    expect(messages.approval.writeFileTitle).toBeTruthy();
+    expect(messages.notApproved.write).toMatch(/not.*approved/i);
+    // The model is told the file was untouched, so it can report the skip.
+    expect(messages.notApproved.write).toMatch(/not changed/i);
+  });
+
+  it('renders the write approval detail as the path above the contents', () => {
+    expect(messages.approval.writeFileDetail('src/a.ts', 'const a = 1;')).toBe(
+      'src/a.ts\n\nconst a = 1;'
+    );
+  });
+
   it('renders the in-chat approval question with the detail fenced', () => {
     const block = messages.approval.block('Run command', '$ ls');
     expect(block).toContain('**Run command?**');
@@ -143,6 +156,7 @@ describe('settings', () => {
 
   it('exposes the tool hardening limits', () => {
     expect(settings.readMaxChars).toBeGreaterThan(0);
+    expect(settings.writeApprovalPreviewMaxChars).toBeGreaterThan(0);
     expect(settings.runCommandMaxBufferBytes).toBeGreaterThan(0);
     expect(settings.search.maxFileSizeBytes).toBeGreaterThan(0);
     // The exclude glob replaces VS Code's defaults, so it must at least keep
@@ -405,11 +419,11 @@ describe('tool configs', () => {
     expect([...toolNames].sort()).toEqual(['read', 'run', 'search', 'write']);
   });
 
-  it('marks only run as side-effecting; write, read and search are not', () => {
+  it('marks run and write as side-effecting; read and search are not', () => {
     expect(toolConfigs.read.sideEffecting).toBe(false);
     expect(toolConfigs.search.sideEffecting).toBe(false);
     expect(toolConfigs.run.sideEffecting).toBe(true);
-    expect(toolConfigs.write.sideEffecting).toBe(false);
+    expect(toolConfigs.write.sideEffecting).toBe(true);
   });
 
   it('agrees with the protocol contract on the tool vocabulary', () => {
@@ -459,10 +473,12 @@ describe('tool configs', () => {
     expect(section).toContain('Requires user approval.');
   });
 
-  it('does not flag the write tool as needing approval', () => {
+  it('flags the write tool as needing approval', () => {
+    // The prompts must announce the gate, so a model treats "not approved"
+    // as a user decision to skip, not as a tool failure to retry.
     const section = renderToolsSection(['write']);
     expect(section).toContain('- "write": Create or overwrite a file.');
-    expect(section).not.toContain('Requires user approval');
+    expect(section).toContain('Requires user approval.');
   });
 
   it('rejects an unknown tool name', () => {

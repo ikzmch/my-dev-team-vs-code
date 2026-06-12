@@ -39,6 +39,13 @@ export const messages = {
   /** Copy for the side-effecting tools' approval gate. */
   approval: {
     runCommandTitle: 'Run command',
+    writeFileTitle: 'Write file',
+    /**
+     * Preview of a pending write shown in the approval question: the target
+     * path above the leading new contents (already capped by the caller, see
+     * settings.writeApprovalPreviewMaxChars).
+     */
+    writeFileDetail: (path: string, preview: string) => `${path}\n\n${preview}`,
     /** The in-chat approval question: the action title plus its preview. */
     block: (title: string, detail: string) =>
       `\n\n**${title}?**\n\n${fence(detail, 3)}\n`,
@@ -50,6 +57,7 @@ export const messages = {
   /** Returned to the model when the user declines a side-effecting tool. */
   notApproved: {
     run: 'Command was not approved by the user.',
+    write: 'Write was not approved by the user; the file was not changed.',
   },
 
   /**

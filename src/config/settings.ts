@@ -100,6 +100,13 @@ export const settings = {
   /** Max characters the `read` tool returns before truncating. */
   readMaxChars: 200_000,
 
+  /**
+   * Max characters of the pending new contents shown in the `write` tool's
+   * approval question, so a large file truncates instead of flooding the chat
+   * before the Approve/Decline buttons.
+   */
+  writeApprovalPreviewMaxChars: 2_000,
+
   /** Caps on the `search` tool's file scans. */
   search: {
     /** Max files returned by a glob search (`myDevTeam.search.globMaxResults`). */
