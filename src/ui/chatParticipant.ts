@@ -15,6 +15,7 @@ import { ReplyFolder, RunEvent } from '../protocol/events';
 import { clientTools, ToolHost } from '../protocol/toolContract';
 import { Engine, RunCancelledError, RunFailedError } from '../protocol/engine';
 import { EvalLog, UsageEntry } from '../client/evalLog';
+import { collectInstructions } from '../client/instructions';
 import { CLEAR_COMMAND, COMPACT_COMMAND } from '../config/clientCommands';
 import { environment } from '../config/environment';
 import { settings } from '../config/settings';
@@ -495,8 +496,10 @@ export function createHandler(
       return { metadata };
     }
 
-    // Resolve attached files/selections and the prior turns; the engine
-    // folds them into each step's prompt as that step's model needs them.
+    // Resolve the workspace's standing instruction file (AGENTS.md/CLAUDE.md),
+    // attached files/selections, and the prior turns; the engine folds them
+    // into each step's prompt as that step's model needs them.
+    const instructions = await collectInstructions();
     const attachments = await collectAttachments(request.references);
     const history = collectHistory(context.history);
 
@@ -569,6 +572,7 @@ export function createHandler(
         // business, and an engine that does not know the name treats the
         // prompt as plain text.
         command: request.command,
+        instructions,
         attachments,
         history,
         environment: { os: environment.os, shell: environment.shell },

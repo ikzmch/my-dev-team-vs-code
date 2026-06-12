@@ -34,6 +34,9 @@ export const defaults = {
   chat: {
     toolSnippetLines: 5,
   },
+  instructions: {
+    files: ['AGENTS.md', 'CLAUDE.md'],
+  },
   telemetry: {
     evalLog: false,
   },
@@ -187,6 +190,41 @@ export const settings = {
     },
     /** Cap on the eval log file, in characters; the oldest records are dropped past it. */
     evalLogMaxChars: 1_000_000,
+  },
+
+  /**
+   * The workspace's standing instruction file (AGENTS.md/CLAUDE.md), read by
+   * the client per request and folded into the agent prompts.
+   */
+  instructions: {
+    /**
+     * Root-relative file names probed in order; the first that exists wins
+     * (`myDevTeam.instructions.files`). An empty array disables the feature.
+     * Only plain names are accepted - a path separator or ".." would escape
+     * the workspace root, so such entries fall back to the default list.
+     */
+    get files(): readonly string[] {
+      const value = vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .get<unknown>('instructions.files');
+      if (!Array.isArray(value)) {
+        return defaults.instructions.files;
+      }
+      const valid = value.every(
+        (name) =>
+          typeof name === 'string' &&
+          name.trim().length > 0 &&
+          !/[\\/]/.test(name) &&
+          !name.includes('..')
+      );
+      return valid ? (value as string[]).map((name) => name.trim()) : defaults.instructions.files;
+    },
+    /**
+     * Max characters of the instruction file inlined into the prompts; kept
+     * small because the standing rules ride along on every agent call of a
+     * small local model.
+     */
+    maxChars: 8_000,
   },
 
   /** Max characters of an attached file/selection inlined into the prompt. */

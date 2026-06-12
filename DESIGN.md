@@ -77,6 +77,7 @@ src/
   client/
     engineFactory.ts      the myDevTeam.engine switch: LocalEngine today, RemoteEngine in Phase B
     auth.ts               AuthProvider implementations (anonymous today; real credentials in Phase B)
+    instructions.ts       reads the workspace's AGENTS.md/CLAUDE.md as standing project instructions per request
     evalLog.ts            opt-in local JSONL eval store: per-run route/usage/outcome records + 👍/👎 feedback
   config/                 client-side configuration, kept out of the logic (see below)
     settings.ts           operational limits; engine/endpoint/timeout/search caps read live from VS Code settings
@@ -125,11 +126,14 @@ Three layers, deliberately decoupled:
 @devteam <prompt>
         │
         ▼
-ui/chatParticipant.ts          resolve attached files/selections into labelled
-  createHandler                attachments and the session's prior turns into
+ui/chatParticipant.ts          resolve the workspace's instruction file
+  createHandler                (AGENTS.md/CLAUDE.md, via client/instructions.ts),
+        │                      attached files/selections into labelled
+        │                      attachments, and the session's prior turns into
         │                      capped history turns, build a protocol
-        │                      RunRequest (version, prompt, attachments,
-        │                      history, environment facts, offered tools) and
+        │                      RunRequest (version, prompt, instructions,
+        │                      attachments, history, environment facts,
+        │                      offered tools) and
         │                      start a run on whichever engine the provider
         │                      selects; fold the run's events back into reply
         │                      snapshots and stream each render's new suffix.
@@ -159,7 +163,8 @@ engine/core/workflow.ts        Mastra workflow (createWorkflow + createStep)
         ▼                         the model call - see Slash commands)
       branch
         ├─▶ draft-plan         ── Planner.plan(fullPrompt, onPartial)  (intent = "planning")
-        │                         conversation + prompt + full attachment text;
+        │                         project instructions + conversation + prompt
+        │                         + full attachment text;
         │                         → { summary, steps[] } (capability-routed model);
         │                         pushes the triage decision and every partial
         │                         plan snapshot to the sink as the model streams
@@ -170,8 +175,8 @@ engine/core/workflow.ts        Mastra workflow (createWorkflow + createStep)
         ▼
       branch
         ├─▶ execute-plan       ── Executor.execute(executionPrompt, onPartial)  (a plan was drafted)
-        │                         conversation + prompt + attachment text + the
-        │                         numbered plan;
+        │                         project instructions + conversation + prompt
+        │                         + attachment text + the numbered plan;
         │                         Mastra runs the tool-calling loop over the five
         │                         workspace tools (run/write/edit Approver-gated);
         │                         → { events[] } transcript (capability-routed model);
@@ -198,9 +203,10 @@ port, designed wire-shaped from day one so a remote backend can implement it
 without the client changing:
 
 - **`Engine.startRun(request, client)`** takes a versioned `RunRequest`
-  (prompt, attachments, history, the client's OS/shell facts, and the names
-  of the tools the client offers) plus a `RunClient` (an event sink and the
-  ToolHost) and returns a `RunHandle` (`result` promise + `cancel()`).
+  (prompt, project instructions, attachments, history, the client's OS/shell
+  facts, and the names of the tools the client offers) plus a `RunClient` (an
+  event sink and the ToolHost) and returns a `RunHandle` (`result` promise +
+  `cancel()`).
 - **Events, not callbacks**, carry the streaming reply: `triaged`,
   `plan-snapshot` (plans are small), `answer-delta`, `execution-event`
   (indexed, since only the transcript's last event ever changes), `usage`,
@@ -260,6 +266,28 @@ chat result metadata with the run's `outcome`, and only an `ok` compact is
 trusted - a failed or cancelled one is skipped entirely, never wiping the
 history it failed to summarize.
 
+**Project instructions (AGENTS.md / CLAUDE.md).** A workspace can carry
+standing rules for the agents in a root-level instruction file. Reading it is
+the client's job (the engine is stateless and has no workspace access):
+`client/instructions.ts` probes the names in `myDevTeam.instructions.files`
+(default `AGENTS.md` then `CLAUDE.md` - the cross-tool standard wins over the
+Claude-specific fallback) in the first workspace folder on every request, and
+ships the first non-blank match - truncated to
+`settings.instructions.maxChars` - on `RunRequest.instructions` with the file
+name as its `source`. Reading fresh per request means an edit takes effect on
+the very next message. Engine-side, the workflow renders the text as a
+`--- Project instructions (<source>) ---` section at the very top of the
+planner, answerer, and executor prompts - **ahead of the conversation**,
+because the instructions are the most stable content across turns and leading
+with them keeps the longest prompt prefix unchanged turn over turn, which is
+what prefix caches (Ollama's KV reuse today, explicit prompt caching on a
+paid provider later) can reuse. Triage never sees the section: routing
+oneshot-vs-planning needs no standing conventions, and on a small local model
+they would crowd out the question. The field is optional on the wire, so an
+engine that predates it ignores it and version skew degrades instead of
+breaking. Nested per-directory AGENTS.md files and `@import`-style includes
+are out of scope for now (see [Roadmap](#roadmap)).
+
 ### Configuration vs. code (`config/`)
 
 Anything that's *configuration* - prose an author tunes, tunable limits, UI
@@ -281,7 +309,7 @@ never carry literals inline.
 | `engine/config/commands.ts`     | Discovers the command files, exports `commandConfigs`/`commandNames` and the pinned-route reason |
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
-| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
 | `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama-hint template the LocalEngine fills in, the /clear confirmation, and the run-mirror terminal's copy (tab name, command header, outcome note). Knows nothing about agents or models - which model is routed where is engine knowledge that reaches the UI only as a protocol error's `hint` |
 | `config/clientCommands.ts`      | The client-handled commands (`/clear`, with its autocomplete description) plus the `/compact` marker name the history collection watches for - client-side because conversation history is client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
@@ -331,6 +359,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
 | `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
 | `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file (or an edit's replacement text) shown under a `write`/`edit` call in the transcript (`0` hides the snippet) |
+| `myDevTeam.instructions.files`       | `["AGENTS.md", "CLAUDE.md"]` | Root-relative file names probed for standing project instructions, in order; the first that exists is sent with every run. Plain names only (an entry with a path separator or `..` falls back to the default list); an empty list disables the feature |
 | `myDevTeam.telemetry.evalLog`        | `false`                  | Opt-in local eval log: store per-run route/usage/outcome records and 👍/👎 feedback as JSON lines in extension storage (no prompt or reply text; nothing leaves the machine) |
 
 Invalid values (wrong type, non-positive numbers, an endpoint that is not an
@@ -624,13 +653,18 @@ non-blocking) if the server is down or a router-selected model is not pulled.
 
 Out of the box, `@devteam <prompt>`:
 
-1. Resolves any attached files/selections into labelled attachments (an
+1. Resolves the workspace's instruction file (the first match in
+   `myDevTeam.instructions.files`, `AGENTS.md` then `CLAUDE.md` by default),
+   any attached files/selections into labelled attachments (an
    attached file beyond `settings.maxAttachmentReadBytes` becomes a too-large
-   notice instead of being read) and the chat session's prior turns (your
+   notice instead of being read), and the chat session's prior turns (your
    prompts and the participant's replies, capped per `settings.history`) into
    conversation history, and starts a
    protocol run on the selected engine (`myDevTeam.engine`, the in-process
-   local engine by default) with both alongside the prompt. Follow-ups work:
+   local engine by default) with all three alongside the prompt. The
+   instructions reach the planner, answerer, and executor as a
+   `--- Project instructions ---` section leading their prompts, so the
+   repository's standing rules hold on every request. Follow-ups work:
    "now rename it too" reaches every agent with the turns that say what "it"
    is. A prior `/clear` cuts the history off at its marker, and a successful
    `/compact` replaces everything before it with its summary turn. While
@@ -841,6 +875,11 @@ is comprehensive - run `npm run test:coverage` to see it.
   (VS Code auth session or stored API key), metering/billing on the `usage`
   events, server-held provider keys (e.g. Anthropic slots into the model
   registry + a provider factory), rate limits, multi-tenancy.
+- **Fuller project-instruction support.** Today one root-level file
+  (AGENTS.md/CLAUDE.md) is read whole; the agents.md spec's nested
+  per-directory files (with merge rules) and CLAUDE.md-style `@import`
+  includes are candidates once the executor is directory-aware, as is a
+  one-line "instructions loaded from AGENTS.md" note in the reply.
 - **Add a Webview front end.**
   1. Add a `WebviewApprover implements Approver` with a diff/confirm UI.
   2. Pass it instead of `ChatApprover` in `extension.ts`.

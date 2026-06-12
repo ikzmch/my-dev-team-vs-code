@@ -13,13 +13,19 @@ import {
   HistoryTurn,
   HistoryTurnSchema,
   Plan,
+  ProjectInstructionsSchema,
   ReplyProgress,
   ReplySchema,
   Reply,
 } from '../../protocol/types';
 import { RunStep } from '../../protocol/events';
 
-export type { Attachment, HistoryTurn, ReplyProgress } from '../../protocol/types';
+export type {
+  Attachment,
+  HistoryTurn,
+  ProjectInstructions,
+  ReplyProgress,
+} from '../../protocol/types';
 
 /**
  * Step ids of the dev-team workflow. Engine-internal: the LocalEngine maps a
@@ -44,6 +50,7 @@ export const stepIds = {
  */
 export const RequestSchema = z.object({
   prompt: z.string(),
+  instructions: ProjectInstructionsSchema.optional(),
   attachments: z.array(AttachmentSchema).optional(),
   history: z.array(HistoryTurnSchema).optional(),
   command: z.string().optional(),
@@ -80,6 +87,23 @@ function withHistory(input: RequestInput, body: string): string {
 }
 
 /**
+ * Prepend the project-instructions section (the workspace's AGENTS.md or
+ * CLAUDE.md, read by the client) ahead of everything else, then the
+ * conversation. First place is deliberate: the instructions are the most
+ * stable content across turns, so leading with them keeps the longest prompt
+ * prefix unchanged turn over turn - exactly what prefix caches reuse -
+ * while the growing history and the per-turn prompt follow.
+ */
+function withStandingContext(input: RequestInput, body: string): string {
+  const rest = withHistory(input, body);
+  if (!input.instructions) {
+    return rest;
+  }
+  const { source, text } = input.instructions;
+  return `--- Project instructions (${source}) ---\n${text}\n--- End of project instructions ---\n\n${rest}`;
+}
+
+/**
  * The prompt the triage agent sees: the conversation so far, the question,
  * and attachment names only. Triage just routes oneshot vs planning, so
  * inlining file contents would waste tokens and, on a small local model, push
@@ -99,21 +123,24 @@ export function triagePrompt(input: RequestInput): string {
 }
 
 /**
- * The prompt the planner and answerer see: the conversation so far, the slash
+ * The prompt the planner and answerer see: the project instructions (when the
+ * workspace has an AGENTS.md/CLAUDE.md), the conversation so far, the slash
  * command's preamble (when one was invoked - the preamble frames the request,
  * e.g. /fix's diagnose-first briefing), the question, and the full attachment
- * text, one fenced block per attachment. Triage never sees the preamble: when
- * a command is known its route is pinned and triage is skipped.
+ * text, one fenced block per attachment. Triage sees neither the preamble nor
+ * the instructions: a known command pins the route and skips triage, and
+ * routing oneshot-vs-planning needs no standing conventions - on a small
+ * local model they would only crowd out the question.
  */
 export function fullPrompt(input: RequestInput): string {
   const preamble = commandFor(input)?.preamble;
   const prompt = preamble ? `${preamble}\n\n${input.prompt}` : input.prompt;
   const attachments = input.attachments ?? [];
   if (attachments.length === 0) {
-    return withHistory(input, prompt);
+    return withStandingContext(input, prompt);
   }
   const blocks = attachments.map((a) => `${a.label}\n\`\`\`\n${a.text}\n\`\`\``);
-  return withHistory(
+  return withStandingContext(
     input,
     `${prompt}\n\n--- Attached context ---\n${blocks.join('\n\n')}`
   );
@@ -255,6 +282,7 @@ export function createDevTeamWorkflow(
           );
       return {
         prompt: inputData.prompt,
+        instructions: inputData.instructions,
         attachments: inputData.attachments,
         history: inputData.history,
         command: inputData.command,
@@ -268,7 +296,8 @@ export function createDevTeamWorkflow(
     inputSchema: TriagedSchema,
     outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, history, command, intent, reason } = inputData;
+      const { prompt, instructions, attachments, history, command, intent, reason } =
+        inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every plan
       // snapshot the planner streams, so the UI can render tokens as they
@@ -281,7 +310,7 @@ export function createDevTeamWorkflow(
         onPartial,
         usageReporter(requestContext, 'plan')
       );
-      return { prompt, attachments, history, command, intent, reason, plan };
+      return { prompt, instructions, attachments, history, command, intent, reason, plan };
     },
   });
 
@@ -290,7 +319,8 @@ export function createDevTeamWorkflow(
     inputSchema: TriagedSchema,
     outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, history, command, intent, reason } = inputData;
+      const { prompt, instructions, attachments, history, command, intent, reason } =
+        inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every answer
       // snapshot the answerer streams, mirroring the draft-plan step.
@@ -300,7 +330,7 @@ export function createDevTeamWorkflow(
         sink && ((text) => sink({ intent, reason, answer: text })),
         usageReporter(requestContext, 'answer')
       );
-      return { prompt, attachments, history, command, intent, reason, answer };
+      return { prompt, instructions, attachments, history, command, intent, reason, answer };
     },
   });
 
@@ -309,7 +339,8 @@ export function createDevTeamWorkflow(
     inputSchema: StagedReplySchema,
     outputSchema: ReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, history, command, intent, reason, plan } = inputData;
+      const { prompt, instructions, attachments, history, command, intent, reason, plan } =
+        inputData;
       if (!plan) {
         throw new Error('execute-plan reached without a drafted plan.');
       }
@@ -320,7 +351,7 @@ export function createDevTeamWorkflow(
       const onPartial: ExecutionProgress | undefined =
         sink && ((partial) => sink({ intent, reason, plan, execution: partial }));
       const execution = await executor.execute(
-        executionPrompt({ prompt, attachments, history, command }, plan),
+        executionPrompt({ prompt, instructions, attachments, history, command }, plan),
         onPartial,
         abortSignal(requestContext),
         usageReporter(requestContext, 'execute')

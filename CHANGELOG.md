@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-06-12
+
+### Added
+
+- **Project instruction files (AGENTS.md / CLAUDE.md)**. A workspace's
+  `AGENTS.md` (or `CLAUDE.md`) is now read on every request and given to the
+  agents as standing instructions, so project conventions hold without
+  repeating them in chat; edits to the file take effect on the next message.
+  The probed file names are configurable via `myDevTeam.instructions.files`
+  (an empty list turns the feature off).
+
 ## [0.21.1] - 2026-06-12
 
 ### Security

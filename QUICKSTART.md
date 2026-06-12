@@ -73,6 +73,12 @@ Then try a real request:
 - **Follow up** - the conversation carries over, so "now rename it too" or
   "add a test for that" resolves against what was just done.
 
+- **Set standing rules** - put an `AGENTS.md` (or `CLAUDE.md`) file in your
+  project root with your conventions ("always run the tests", "use tabs",
+  "never touch the generated folder") and the agent follows them on every
+  request - no need to repeat them in chat. Edits to the file take effect on
+  your very next message. If both files exist, `AGENTS.md` wins.
+
 The agent decides on its own whether your request is a question (it answers
 directly) or work on files (it plans, then executes). You watch the plan and
 an execution transcript stream into the chat as it happens.
@@ -139,6 +145,7 @@ likely to touch:
 | `myDevTeam.ollama.endpoint`      | `http://localhost:11434` | Where your Ollama server listens                  |
 | `myDevTeam.run.commandTimeoutMs` | `60000`                  | How long a shell command may run before it is killed |
 | `myDevTeam.chat.toolSnippetLines`| `5`                      | Lines of a written file previewed in the chat transcript (`0` hides the preview) |
+| `myDevTeam.instructions.files`   | `["AGENTS.md", "CLAUDE.md"]` | Which project files in your workspace root hold standing rules for the agent; the first one found is used. An empty list turns the feature off |
 | `myDevTeam.telemetry.evalLog`    | `false`                  | Opt-in local log of runs and 👍/👎 feedback - stays on your machine, records no prompts or file contents |
 
 There are further knobs for read/search limits (`myDevTeam.read.*`,

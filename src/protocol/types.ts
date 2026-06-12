@@ -28,6 +28,20 @@ export const AttachmentSchema = z.object({
 });
 export type Attachment = z.infer<typeof AttachmentSchema>;
 
+/**
+ * Standing project instructions the client read from the workspace root (an
+ * AGENTS.md or CLAUDE.md file): repository conventions every run should
+ * follow. The client truncates the text; which file won is named in `source`
+ * so prompts can attribute the rules.
+ */
+export const ProjectInstructionsSchema = z.object({
+  /** The file the instructions came from, e.g. "AGENTS.md". */
+  source: z.string(),
+  /** The file's text, already truncated by the client. */
+  text: z.string(),
+});
+export type ProjectInstructions = z.infer<typeof ProjectInstructionsSchema>;
+
 /** One prior turn of the conversation, already capped by the client. */
 export const HistoryTurnSchema = z.object({
   role: z.enum(['user', 'assistant']),
@@ -57,12 +71,15 @@ export type EnvironmentFacts = z.infer<typeof EnvironmentFactsSchema>;
  * command the user invoked (without the slash), if any: what a command does
  * is the engine's business (its command registry pins the route and shapes
  * the prompts), the client only relays the name, and an engine that does not
- * know the name treats the prompt as plain text.
+ * know the name treats the prompt as plain text. `instructions` carries the
+ * workspace's standing instruction file (AGENTS.md/CLAUDE.md) when one exists;
+ * an engine that predates the field simply ignores it.
  */
 export const RunRequestSchema = z.object({
   protocolVersion: z.number().int().positive(),
   prompt: z.string(),
   command: z.string().optional(),
+  instructions: ProjectInstructionsSchema.optional(),
   attachments: z.array(AttachmentSchema).optional(),
   history: z.array(HistoryTurnSchema).optional(),
   environment: EnvironmentFactsSchema.optional(),

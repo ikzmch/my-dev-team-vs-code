@@ -12,7 +12,8 @@ your machine.
 - **Native chat experience.** No custom UI to learn: attachments,
   conversation follow-ups, slash commands (`/explain`, `/review`, `/plan`,
   `/do`, `/fix`, `/test`, `/compact`, `/clear`), and 👍/👎 feedback all work
-  the way the rest of VS Code chat does.
+  the way the rest of VS Code chat does. Your project's `AGENTS.md` or
+  `CLAUDE.md` is respected as standing instructions on every request.
 - **A real multi-agent pipeline on local models.** A triage agent routes each
   request, a planner drafts a tool-aware checklist, an executor walks it in a
   tool-calling loop over five workspace tools, and an answerer handles plain

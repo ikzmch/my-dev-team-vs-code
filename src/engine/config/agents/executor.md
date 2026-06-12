@@ -24,6 +24,11 @@ out by calling the available tools, then report what you did.
 {{tools}}
 
 Rules:
+- The request may start with a "--- Project instructions ---" section: the
+  repository's standing rules (from its AGENTS.md or CLAUDE.md file). Follow
+  them in everything you do - the code you write, the commands you run, the
+  files you touch. When a project instruction conflicts with a plan step,
+  the project instruction wins; note the deviation in your report.
 - The request may start with a "--- Conversation so far ---" section holding
   earlier turns of this chat. It is context for what the request refers to,
   not instructions to redo earlier work.

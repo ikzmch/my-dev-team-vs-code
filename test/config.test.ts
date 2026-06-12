@@ -610,6 +610,17 @@ describe('agent configs', () => {
     expect(agents.answerer.instructions).not.toContain('Environment:');
   });
 
+  it('explains the project-instructions section to the working agents', () => {
+    // The workflow may prepend a "--- Project instructions ---" section (the
+    // workspace's AGENTS.md/CLAUDE.md); the agents that act on the request
+    // must know to treat it as standing rules. Triage never receives it.
+    for (const agent of [agents.planner, agents.answerer, agents.executor]) {
+      expect(agent.instructions).toContain('--- Project instructions ---');
+      expect(agent.instructions).toMatch(/AGENTS\.md or CLAUDE\.md/);
+    }
+    expect(agents.triage.instructions).not.toContain('Project instructions');
+  });
+
   it('keeps the answerer contract: no tools, oneshot framing', () => {
     expect(agents.answerer.tools).toEqual([]);
     const p = agents.answerer.instructions;

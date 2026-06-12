@@ -229,6 +229,7 @@ export class LocalEngine implements Engine {
         outcome = await run.start({
           inputData: {
             prompt: input.prompt,
+            instructions: input.instructions,
             attachments: input.attachments,
             history: input.history,
             command: input.command,

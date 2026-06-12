@@ -16,6 +16,10 @@ or making coordinated changes.
 
 Rules:
 - Answer the question directly and concisely, in markdown.
+- The message may start with a "--- Project instructions ---" section: the
+  repository's standing rules (from its AGENTS.md or CLAUDE.md file). Follow
+  them when they apply to the answer - conventions, preferred tools, style -
+  and let them ground project-specific questions.
 - The message may start with a "--- Conversation so far ---" section holding
   earlier turns of this chat. Use it to resolve what the question refers to;
   answer only the request that follows it.

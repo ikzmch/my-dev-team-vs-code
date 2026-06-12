@@ -559,6 +559,41 @@ describe('createHandler', () => {
     expect(metadata.outcome).toBe('ok');
   });
 
+  it('gives the agents the workspace AGENTS.md as project instructions', async () => {
+    __setFile('AGENTS.md', 'Always run the tests.');
+    const { engine, seen } = makeEngine(async () => ({
+      intent: 'planning',
+      reason: 'needs steps',
+    }));
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    // Triage routes without the standing rules; the working agents get them.
+    expect(seen.triage).not.toContain('Always run the tests.');
+    for (const prompt of [seen.planner, seen.executor]) {
+      expect(prompt).toContain('--- Project instructions (AGENTS.md) ---');
+      expect(prompt).toContain('Always run the tests.');
+    }
+  });
+
+  it('runs without instructions when the workspace has no AGENTS.md', async () => {
+    const { engine, seen } = makeEngine();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'what is 2+2', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    expect(seen.answerer).toBe('what is 2+2');
+  });
+
   it('inlines an attached file (Uri reference) into the answerer prompt', async () => {
     const uri = __setFile('src/a.ts', 'file body');
     const { engine, seen } = makeEngine();

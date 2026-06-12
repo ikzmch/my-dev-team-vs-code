@@ -30,6 +30,24 @@ describe('protocol schemas', () => {
         offeredTools: ['read'],
       })
     ).not.toThrow();
+    // Project instructions ride along as an optional labelled text.
+    expect(() =>
+      RunRequestSchema.parse({
+        protocolVersion: 1,
+        prompt: 'hi',
+        instructions: { source: 'AGENTS.md', text: 'Always run the tests.' },
+        offeredTools: ['read'],
+      })
+    ).not.toThrow();
+    // Instructions without their source file are malformed.
+    expect(() =>
+      RunRequestSchema.parse({
+        protocolVersion: 1,
+        prompt: 'hi',
+        instructions: { text: 'rules' },
+        offeredTools: ['read'],
+      })
+    ).toThrow();
     // Missing offeredTools.
     expect(() =>
       RunRequestSchema.parse({ protocolVersion: 1, prompt: 'hi' })

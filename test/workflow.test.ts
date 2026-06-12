@@ -10,6 +10,7 @@ import {
   executionPrompt,
   Attachment,
   HistoryTurn,
+  ProjectInstructions,
   DevTeamWorkflow,
   ReplyProgress,
   ReplyProgressSink,
@@ -255,6 +256,61 @@ describe('dev-team workflow routing', () => {
       expect(prompt).toContain('Assistant: Created calculator.py.');
       expect(prompt).toContain('now rename it');
     }
+  });
+
+  it('hands the project instructions to planner and executor, never to triage', async () => {
+    const instructions: ProjectInstructions = {
+      source: 'CLAUDE.md',
+      text: 'Never use en dashes.',
+    };
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async (p) => {
+        seen.triage = p;
+        return { intent: 'planning', reason: 'x' };
+      }),
+      fakePlanner(async (p) => {
+        seen.planner = p;
+        return aPlan;
+      }),
+      fakeAnswerer(),
+      fakeExecutor(async (p) => {
+        seen.executor = p;
+        return anExecution;
+      })
+    );
+
+    const run = await workflow.createRun();
+    await run.start({ inputData: { prompt: 'add a feature', instructions } });
+
+    expect(seen.triage).not.toContain('Never use en dashes.');
+    for (const prompt of [seen.planner, seen.executor]) {
+      expect(prompt).toContain('--- Project instructions (CLAUDE.md) ---');
+      expect(prompt).toContain('Never use en dashes.');
+    }
+  });
+
+  it('hands the project instructions to the answerer on the oneshot path', async () => {
+    const instructions: ProjectInstructions = {
+      source: 'AGENTS.md',
+      text: 'Prefer plain language.',
+    };
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (p) => {
+        seen.answerer = p;
+        return 'ok';
+      }),
+      fakeExecutor()
+    );
+
+    const run = await workflow.createRun();
+    await run.start({ inputData: { prompt: 'what is this', instructions } });
+
+    expect(seen.answerer).toContain('--- Project instructions (AGENTS.md) ---');
+    expect(seen.answerer).toContain('Prefer plain language.');
   });
 
   it('hands the conversation history to the answerer on the oneshot path', async () => {
@@ -654,6 +710,46 @@ describe('prompt assembly', () => {
       prompt.indexOf('now rename it')
     );
     expect(prompt).toContain('const a = 1;');
+  });
+
+  const instructions: ProjectInstructions = {
+    source: 'AGENTS.md',
+    text: 'Always run the tests.',
+  };
+
+  it('prepends the project instructions to the full prompt, not the triage prompt', () => {
+    const full = fullPrompt({ prompt: 'add a feature', instructions });
+    expect(full.startsWith('--- Project instructions (AGENTS.md) ---\n')).toBe(true);
+    expect(full).toContain('Always run the tests.');
+    expect(full).toContain('--- End of project instructions ---');
+    // Triage routes oneshot-vs-planning; standing conventions would only
+    // crowd a small model's context.
+    expect(triagePrompt({ prompt: 'add a feature', instructions })).toBe(
+      'add a feature'
+    );
+  });
+
+  it('keeps the project instructions ahead of the conversation and the prompt', () => {
+    const full = fullPrompt({ prompt: 'now rename it', instructions, history });
+    expect(full.startsWith('--- Project instructions (AGENTS.md) ---\n')).toBe(true);
+    expect(full.indexOf('--- Conversation so far ---')).toBeGreaterThan(
+      full.indexOf('--- End of project instructions ---')
+    );
+    expect(full.indexOf('now rename it')).toBeGreaterThan(
+      full.indexOf('--- End of conversation ---')
+    );
+  });
+
+  it('carries the project instructions into the execution prompt', () => {
+    const plan: PlanResult = {
+      summary: 'Do it',
+      steps: [{ title: 'Edit', tool: 'edit', detail: 'change it' }],
+    };
+    const prompt = executionPrompt({ prompt: 'refactor', instructions }, plan);
+    expect(prompt).toContain('--- Project instructions (AGENTS.md) ---');
+    expect(prompt.indexOf('--- Drafted plan ---')).toBeGreaterThan(
+      prompt.indexOf('--- End of project instructions ---')
+    );
   });
 
   it('includes the conversation section in the execution prompt', () => {
