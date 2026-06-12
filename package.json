@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -89,6 +89,14 @@
         "description": "Ask me to read, search, run, or change files in your workspace.",
         "isSticky": true,
         "commands": [
+          {
+            "name": "clear",
+            "description": "Start fresh: drop the conversation so far from future requests."
+          },
+          {
+            "name": "compact",
+            "description": "Summarize the conversation so far; the summary then stands in for it."
+          },
           {
             "name": "do",
             "description": "Plan and execute workspace changes - no triage."

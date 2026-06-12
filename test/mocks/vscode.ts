@@ -68,9 +68,13 @@ export class ChatResponseMarkdownPart {
 }
 
 export class ChatResponseTurn {
+  // Mirrors the real shape: `result` is the ChatResult the handler returned
+  // for this turn, whose metadata pairs feedback (and the /compact history
+  // rule) with the run that produced it.
   constructor(
     public readonly response: unknown[],
-    public readonly participant: string = 'myDevTeam.agent'
+    public readonly participant: string = 'myDevTeam.agent',
+    public readonly result: { metadata?: unknown } = {}
   ) {}
 }
 

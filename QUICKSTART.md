@@ -1,0 +1,165 @@
+# My Dev Team - Quick start
+
+My Dev Team is an AI chat participant for VS Code. You talk to it as
+`@devteam` in the normal chat panel, and it can answer questions, draft
+step-by-step plans, and carry them out: reading, searching, creating, and
+editing files in your workspace and running shell commands - always asking
+you first before it changes anything. Everything runs locally against your
+own [Ollama](https://ollama.com) server; nothing leaves your machine.
+
+## 1. What you need
+
+- **VS Code** 1.95 or newer
+- **Node.js** 20.x (to build the extension)
+- **Ollama** installed and running locally, with these models pulled:
+
+  ```bash
+  ollama serve                 # listens on http://localhost:11434
+  ollama pull qwen3:8b
+  ollama pull qwen3:14b
+  ollama pull qwen3-coder
+  ollama pull gemma3:4b
+  ```
+
+  If your Ollama server listens somewhere else, set the
+  `myDevTeam.ollama.endpoint` setting (see [Settings](#5-settings)).
+
+## 2. Build and launch
+
+The extension is not on the marketplace yet; you run it from source:
+
+```bash
+npm install
+npm run build
+```
+
+Then open this folder in VS Code and press **F5** to launch the Extension
+Development Host (if VS Code asks for a debugger, pick "VS Code Extension
+Development"). A second VS Code window opens with the extension loaded -
+open a workspace folder in it and work there.
+
+On startup the extension checks your Ollama server and warns you if it is
+unreachable or one of the models above is missing - if you see no warning,
+you are good to go.
+
+## 3. First steps
+
+Open the Chat view (**Ctrl+Alt+I**) and address the participant:
+
+```
+@devteam hello
+```
+
+Then try a real request:
+
+- **Ask a question** - the reply streams straight into the chat:
+
+  ```
+  @devteam what does a .gitignore file do?
+  ```
+
+- **Have it build something** - it drafts a numbered plan, then executes it
+  step by step:
+
+  ```
+  @devteam create a console calculator in calculator.py with add, subtract, multiply and divide
+  ```
+
+- **Attach context** - use the paperclip (or `#`-references) to attach files
+  or a selection; the agent receives their full text.
+
+- **Follow up** - the conversation carries over, so "now rename it too" or
+  "add a test for that" resolves against what was just done.
+
+The agent decides on its own whether your request is a question (it answers
+directly) or work on files (it plans, then executes). You watch the plan and
+an execution transcript stream into the chat as it happens.
+
+For more ready-made prompts to try, see [examples/](examples/README.md).
+
+## 4. Slash commands
+
+Type `/` after `@devteam` to pick a command. A command skips the automatic
+question-vs-work decision and tells the agent exactly what kind of help you
+want:
+
+| Command    | What it does                                                        |
+| ---------- | ------------------------------------------------------------------- |
+| `/explain` | Explain a file, selection, or concept in the chat - no changes made |
+| `/review`  | Review the attached code or selection - findings in chat, no edits  |
+| `/plan`    | Draft the step-by-step plan but do not execute it; say "go ahead" in a follow-up to run it |
+| `/do`      | Plan and execute workspace changes - skip straight to doing         |
+| `/fix`     | Diagnose a bug, fix its root cause, and verify the fix              |
+| `/test`    | Write or update tests for the target code, then run them            |
+| `/compact` | Summarize the conversation so far; the summary then stands in for it in future turns |
+| `/clear`   | Start fresh: drop the conversation so far from future requests      |
+
+Commands work in follow-ups too: `/explain what you just did` refers back to
+the earlier turns.
+
+`/compact` and `/clear` manage the conversation context. Long sessions are
+capped (only the most recent turns travel with each request), so on a long
+task old decisions silently fall away - `/compact` condenses them into one
+summary the agent keeps seeing, while `/clear` is for changing topic without
+opening a new chat. The chat panel still shows everything; the commands only
+change what the models receive. If a `/compact` fails (e.g. Ollama is down),
+your history is untouched - the summary only takes over once it actually
+succeeded.
+
+## 5. Approvals: you stay in control
+
+Reading and searching files never asks. Anything that changes your machine
+stops and asks you first, right in the chat:
+
+- **Run Command** shows the exact shell command.
+- **Write File** shows the target path and a preview of the new contents.
+- **Edit File** shows the path and a diff-style before/after of the change.
+
+Click **Approve** to let it happen or **Decline** to skip it. Declining does
+not abort the run: the agent is told the action was not approved, carries on
+with the rest of the plan, and notes the skip in its report. Cancelling the
+chat request (the stop button) cancels everything, including a command
+already running.
+
+Every approved command's full live output also appears in a read-only
+**"Dev Team" terminal** in the terminal panel - open that tab to watch
+commands run or to read the session log afterwards; the chat itself only
+shows short previews.
+
+## 6. Settings
+
+Open Settings and search for "My Dev Team" (or edit `settings.json`).
+Changes take effect immediately - no reload needed. The ones you are most
+likely to touch:
+
+| Setting                          | Default                  | What it controls                                  |
+| -------------------------------- | ------------------------ | ------------------------------------------------- |
+| `myDevTeam.ollama.endpoint`      | `http://localhost:11434` | Where your Ollama server listens                  |
+| `myDevTeam.run.commandTimeoutMs` | `60000`                  | How long a shell command may run before it is killed |
+| `myDevTeam.chat.toolSnippetLines`| `5`                      | Lines of a written file previewed in the chat transcript (`0` hides the preview) |
+| `myDevTeam.telemetry.evalLog`    | `false`                  | Opt-in local log of runs and 👍/👎 feedback - stays on your machine, records no prompts or file contents |
+
+There are further knobs for read/search limits (`myDevTeam.read.*`,
+`myDevTeam.search.*`) and the engine choice (`myDevTeam.engine`, leave it on
+`local` for now).
+
+## 7. Feedback
+
+Use the **👍 / 👎** buttons on any reply. With
+`myDevTeam.telemetry.evalLog` enabled, your votes are stored locally next to
+the run's routing and usage data, which helps tune the agents - nothing is
+ever sent anywhere.
+
+## 8. Troubleshooting
+
+- **"Ollama is unreachable" or a request fails on the first step** - make
+  sure `ollama serve` is running and that `myDevTeam.ollama.endpoint`
+  matches where it listens.
+- **A request fails naming a model** - pull the named model
+  (`ollama pull <model>`); the agent only routes to models listed in
+  [section 1](#1-what-you-need).
+- **A command seems stuck** - long commands are killed after
+  `myDevTeam.run.commandTimeoutMs` (60s by default); raise it for slow
+  builds or test suites.
+- **Replies feel slow** - the agents run on local models; speed depends on
+  your hardware and the model sizes. Smaller models respond faster.

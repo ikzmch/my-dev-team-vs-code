@@ -19,7 +19,27 @@ scripts table - they name concrete files and models and drift easily.
 Pure refactors that change no structure or behavior, and test-only changes, do
 not require a README update.
 
-## Keep CHANGELOG.md in sync
+## Keep QUICKSTART.md in sync
+
+QUICKSTART.md is the end-user guide: it tells a non-developer how to set up,
+launch, and use the extension. Every time a change affects what an end user
+sees or does, update it in the same piece of work - do not leave it for a
+follow-up. That means changes to:
+
+- setup: prerequisites, which Ollama models to pull, build/launch steps
+- usage: what `@devteam` does, the slash commands and their effects,
+  attachments, follow-ups
+- the approval flow: which actions ask first, what the prompts show, what
+  Approve/Decline/cancel do, the "Dev Team" terminal
+- user-facing settings: any added/renamed/removed `myDevTeam.*` setting or a
+  changed default
+- feedback and troubleshooting: the 👍/👎 flow, the eval log, common failure
+  modes and their fixes
+
+Keep it written for an end user, not a developer: plain language, no
+architecture or implementation detail, no source file paths. Internal
+changes (refactors, new seams, protocol work) that do not change what the
+user experiences do not require an update.
 
 Every time a significant change is made, add a CHANGELOG.md entry in the same
 piece of work, following the file's existing Keep a Changelog format (newest

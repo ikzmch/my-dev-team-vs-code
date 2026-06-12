@@ -15,6 +15,7 @@ import { ReplyFolder, RunEvent } from '../protocol/events';
 import { clientTools, ToolHost } from '../protocol/toolContract';
 import { Engine, RunCancelledError, RunFailedError } from '../protocol/engine';
 import { EvalLog, UsageEntry } from '../client/evalLog';
+import { CLEAR_COMMAND, COMPACT_COMMAND } from '../config/clientCommands';
 import { environment } from '../config/environment';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
@@ -171,6 +172,18 @@ async function collectAttachments(
  * of its markdown parts (buttons and other parts carry no reusable text).
  * The settings.history caps bound what a long session can add to a prompt:
  * each turn's text is truncated and only the most recent turns are kept.
+ *
+ * Two commands manage this history (history is client state - the engine is
+ * stateless - so the rules live here, not in the engine's command registry):
+ *
+ * - a /clear request turn resets the collection; neither the turns before
+ *   it, the marker itself, nor its confirmation reply reach future prompts.
+ * - a successful /compact response (its `TurnMetadata.outcome` is "ok") also
+ *   resets the collection, but keeps itself: the summary becomes the sole
+ *   opening assistant turn, standing in for everything it summarized. The
+ *   /compact request turn is only the instruction and is skipped, and a
+ *   failed or cancelled compact is skipped entirely so it never wipes the
+ *   history it failed to summarize.
  */
 function collectHistory(
   history: readonly (vscode.ChatRequestTurn | vscode.ChatResponseTurn)[]
@@ -181,12 +194,29 @@ function collectHistory(
       continue;
     }
     if (turn instanceof vscode.ChatRequestTurn) {
+      if (turn.command === CLEAR_COMMAND) {
+        turns.length = 0;
+        continue;
+      }
+      if (turn.command === COMPACT_COMMAND) {
+        continue;
+      }
       const prompt = turn.command ? `/${turn.command} ${turn.prompt}` : turn.prompt;
       turns.push({
         role: 'user',
         text: truncate(prompt, settings.history.maxTurnChars),
       });
     } else if (turn instanceof vscode.ChatResponseTurn) {
+      const metadata = turn.result?.metadata as Partial<TurnMetadata> | undefined;
+      if (metadata?.command === CLEAR_COMMAND) {
+        continue;
+      }
+      if (metadata?.command === COMPACT_COMMAND) {
+        if (metadata.outcome !== 'ok') {
+          continue;
+        }
+        turns.length = 0;
+      }
       const text = turn.response
         .filter(
           (part): part is vscode.ChatResponseMarkdownPart =>
@@ -382,13 +412,17 @@ function renderFailure(error: RunFailedError): string {
 /**
  * What the handler stores in each turn's chat result metadata: the pairing
  * key the feedback listener needs to attribute a later 👍/👎 click to the run
- * (and route) it judges. VS Code hands the metadata back on
- * `onDidReceiveFeedback` via `feedback.result`.
+ * (and route) it judges, plus how the turn ended. VS Code hands the metadata
+ * back on `onDidReceiveFeedback` via `feedback.result`, and on each response
+ * turn's `result` in the session history - which is how `collectHistory`
+ * tells a successful /compact (its summary replaces the older turns) from a
+ * failed one (which must not wipe the history it failed to summarize).
  */
 export interface TurnMetadata {
   command: string;
   runId: string;
   intent?: Intent;
+  outcome?: 'ok' | 'error' | 'cancelled';
 }
 
 /**
@@ -407,6 +441,24 @@ export function createHandler(
   evalLog?: EvalLog
 ): vscode.ChatRequestHandler {
   return async (request, context, stream, token) => {
+    // /clear never starts a run: the conversation history is client state
+    // (the engine is stateless and receives it per request), so clearing it
+    // is purely a marker this handler plants - collectHistory drops every
+    // turn before it on the following requests. The confirmation is the
+    // whole reply; a message typed after the command is not processed.
+    if (request.command === CLEAR_COMMAND) {
+      stream.markdown(
+        messages.clear.confirmation +
+          (request.prompt.trim() ? messages.clear.ignoredPrompt : '')
+      );
+      const metadata: TurnMetadata = {
+        command: CLEAR_COMMAND,
+        runId: randomUUID(),
+        outcome: 'ok',
+      };
+      return { metadata };
+    }
+
     // Resolve attached files/selections and the prior turns; the engine
     // folds them into each step's prompt as that step's model needs them.
     const attachments = await collectAttachments(request.references);
@@ -414,12 +466,20 @@ export function createHandler(
 
     // What this turn contributes to the eval log: a fresh run id (also the
     // feedback pairing key), the route once triage decides it, and the
-    // usage events as they arrive.
+    // usage events as they arrive. The outcome also lands in the turn's
+    // metadata, where collectHistory reads it back to trust (or not) a
+    // /compact summary.
     const runId = randomUUID();
     let intent: Intent | undefined;
+    let outcome: TurnMetadata['outcome'];
     const usage: UsageEntry[] = [];
     const chatResult = (): vscode.ChatResult => {
-      const metadata: TurnMetadata = { command: request.command ?? '', runId, intent };
+      const metadata: TurnMetadata = {
+        command: request.command ?? '',
+        runId,
+        intent,
+        outcome,
+      };
       return { metadata };
     };
 
@@ -486,17 +546,20 @@ export function createHandler(
     // pending write is dropped rather than completing.
     const cancellation = token.onCancellationRequested(() => handle.cancel());
 
-    // Fire-and-forget by design: the log never rejects, and a slow disk must
-    // not delay the turn's result.
-    const recordRun = (outcome: 'ok' | 'error' | 'cancelled', errorStep?: string) =>
+    // Settle the turn's outcome (for the result metadata) and record it to
+    // the eval log. The log write is fire-and-forget by design: it never
+    // rejects, and a slow disk must not delay the turn's result.
+    const recordRun = (ending: 'ok' | 'error' | 'cancelled', errorStep?: string) => {
+      outcome = ending;
       void evalLog?.recordRun({
         runId,
         command: request.command ?? '',
         intent,
-        outcome,
+        outcome: ending,
         errorStep,
         usage,
       });
+    };
 
     let reply: Reply;
     try {

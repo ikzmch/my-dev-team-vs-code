@@ -135,6 +135,16 @@ export const messages = {
     completed: '(command completed)',
   },
 
+  /** Copy for the client-side /clear command (it never starts a run). */
+  clear: {
+    /** The whole reply to a /clear turn. */
+    confirmation:
+      'Context cleared - the conversation so far will not accompany future requests.',
+    /** Appended when the /clear turn also carried a message. */
+    ignoredPrompt:
+      ' Your message was not processed; send it again as the next request.',
+  },
+
   triage: {
     block: (intent: string, reason: string) =>
       `**Detected intent:** \`${intent}\`\n\n` + `**Reason:** ${reason}\n\n`,

@@ -377,6 +377,41 @@ describe('createHandler', () => {
     expect(text).toContain('nothing was executed');
   });
 
+  it('answers /clear on the client without starting an engine run', async () => {
+    const { engine, seen } = makeEngine(async () => {
+      throw new Error('no run must start for /clear');
+    });
+    const stream = fakeStream();
+
+    const result = await createHandler(() => engine, hostStub)(
+      { prompt: '', references: [], command: 'clear' } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(seen.triage).toBeUndefined();
+    expect(emitted(stream)).toContain('Context cleared');
+    expect(emitted(stream)).not.toContain('not processed');
+    const metadata = (result as any).metadata;
+    expect(metadata.command).toBe('clear');
+    expect(metadata.outcome).toBe('ok');
+  });
+
+  it('notes that a message typed after /clear was not processed', async () => {
+    const { engine } = makeEngine();
+    const stream = fakeStream();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'and add a feature', references: [], command: 'clear' } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).toContain('not processed');
+  });
+
   it('surfaces a triage failure with the Ollama hint', async () => {
     const { engine } = makeEngine(async () => {
       throw new Error('connection refused');
@@ -482,6 +517,8 @@ describe('createHandler', () => {
     expect(typeof metadata.runId).toBe('string');
     expect(metadata.runId.length).toBeGreaterThan(0);
     expect(metadata.intent).toBe('oneshot');
+    // The outcome is what collectHistory later trusts a /compact summary by.
+    expect(metadata.outcome).toBe('ok');
   });
 
   it('inlines an attached file (Uri reference) into the answerer prompt', async () => {
@@ -888,6 +925,90 @@ describe('createHandler conversation history', () => {
     ]);
 
     expect(seen.triage).toContain('Assistant: Created calculator.py.');
+  });
+
+  /** A response turn carrying the TurnMetadata the handler stores per turn. */
+  function responseTurn(
+    text: string,
+    metadata: { command: string; outcome?: string }
+  ) {
+    return new ChatResponseTurn(
+      [new ChatResponseMarkdownPart(text)],
+      undefined,
+      { metadata: { runId: 'r', ...metadata } }
+    );
+  }
+
+  it('drops everything before a /clear marker, including its confirmation', async () => {
+    const seen = await handle([
+      new ChatRequestTurn('create a calculator'),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('Created calculator.py.')]),
+      new ChatRequestTurn('', 'clear'),
+      responseTurn('Context cleared.', { command: 'clear', outcome: 'ok' }),
+      new ChatRequestTurn('write a poem'),
+    ]);
+
+    expect(seen.answerer).toContain('User: write a poem');
+    expect(seen.answerer).not.toContain('create a calculator');
+    expect(seen.answerer).not.toContain('Created calculator.py.');
+    expect(seen.answerer).not.toContain('Context cleared');
+    expect(seen.answerer).not.toContain('/clear');
+  });
+
+  it('sends the bare prompt when /clear was the whole prior conversation', async () => {
+    const seen = await handle(
+      [
+        new ChatRequestTurn('create a calculator'),
+        new ChatRequestTurn('', 'clear'),
+        responseTurn('Context cleared.', { command: 'clear', outcome: 'ok' }),
+      ],
+      'plain'
+    );
+    expect(seen.answerer).toBe('plain');
+  });
+
+  it('replaces the turns before a successful /compact with its summary', async () => {
+    const seen = await handle([
+      new ChatRequestTurn('create a calculator'),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('Created calculator.py.')]),
+      new ChatRequestTurn('', 'compact'),
+      responseTurn('Summary: built calculator.py with add and subtract.', {
+        command: 'compact',
+        outcome: 'ok',
+      }),
+      new ChatRequestTurn('now add multiply'),
+    ]);
+
+    // The summary stands in for the conversation it summarized...
+    expect(seen.answerer).toContain(
+      'Assistant: Summary: built calculator.py with add and subtract.'
+    );
+    expect(seen.answerer).toContain('User: now add multiply');
+    // ...the summarized turns and the /compact instruction itself are gone.
+    expect(seen.answerer).not.toContain('User: create a calculator');
+    expect(seen.answerer).not.toContain('/compact');
+  });
+
+  it('keeps the history intact when a /compact run failed or was cancelled', async () => {
+    const seen = await handle([
+      new ChatRequestTurn('create a calculator'),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('Created calculator.py.')]),
+      new ChatRequestTurn('', 'compact'),
+      responseTurn('**Answerer error:** connection refused', {
+        command: 'compact',
+        outcome: 'error',
+      }),
+      new ChatRequestTurn('', 'compact'),
+      responseTurn('', { command: 'compact', outcome: 'cancelled' }),
+      new ChatRequestTurn('now add multiply'),
+    ]);
+
+    // The failed compact neither wiped the history nor left residue in it.
+    expect(seen.answerer).toContain('User: create a calculator');
+    expect(seen.answerer).toContain('Assistant: Created calculator.py.');
+    expect(seen.answerer).toContain('User: now add multiply');
+    expect(seen.answerer).not.toContain('connection refused');
+    expect(seen.answerer).not.toContain('/compact');
   });
 });
 

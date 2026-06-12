@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-06-12
+
+### Added
+
+- **/compact and /clear context commands**. `/compact` summarizes the
+  conversation so far, and the summary then stands in for all earlier turns
+  in future requests - so a long session's decisions survive the history cap
+  instead of silently falling away; a failed or cancelled compact leaves the
+  history untouched. `/clear` starts fresh without opening a new chat: it is
+  answered by the client (no engine run) and later requests drop everything
+  before it. The chat panel still shows the full conversation; the commands
+  only change what the models receive.
+
 ## [0.20.0] - 2026-06-12
 
 ### Changed

@@ -5,6 +5,10 @@ An agentic chat participant for VS Code. It lives in the **native chat panel**
 search, run, write, and edit** files in your workspace via the Language Model
 Tools API.
 
+> Just want to use it? See **[QUICKSTART.md](QUICKSTART.md)** - the end-user
+> guide to setup, slash commands, approvals, and settings. This README is the
+> developer documentation.
+
 The agent routes each request through a **local triage agent** (Ollama via
 the Vercel AI SDK + Mastra) before deciding how to respond. Agents don't name
 models: each declares **weighted capability requirements**, and a router picks
@@ -28,10 +32,12 @@ contract (see [The engine protocol](#the-engine-protocol-srcprotocol)). A
 > executor's capability-routed model drives a tool-calling loop over the five
 > workspace tools, with side effects gated by the approval seam. Every turn
 > carries the **conversation history** (size-capped), so follow-ups like
-> "now rename it too" resolve against the earlier exchanges. Six **slash
-> commands** (`/explain`, `/review`, `/plan`, `/do`, `/fix`, `/test`) pin the
-> route without a triage call and frame the request for the agents; `/plan`
-> stops after the plan is drafted. The pipeline now
+> "now rename it too" resolve against the earlier exchanges. Seven engine
+> **slash commands** (`/explain`, `/review`, `/plan`, `/do`, `/fix`, `/test`,
+> `/compact`) pin the route without a triage call and frame the request for
+> the agents; `/plan` stops after the plan is drafted, `/compact` summarizes
+> the conversation into a turn that replaces it, and a client-side `/clear`
+> drops the history without starting a run. The pipeline now
 > runs behind the engine protocol (Phase A of the backend split): only the
 > local engine exists, but the seam, the event stream, the tool inversion,
 > and the usage (billing) events are in place. See
@@ -77,6 +83,7 @@ src/
     settings.ts           operational limits; engine/endpoint/timeout/search caps read live from VS Code settings
     messages.ts           user-facing chat copy (errors, warnings, templates)
     environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
+    clientCommands.ts     the client-handled /clear command + the /compact history-replacement marker
   tools/                  the client's hands - these never move to a backend
     workspaceTools.ts     read / search / run / write / edit implementations (UI-agnostic)
     toolHost.ts           WorkspaceToolHost: validates + dispatches every tool call (engine or editor)
@@ -242,6 +249,17 @@ follow-up like "now rename it too" carries the turns that say what "it" is,
 and triage can route it correctly. Each agent's system prompt explains the
 section: it is context to resolve references, not work to redo.
 
+Two commands manage this history, and because the history is client state
+(the engine is stateless and receives it per request), their rules live in
+the handler's collection, not in the engine: a `/clear` request turn resets
+the collection - neither the turns before it, the marker, nor its
+confirmation reach future prompts; a **successful** `/compact` response also
+resets it but keeps itself, so the summary becomes the sole opening assistant
+turn standing in for everything it summarized. The handler stamps each turn's
+chat result metadata with the run's `outcome`, and only an `ok` compact is
+trusted - a failed or cancelled one is skipped entirely, never wiping the
+history it failed to summarize.
+
 ### Configuration vs. code (`config/`)
 
 Anything that's *configuration* — prose an author tunes, tunable limits, UI
@@ -264,7 +282,8 @@ never carry literals inline.
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
 | `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
-| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama-hint template the LocalEngine fills in, and the run-mirror terminal's copy (tab name, command header, outcome note). Knows nothing about agents or models - which model is routed where is engine knowledge that reaches the UI only as a protocol error's `hint` |
+| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama-hint template the LocalEngine fills in, the /clear confirmation, and the run-mirror terminal's copy (tab name, command header, outcome note). Knows nothing about agents or models - which model is routed where is engine knowledge that reaches the UI only as a protocol error's `hint` |
+| `config/clientCommands.ts`      | The client-handled commands (`/clear`, with its autocomplete description) plus the `/compact` marker name the history collection watches for - client-side because conversation history is client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
 text loader inlines them into the bundle at build time (see `esbuild.mjs`), so
@@ -390,9 +409,10 @@ model: resolveModel(agents.planner.capabilities),
 
 ### Slash commands (`engine/config/commands/` + `engine/config/commands.ts`)
 
-`@devteam` offers six slash commands. Each is a `.md` config file
-(discovered like the models and tools - dropping a file in registers the
-command) that does exactly two things:
+`@devteam` offers eight slash commands - seven **engine commands** and one
+**client command** (`/clear`, see below). Each engine command is a `.md`
+config file (discovered like the models and tools - dropping a file in
+registers the command) that does exactly two things:
 
 - **Pins the route.** A known command skips the triage model call entirely:
   the user typing `/fix` already *is* the routing decision, so the call would
@@ -416,6 +436,8 @@ command) that does exactly two things:
 | `/do`      | planning               | Plan and execute - for when triage misrouting is the annoyance |
 | `/fix`     | planning               | Diagnose first (read, search, run tests), fix the root cause, verify |
 | `/test`    | planning               | Write or update tests for the target code, then run them |
+| `/compact` | oneshot                | Summarize the conversation so far; once it succeeds, the summary replaces all earlier turns in future prompts (see below) |
+| `/clear`   | client-side, no run    | Drop the conversation so far from future requests; the panel still shows it, the models no longer see it |
 
 The command travels on the protocol as `RunRequest.command` - the name only.
 What a command does is the engine's business; the client just relays what the
@@ -424,7 +446,23 @@ Phase-B backend) treats the prompt as plain text, so unknown commands degrade
 instead of breaking. VS Code's autocomplete reads the static declarations in
 `package.json` (`contributes.chatParticipants[].commands`); a unit test
 (`test/commands.test.ts`) asserts they match the discovered configs, so the
-two lists cannot drift.
+lists cannot drift.
+
+**Context commands are the client's, not the engine's.** The "client only
+relays names" rule holds for engine commands; `/clear` and `/compact`'s
+history rule are the deliberate exception, because conversation history is
+client-owned state - the engine is stateless and receives the history in
+every run request. `/clear` (`config/clientCommands.ts`) never starts a run:
+the handler answers it with a confirmation, and `collectHistory` drops every
+turn before the marker on later requests. `/compact` *is* an engine command
+(the answerer writes the summary through the normal oneshot path), but the
+replacement effect is the client's: a successful compact response resets the
+collected history to just the summary turn. Success is read from the turn's
+result metadata (`TurnMetadata.outcome`), so a failed or cancelled compact
+never wipes the history it failed to summarize - see
+[Conversation history](#the-engine-protocol-srcprotocol). Auto-compaction is
+deliberately absent: compacting spends tokens and changes what the models
+see, so it only happens when the user asks.
 
 ### Executor (`engine/core/executor.ts` + `engine/core/agentTools.ts`)
 
@@ -581,13 +619,16 @@ Out of the box, `@devteam <prompt>`:
    protocol run on the selected engine (`myDevTeam.engine`, the in-process
    local engine by default) with both alongside the prompt. Follow-ups work:
    "now rename it too" reaches every agent with the turns that say what "it"
-   is. While agents work, the chat shows VS Code's standard "Thinking"
-   indicator - no custom progress labels are streamed.
+   is. A prior `/clear` cuts the history off at its marker, and a successful
+   `/compact` replaces everything before it with its summary turn. While
+   agents work, the chat shows VS Code's standard "Thinking"
+   indicator - no custom progress labels are streamed. (`/clear` itself
+   skips all of this: the handler confirms it in chat and starts no run.)
 2. Triages the prompt as `oneshot` or `planning` via the capability-routed
    local Ollama model (currently `qwen3:8b`) - this stays a buffered
    structured-output call, since its whole product is a small validated
    object. A slash command (`/explain`, `/review`, `/plan`, `/do`, `/fix`,
-   `/test` - see [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts))
+   `/test`, `/compact` - see [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts))
    skips this call and pins the route directly, with `Requested via /<name>.`
    as the rendered reason. The boundary is the deliverable, not the difficulty: requests
    whose product is text in the chat are `oneshot`; anything that should
@@ -719,8 +760,9 @@ For ready-made prompts to try, see [`examples/`](examples/README.md): oneshot
 questions, simple planning requests (e.g. a console calculator), advanced
 multi-step planning requests, and edits to existing files. Type `/` after
 `@devteam` to pick a slash command (`/explain`, `/review`, `/plan`, `/do`,
-`/fix`, `/test`): a command pins the route without a triage call and frames
-the request for the agents - see
+`/fix`, `/test`, `/compact`, `/clear`): a command pins the route without a
+triage call and frames the request for the agents, and the context commands
+manage what history later requests carry - see
 [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts).
 Commands work in follow-ups too: the conversation history gives
 "/explain what you just did" a real referent (and prior command turns keep
