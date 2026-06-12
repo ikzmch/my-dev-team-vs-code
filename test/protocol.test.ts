@@ -61,6 +61,16 @@ describe('protocol schemas', () => {
   it('validates tool inputs per the contract schemas', () => {
     expect(() => clientTools.read.inputSchema.parse({ path: 'a.ts' })).not.toThrow();
     expect(() => clientTools.read.inputSchema.parse({})).toThrow();
+    // The read range is optional, 1-based, and integer.
+    expect(() =>
+      clientTools.read.inputSchema.parse({ path: 'a.ts', startLine: 3, endLine: 9 })
+    ).not.toThrow();
+    expect(() =>
+      clientTools.read.inputSchema.parse({ path: 'a.ts', startLine: 0 })
+    ).toThrow();
+    expect(() =>
+      clientTools.read.inputSchema.parse({ path: 'a.ts', endLine: 1.5 })
+    ).toThrow();
     expect(() =>
       clientTools.search.inputSchema.parse({ query: 'x', mode: 'glob' })
     ).not.toThrow();

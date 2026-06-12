@@ -84,6 +84,31 @@ export const messages = {
   },
 
   /**
+   * Header prepended to a read result that does not cover the whole file: the
+   * range shown, the file's total line count, and (when the file goes on)
+   * where the next call should continue.
+   */
+  read: {
+    range: (start: number, end: number, total: number) =>
+      `(lines ${start}-${end} of ${total}` +
+      (end < total ? `; continue with startLine ${end + 1})` : ')'),
+  },
+
+  /**
+   * Returned to the model when a read range cannot be satisfied. Each message
+   * says how to recover, so the executor's loop self-corrects instead of
+   * retrying the same failing call.
+   */
+  readFailed: {
+    pastEnd: (path: string, start: number, total: number) =>
+      `${path} has only ${total} lines; startLine ${start} is past the end ` +
+      'of the file.',
+    emptyRange: (start: number, end: number) =>
+      `endLine ${end} is before startLine ${start}; nothing was read. ` +
+      'Use an endLine at or after startLine.',
+  },
+
+  /**
    * Returned to the model when an edit cannot be applied. Each message says
    * how to recover, so the executor's loop self-corrects instead of retrying
    * the same failing call.

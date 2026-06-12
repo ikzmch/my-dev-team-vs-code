@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-06-12
+
+### Changed
+
+- **Read tool reads in line ranges**. `devteam__read` now returns at most a
+  configurable number of lines per call (`myDevTeam.read.maxLines`, default
+  200) and accepts an optional 1-based `startLine`/`endLine` range. A partial
+  result is prefixed with the range shown, the file's total line count, and
+  the line to continue from, so one read of a large file no longer floods a
+  small model's context window.
+
 ## [0.19.0] - 2026-06-12
 
 ### Added

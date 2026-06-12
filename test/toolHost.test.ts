@@ -45,6 +45,14 @@ describe('WorkspaceToolHost', () => {
     );
   });
 
+  it('read forwards a line range to the implementation', async () => {
+    __setFile('src/a.ts', 'one\ntwo\nthree\n');
+    const host = new WorkspaceToolHost(makeApprover(true));
+    await expect(
+      host.execute('read', { path: 'src/a.ts', startLine: 2, endLine: 2 })
+    ).resolves.toBe('(lines 2-2 of 3; continue with startLine 3)\ntwo');
+  });
+
   it('read rejects a path outside the workspace', async () => {
     const host = new WorkspaceToolHost(makeApprover(true));
     await expect(host.execute('read', { path: '../etc/passwd' })).rejects.toThrow(

@@ -23,6 +23,9 @@ export const defaults = {
   engine: 'local' as const,
   ollamaEndpoint: 'http://localhost:11434',
   runCommandTimeoutMs: 60_000,
+  read: {
+    maxLines: 200,
+  },
   search: {
     globMaxResults: 200,
     contentScanLimit: 500,
@@ -100,8 +103,15 @@ export const settings = {
    */
   runMirrorBacklogMaxChars: 200_000,
 
-  /** Max characters the `read` tool returns before truncating. */
-  readMaxChars: 200_000,
+  /** Caps on the `read` tool's output. */
+  read: {
+    /** Max lines one `read` call returns (`myDevTeam.read.maxLines`). */
+    get maxLines(): number {
+      return userLimit('read.maxLines', defaults.read.maxLines);
+    },
+    /** Backstop in characters, so a few enormous lines cannot flood the context. */
+    maxChars: 200_000,
+  },
 
   /**
    * Max characters of the pending new contents shown in the `write` tool's

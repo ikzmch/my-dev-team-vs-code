@@ -51,14 +51,58 @@ async function resolveWorkspaceUri(relPath: string): Promise<vscode.Uri> {
   return uri;
 }
 
-/** Read a file's text contents. Read-only: no approval needed. */
-export async function readFile(relPath: string): Promise<string> {
+/** Backstop on the read tool's output, so a few enormous lines cannot flood the context. */
+function capReadChars(text: string): string {
+  return text.length > settings.read.maxChars
+    ? text.slice(0, settings.read.maxChars) + '\n…(truncated)'
+    : text;
+}
+
+/**
+ * Read a file's text contents, whole or a 1-based inclusive line range.
+ * Read-only: no approval needed.
+ *
+ * Every call returns at most `settings.read.maxLines` lines, so one read of a
+ * large file cannot flood a small model's context window. A result that does
+ * not cover the whole file is prefixed with the range shown and the file's
+ * total line count, so the model knows where to continue; an impossible range
+ * returns a recovery instruction instead of throwing.
+ */
+export async function readFile(
+  relPath: string,
+  startLine?: number,
+  endLine?: number
+): Promise<string> {
   const uri = await resolveWorkspaceUri(relPath);
   const bytes = await vscode.workspace.fs.readFile(uri);
   const text = Buffer.from(bytes).toString('utf8');
-  return text.length > settings.readMaxChars
-    ? text.slice(0, settings.readMaxChars) + '\n…(truncated)'
-    : text;
+
+  const start = startLine ?? 1;
+  if (endLine !== undefined && endLine < start) {
+    return messages.readFailed.emptyRange(start, endLine);
+  }
+  // Count lines like `wc -l` does: a trailing newline ends the last line, it
+  // does not start another - so the count matches what a line-count command
+  // run by the model reports.
+  const lines = text.split('\n');
+  if (lines.length > 1 && lines[lines.length - 1] === '') {
+    lines.pop();
+  }
+  const total = lines.length;
+  if (start > total) {
+    return messages.readFailed.pastEnd(relPath, start, total);
+  }
+  const end = Math.min(endLine ?? Infinity, start + settings.read.maxLines - 1, total);
+  if (start === 1 && end === total) {
+    // The whole file fits in one call: return it verbatim (trailing newline
+    // included), with no range header to strip.
+    return capReadChars(text);
+  }
+  return (
+    messages.read.range(start, end, total) +
+    '\n' +
+    capReadChars(lines.slice(start - 1, end).join('\n'))
+  );
 }
 
 /** Search by glob (file names) or by content. Read-only: no approval needed. */

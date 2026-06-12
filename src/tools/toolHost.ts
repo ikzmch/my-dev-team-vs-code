@@ -29,8 +29,8 @@ export class WorkspaceToolHost implements ToolHost {
   async execute(tool: string, args: unknown, signal?: AbortSignal): Promise<string> {
     switch (tool) {
       case 'read': {
-        const { path } = clientTools.read.inputSchema.parse(args);
-        return readFile(path);
+        const { path, startLine, endLine } = clientTools.read.inputSchema.parse(args);
+        return readFile(path, startLine, endLine);
       }
       case 'search': {
         const { query, mode } = clientTools.search.inputSchema.parse(args);

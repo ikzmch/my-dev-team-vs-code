@@ -22,6 +22,21 @@ export const clientTools = {
     displayName: 'Read File',
     inputSchema: z.object({
       path: z.string().describe('Workspace-relative path of the file to read.'),
+      startLine: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe('First line to read (1-based, inclusive). Defaults to 1.'),
+      endLine: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          'Last line to read (1-based, inclusive). Defaults to the per-call ' +
+            'line cap counted from startLine; clamped to it when larger.'
+        ),
     }),
   },
   search: {

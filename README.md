@@ -307,6 +307,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process) or `remote` (Phase B; warns and falls back to local until it exists) |
 | `myDevTeam.ollama.endpoint`          | `http://localhost:11434` | Ollama server origin (no `/api` suffix)   |
 | `myDevTeam.run.commandTimeoutMs`     | `60000`                  | `run` tool shell-command timeout (ms)     |
+| `myDevTeam.read.maxLines`            | `200`                    | Max lines one `read` call returns; partial results name the range and total so the model continues |
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
 | `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
@@ -500,7 +501,7 @@ Either way the same Approver gates the same side effects.
 
 | Tool                   | Effect                          | Approval        |
 | ---------------------- | ------------------------------- | --------------- |
-| `devteam__read`        | Read a file's text              | none (read-only)|
+| `devteam__read`        | Read a file's text, whole or a line range | none (read-only)|
 | `devteam__search`      | Glob file names or grep content | none (read-only)|
 | `devteam__run`         | Run a shell command (configurable timeout, 60s default) | **Approver** |
 | `devteam__write`       | Create/overwrite a file         | **Approver**    |
@@ -511,8 +512,14 @@ tool-calling chat model in the editor, not just `@devteam`):
 
 - `read`/`write`/`edit` resolve paths against the workspace root and **reject
   anything that escapes it** (absolute paths, `..` traversal, and a path that
-  resolves to a **symbolic link**, which could point outside the workspace);
-  `read` also caps how much text it returns.
+  resolves to a **symbolic link**, which could point outside the workspace).
+- `read` returns at most **`myDevTeam.read.maxLines` lines per call** (plus a
+  character backstop against enormous lines), so one read of a large file
+  cannot flood a small model's context. An optional `startLine`/`endLine`
+  pair selects a 1-based inclusive range; a partial result is prefixed with
+  the range shown, the file's total line count (counted `wc -l` style), and
+  the `startLine` to continue with, and the tool description tells the model
+  it can count a file's lines with a `run` command first.
 - `edit` replaces an **exact, unique match**: the given old text must match
   exactly one place in the file (a model that misremembers the file gets a
   recovery instruction - re-read, or add surrounding lines - instead of a

@@ -92,6 +92,19 @@ describe('messages templates', () => {
     ).toBe('src/a.ts\n\n- old1\n- old2\n+ new1');
   });
 
+  it('renders the read range header with a continue hint only mid-file', () => {
+    expect(messages.read.range(3, 5, 10)).toBe(
+      '(lines 3-5 of 10; continue with startLine 6)'
+    );
+    expect(messages.read.range(9, 10, 10)).toBe('(lines 9-10 of 10)');
+  });
+
+  it('phrases every read failure as a recovery instruction for the model', () => {
+    expect(messages.readFailed.pastEnd('a.ts', 7, 3)).toContain('only 3 lines');
+    expect(messages.readFailed.pastEnd('a.ts', 7, 3)).toContain('startLine 7');
+    expect(messages.readFailed.emptyRange(5, 2)).toMatch(/at or after startLine/);
+  });
+
   it('phrases every edit failure as a recovery instruction for the model', () => {
     expect(messages.editFailed.missingFile('a.ts')).toMatch(/write tool/);
     expect(messages.editFailed.notFound('a.ts')).toMatch(/read the file/i);
@@ -176,7 +189,8 @@ describe('settings', () => {
   });
 
   it('exposes the tool hardening limits', () => {
-    expect(settings.readMaxChars).toBeGreaterThan(0);
+    expect(settings.read.maxLines).toBeGreaterThan(0);
+    expect(settings.read.maxChars).toBeGreaterThan(0);
     expect(settings.writeApprovalPreviewMaxChars).toBeGreaterThan(0);
     expect(settings.runCommandMaxBufferBytes).toBeGreaterThan(0);
     expect(settings.search.maxFileSizeBytes).toBeGreaterThan(0);
@@ -192,6 +206,7 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.engine).toBe(defaults.engine);
     expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
     expect(settings.runCommandTimeoutMs).toBe(defaults.runCommandTimeoutMs);
+    expect(settings.read.maxLines).toBe(defaults.read.maxLines);
     expect(settings.search.globMaxResults).toBe(defaults.search.globMaxResults);
     expect(settings.search.contentScanLimit).toBe(defaults.search.contentScanLimit);
     expect(settings.search.contentMaxMatches).toBe(defaults.search.contentMaxMatches);
@@ -230,12 +245,14 @@ describe('user-tunable settings (VS Code configuration)', () => {
   it('reads user-configured values live', () => {
     __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
     __setConfig('myDevTeam.run.commandTimeoutMs', 5_000);
+    __setConfig('myDevTeam.read.maxLines', 50);
     __setConfig('myDevTeam.search.globMaxResults', 10);
     __setConfig('myDevTeam.search.contentScanLimit', 20);
     __setConfig('myDevTeam.search.contentMaxMatches', 5);
 
     expect(settings.ollamaEndpoint).toBe('http://gpu-box:11434');
     expect(settings.runCommandTimeoutMs).toBe(5_000);
+    expect(settings.read.maxLines).toBe(50);
     expect(settings.search.globMaxResults).toBe(10);
     expect(settings.search.contentScanLimit).toBe(20);
     expect(settings.search.contentMaxMatches).toBe(5);
@@ -504,7 +521,7 @@ describe('tool configs', () => {
   it('renders a tools section with one line per tool', () => {
     const section = renderToolsSection(['read', 'run']);
     expect(section).toContain('You have exactly 2 tools available:');
-    expect(section).toContain('- "read": Read the full text of one workspace file.');
+    expect(section).toContain('- "read": Read the text of one workspace file');
     expect(section).toContain('Requires user approval.');
   });
 

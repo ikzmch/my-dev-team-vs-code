@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.19.0",
+  "version": "0.20.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -43,6 +43,12 @@
           "default": 60000,
           "minimum": 1,
           "description": "Timeout in milliseconds for shell commands started by the run tool. The whole process tree is killed when it expires."
+        },
+        "myDevTeam.read.maxLines": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum number of lines the read tool returns per call. A partial result names the range shown and the file's total lines so the model can continue."
         },
         "myDevTeam.search.globMaxResults": {
           "type": "number",
@@ -114,7 +120,7 @@
       {
         "name": "devteam__read",
         "displayName": "Read File",
-        "modelDescription": "Read the full text contents of a file in the workspace given its relative path.",
+        "modelDescription": "Read the text of a workspace file given its relative path, up to a configured number of lines per call. Optional startLine/endLine select a 1-based inclusive range; a partial result names the range shown, the file's total lines, and the startLine to continue with.",
         "tags": [
           "myDevTeam"
         ],
@@ -124,6 +130,16 @@
             "path": {
               "type": "string",
               "description": "Workspace-relative path of the file to read."
+            },
+            "startLine": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "First line to read (1-based, inclusive). Defaults to 1."
+            },
+            "endLine": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Last line to read (1-based, inclusive). Defaults to the per-call line cap counted from startLine; clamped to it when larger."
             }
           },
           "required": [

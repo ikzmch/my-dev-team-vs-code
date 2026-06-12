@@ -43,6 +43,7 @@ import { environment } from '../src/config/environment';
 import {
   __reset,
   __state,
+  __setConfig,
   __setFile,
   __setSymlink,
   Uri,
@@ -106,11 +107,101 @@ describe('readFile', () => {
     await expect(readFile('link.ts')).rejects.toThrow(/symbolic link/);
   });
 
-  it('truncates contents beyond the read cap', async () => {
-    __setFile('big.ts', 'a'.repeat(settings.readMaxChars + 10));
+  it('truncates contents beyond the character backstop', async () => {
+    // One enormous line: the line cap cannot bound it, the char cap must.
+    __setFile('big.ts', 'a'.repeat(settings.read.maxChars + 10));
     const text = await readFile('big.ts');
     expect(text).toContain('…(truncated)');
-    expect(text.length).toBeLessThan(settings.readMaxChars + 100);
+    expect(text.length).toBeLessThan(settings.read.maxChars + 100);
+  });
+
+  it('returns a whole small file verbatim, trailing newline included', async () => {
+    __setFile('a.ts', 'one\ntwo\n');
+    await expect(readFile('a.ts')).resolves.toBe('one\ntwo\n');
+  });
+});
+
+describe('readFile (line ranges)', () => {
+  /** A file of `count` numbered lines: "line 1" .. "line N", newline-terminated. */
+  function numberedLines(count: number): string {
+    return Array.from({ length: count }, (_, i) => `line ${i + 1}`).join('\n') + '\n';
+  }
+
+  it('returns a requested range with a header naming range, total, and next line', async () => {
+    __setFile('f.ts', numberedLines(10));
+    await expect(readFile('f.ts', 3, 5)).resolves.toBe(
+      '(lines 3-5 of 10; continue with startLine 6)\nline 3\nline 4\nline 5'
+    );
+  });
+
+  it('omits the continue hint when the range reaches the end of the file', async () => {
+    __setFile('f.ts', numberedLines(10));
+    await expect(readFile('f.ts', 9, 99)).resolves.toBe(
+      '(lines 9-10 of 10)\nline 9\nline 10'
+    );
+  });
+
+  it('starts from line 1 when only endLine is given', async () => {
+    __setFile('f.ts', numberedLines(5));
+    await expect(readFile('f.ts', undefined, 2)).resolves.toBe(
+      '(lines 1-2 of 5; continue with startLine 3)\nline 1\nline 2'
+    );
+  });
+
+  it('caps an unbounded read at the per-call line limit', async () => {
+    const cap = settings.read.maxLines;
+    __setFile('f.ts', numberedLines(cap + 50));
+    const text = await readFile('f.ts');
+    expect(text).toContain(
+      `(lines 1-${cap} of ${cap + 50}; continue with startLine ${cap + 1})`
+    );
+    expect(text).toContain(`line ${cap}`);
+    expect(text).not.toContain(`line ${cap + 1}\n`);
+  });
+
+  it('caps an explicit range wider than the per-call line limit', async () => {
+    const cap = settings.read.maxLines;
+    __setFile('f.ts', numberedLines(cap + 50));
+    const text = await readFile('f.ts', 2, cap + 20);
+    expect(text).toContain(
+      `(lines 2-${cap + 1} of ${cap + 50}; continue with startLine ${cap + 2})`
+    );
+  });
+
+  it('does not count a trailing newline as a line of its own', async () => {
+    // wc -l style: the count must match what a line-count command reports, or
+    // the model's pre-counted ranges would be off by one.
+    __setFile('f.ts', 'a\nb\n');
+    await expect(readFile('f.ts', 1, 1)).resolves.toBe(
+      '(lines 1-1 of 2; continue with startLine 2)\na'
+    );
+  });
+
+  it('reports a startLine past the end instead of returning nothing', async () => {
+    __setFile('f.ts', numberedLines(3));
+    await expect(readFile('f.ts', 7)).resolves.toBe(
+      'f.ts has only 3 lines; startLine 7 is past the end of the file.'
+    );
+  });
+
+  it('reports an endLine before startLine with a recovery instruction', async () => {
+    __setFile('f.ts', numberedLines(10));
+    const out = await readFile('f.ts', 5, 2);
+    expect(out).toContain('endLine 2 is before startLine 5');
+    expect(out).toMatch(/at or after startLine/);
+  });
+
+  it('returns a range covering the whole file without a header', async () => {
+    __setFile('f.ts', 'one\ntwo\n');
+    await expect(readFile('f.ts', 1, 2)).resolves.toBe('one\ntwo\n');
+  });
+
+  it('reads the per-call line limit live from the user settings', async () => {
+    __setConfig('myDevTeam.read.maxLines', 2);
+    __setFile('f.ts', numberedLines(5));
+    await expect(readFile('f.ts')).resolves.toBe(
+      '(lines 1-2 of 5; continue with startLine 3)\nline 1\nline 2'
+    );
   });
 });
 
