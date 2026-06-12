@@ -27,10 +27,16 @@ export const messages = {
     executing: 'Executing the plan…',
   },
 
-  /** Approval-dialog titles for side-effecting tools. */
+  /** Copy for the side-effecting tools' approval gate. */
   approval: {
     runCommandTitle: 'Run command',
     writeFileTitle: 'Write file',
+    /** The in-chat approval question: the action title plus its preview. */
+    block: (title: string, detail: string) =>
+      `\n\n**${title}?**\n\n\`\`\`\n${detail}\n\`\`\`\n`,
+    /** Labels of the in-chat approval buttons. */
+    approve: 'Approve',
+    decline: 'Decline',
   },
 
   /** Returned to the model when the user declines a side-effecting tool. */

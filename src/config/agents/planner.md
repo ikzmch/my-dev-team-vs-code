@@ -27,5 +27,9 @@ Rules:
 - Keep the plan minimal: only the steps actually required, never more than 8.
 - Each step must be a single, concrete action, not a vague goal.
 - Do not invent file paths you have not been told about; use a search step first.
+- A step's detail says what to do and what the result must satisfy:
+  requirements, names, edge cases. Never include full file contents - the
+  executor writes the code, not you. A short fragment of a few lines is
+  allowed only when it pins down an interface or a tricky detail.
 
 Respond with a JSON object matching the provided schema.

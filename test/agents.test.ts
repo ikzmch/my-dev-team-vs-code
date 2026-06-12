@@ -214,7 +214,7 @@ describe('Executor', () => {
     await expect(new Executor(approverStub).execute('do it')).resolves.toEqual({
       events: [
         { kind: 'text', text: 'Reading first.' },
-        { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}', result: 'const a = 1;' },
+        { kind: 'tool', tool: 'read', input: 'a.ts', result: 'const a = 1;' },
         { kind: 'text', text: 'Done.' },
       ],
     });
@@ -232,19 +232,19 @@ describe('Executor', () => {
       {
         events: [
           { kind: 'text', text: 'Reading first.' },
-          { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}' },
+          { kind: 'tool', tool: 'read', input: 'a.ts' },
         ],
       },
       {
         events: [
           { kind: 'text', text: 'Reading first.' },
-          { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}', result: 'const a = 1;' },
+          { kind: 'tool', tool: 'read', input: 'a.ts', result: 'const a = 1;' },
         ],
       },
       {
         events: [
           { kind: 'text', text: 'Reading first.' },
-          { kind: 'tool', tool: 'read', input: '{"path":"a.ts"}', result: 'const a = 1;' },
+          { kind: 'tool', tool: 'read', input: 'a.ts', result: 'const a = 1;' },
           { kind: 'text', text: 'Done.' },
         ],
       },
@@ -289,14 +289,37 @@ describe('Executor', () => {
     expect(Object.keys(config.tools).sort()).toEqual(['read', 'run', 'search', 'write']);
   });
 
-  it('strips Mastra metadata from the recorded tool input', async () => {
+  it('previews a call by the tool\'s configured key argument, not the args JSON', async () => {
+    // The write tool's previewArg is "path": the transcript shows the file
+    // name, never the file contents the model passed alongside it.
     streamMock.mockResolvedValue(
       fakeChunkOutput([
         {
           type: 'tool-call',
           payload: {
             toolCallId: 'c1',
-            toolName: 'read',
+            toolName: 'write',
+            args: { path: 'calculator.py', contents: 'print(1 + 1)\n' },
+          },
+        },
+      ])
+    );
+    const result = await new Executor(approverStub).execute('go');
+    expect(result.events[0]).toEqual({
+      kind: 'tool',
+      tool: 'write',
+      input: 'calculator.py',
+    });
+  });
+
+  it('falls back to compact JSON without Mastra metadata for unknown tools', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: {
+            toolCallId: 'c1',
+            toolName: 'mystery',
             args: { path: 'a.ts', __mastraMetadata: { isStreaming: true } },
           },
         },
@@ -305,7 +328,7 @@ describe('Executor', () => {
     const result = await new Executor(approverStub).execute('go');
     expect(result.events[0]).toEqual({
       kind: 'tool',
-      tool: 'read',
+      tool: 'mystery',
       input: '{"path":"a.ts"}',
     });
   });

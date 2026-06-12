@@ -132,7 +132,7 @@ inline.
 | ---------------------------- | ------------------------------------------------------------- |
 | `config/agents/*.md`         | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
 | `config/models/*.md`         | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
-| `config/tools/*.md`          | One tool per file: frontmatter (name, displayName, lmTool id, sideEffecting) + the model-facing description |
+| `config/tools/*.md`          | One tool per file: frontmatter (name, displayName, lmTool id, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript) + the model-facing description |
 | `config/agents.ts`           | Loads the agent files, validates the frontmatter, exports typed `agents` |
 | `config/models.ts`           | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
@@ -271,8 +271,10 @@ decisions, in the order they matter:
   `fullStream` of chunks and folds them into an ordered list of events
   (`ExecutionSchema`): `text` events (the model's commentary and final
   report, accumulated from `text-delta` chunks) interleaved with `tool`
-  events (`tool-call` chunks open one with the tool name and a compact-JSON
-  args preview; the matching `tool-result`/`tool-error` chunk - correlated by
+  events (`tool-call` chunks open one with the tool name and an input
+  preview - the value of the tool's configured `previewArg`, e.g. just the
+  file path for `write`, falling back to compact args JSON for tools without
+  one; the matching `tool-result`/`tool-error` chunk - correlated by
   `toolCallId` - completes it with a result preview and a `failed` flag).
   Order is preserved because "searched, then wrote, then reported" *is* the
   answer. Previews are bounded (`settings.executor.*PreviewMaxChars`): the
@@ -335,9 +337,15 @@ tool-calling chat model in the editor, not just `@devteam`):
   diagnose it.
 
 Side-effecting tools call `approver.confirm(title, detail)`. The Phase-1
-`ChatApprover` streams the proposed action into the chat panel and gates it
-behind a modal confirmation. The `writeFile` tool builds a current/proposed
-preview so the approval prompt shows what will change.
+`ChatApprover` renders the proposed action into the chat panel followed by
+**Approve / Decline buttons** (wired through the `myDevTeam.approval`
+command) and blocks the tool until one is clicked; a finished or cancelled
+request declines whatever is still pending so a run can never hang on an
+unanswered question. When a tool is invoked outside a `@devteam` turn (they
+are registered editor-wide, so any chat model can call them) there is no
+stream to ask in, and the approver falls back to a modal dialog. The
+`writeFile` tool builds a current/proposed preview so the approval question
+shows what will change.
 
 ## Current behavior
 
@@ -374,7 +382,10 @@ Out of the box, `@devteam <prompt>`:
    plan itself** - an ordered, tool-aware checklist (`summary` + at most 8
    numbered steps, each hinting which workspace tool it would use) appears
    incrementally while the planner's routed model (currently `qwen3:14b`)
-   writes it. The partial-JSON snapshots are rendered conservatively so the
+   writes it. Plan steps describe the work and its requirements; they never
+   carry full file contents - authoring the code is the executor's job (it is
+   the routed coding specialist), though a step may pin down an interface
+   with a short fragment. The partial-JSON snapshots are rendered conservatively so the
    already-emitted markdown is never revised, and the validated final result
    completes the reply.
 7. Then streams "Executing the plan…" and **executes the plan**: the
@@ -382,15 +393,19 @@ Out of the box, `@devteam <prompt>`:
    request plus the numbered plan and runs a Mastra tool-calling loop over
    `read`/`search`/`run`/`write` (up to `settings.executor.maxSteps`
    iterations). The transcript streams in behind an "**Execution:**" header
-   as it happens: the model's commentary, one line per tool call
-   (`- **tool** \`args\``) completed with a flattened, truncated result
-   preview (`→ \`…\``, or `→ **failed** \`…\`` when the tool errored), and
-   the executor's closing report of what changed.
+   as it happens: the model's commentary, one line per tool call showing its
+   key argument (`- **write** \`calculator.py\``; tools without a configured
+   `previewArg` fall back to compact args JSON) completed with a flattened,
+   truncated result preview (`→ \`…\``, or `→ **failed** \`…\`` when the
+   tool errored), and the executor's closing report of what changed.
 8. Side effects still ask first: when the loop reaches a `run` or `write`
-   call, the `ChatApprover` echoes the command / file diff preview into the
-   chat and gates it behind a modal. Declining does not abort the run - the
-   tool returns "not approved" to the model, which is instructed to skip that
-   action and carry on, noting the skip in its report.
+   call, the `ChatApprover` renders the command / file preview into the chat
+   followed by Approve and Decline buttons and waits for the click. A
+   cancelled request declines pending approvals automatically, and a tool
+   invoked outside a `@devteam` turn falls back to a modal dialog. Declining
+   does not abort the run - the tool returns "not approved" to the model,
+   which is instructed to skip that action and carry on, noting the skip in
+   its report.
 
 The four workspace tools also stay registered with `vscode.lm`, callable by
 any VS Code chat model that supports tool calling.

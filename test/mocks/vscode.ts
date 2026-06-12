@@ -80,6 +80,7 @@ interface MockState {
   findFilesResult: Uri[];
   warningResponse: string | undefined;
   registeredTools: Map<string, unknown>;
+  registeredCommands: Map<string, (...args: unknown[]) => unknown>;
   /** User settings by `<section>.<key>` (e.g. "myDevTeam.ollama.endpoint"). */
   configuration: Map<string, unknown>;
 }
@@ -90,6 +91,7 @@ export const __state: MockState = {
   findFilesResult: [],
   warningResponse: undefined,
   registeredTools: new Map(),
+  registeredCommands: new Map(),
   configuration: new Map(),
 };
 
@@ -99,6 +101,7 @@ export function __reset(): void {
   __state.findFilesResult = [];
   __state.warningResponse = undefined;
   __state.registeredTools = new Map();
+  __state.registeredCommands = new Map();
   __state.configuration = new Map();
 }
 
@@ -175,6 +178,21 @@ export const window = {
     async (..._args: unknown[]): Promise<string | undefined> =>
       __state.warningResponse
   ),
+};
+
+export const commands = {
+  registerCommand: vi.fn((id: string, fn: (...args: unknown[]) => unknown) => {
+    __state.registeredCommands.set(id, fn);
+    return { dispose: vi.fn() };
+  }),
+
+  executeCommand: vi.fn(async (id: string, ...args: unknown[]) => {
+    const fn = __state.registeredCommands.get(id);
+    if (!fn) {
+      throw new Error(`command '${id}' not found`);
+    }
+    return fn(...args);
+  }),
 };
 
 export const lm = {

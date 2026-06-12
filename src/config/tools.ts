@@ -24,6 +24,13 @@ const ToolFrontmatterSchema = z.object({
   lmTool: z.string(),
   /** Side-effecting tools are gated by the Approver before they act. */
   sideEffecting: z.boolean(),
+  /**
+   * Input argument whose value summarises a call in the execution transcript
+   * (e.g. "path" for write, so the user sees the file name rather than the
+   * raw args JSON with the file contents). Optional: without it the
+   * transcript falls back to a compact JSON preview of all arguments.
+   */
+  previewArg: z.string().optional(),
 });
 
 export interface ToolConfig extends z.infer<typeof ToolFrontmatterSchema> {

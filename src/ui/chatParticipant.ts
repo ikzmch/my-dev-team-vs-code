@@ -16,39 +16,77 @@ import { messages } from '../config/messages';
 
 export const PARTICIPANT_ID = 'myDevTeam.agent';
 
+/** Command id the in-chat approval buttons invoke; registered in `register`. */
+export const APPROVAL_COMMAND_ID = 'myDevTeam.approval';
+
 /**
- * Phase 1 approval: ask in the chat stream with confirmation buttons.
- * When you add a Webview later, write a WebviewApprover that implements the
- * same `Approver` interface with a rich diff dialog — the tools won't change.
+ * Phase 1 approval: ask in the chat stream itself. `confirm` renders the
+ * proposed action (title + preview) followed by Approve/Decline buttons and
+ * blocks until one is clicked; the buttons invoke the registered approval
+ * command carrying an approval id, which settles the matching confirm. When
+ * the tools are invoked outside a @devteam turn (they are registered
+ * editor-wide) there is no stream to ask in, so the approver falls back to a
+ * modal dialog. When you add a Webview later, write a WebviewApprover that
+ * implements the same `Approver` interface with a rich diff dialog — the
+ * tools won't change.
  *
  * The chat stream is per-request, so we set it on each turn.
  */
 export class ChatApprover implements Approver {
   private stream: vscode.ChatResponseStream | undefined;
+  private readonly pending = new Map<string, (approved: boolean) => void>();
+  private nextApprovalId = 0;
+
+  /** Register the command the approval buttons invoke. Call once on activation. */
+  register(context: vscode.ExtensionContext): void {
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        APPROVAL_COMMAND_ID,
+        (id: string, approved: boolean) => this.settle(id, approved === true)
+      )
+    );
+  }
 
   setStream(stream: vscode.ChatResponseStream) {
     this.stream = stream;
   }
 
   /**
-   * Detach the stream when its request ends. The tools are registered
-   * editor-wide and can be invoked outside a @devteam turn; without this, an
+   * Detach the stream when its request ends (or is cancelled), declining
+   * whatever is still waiting for a click: once the request is over nobody
+   * can answer anymore, and a hanging confirm would block its tool call (and
+   * with it a cancelled run) forever. The tools are registered editor-wide
+   * and can be invoked outside a @devteam turn; without the detach, an
    * approval arriving later would write into a finished request's stream.
    */
   clearStream() {
     this.stream = undefined;
+    for (const id of [...this.pending.keys()]) {
+      this.settle(id, false);
+    }
   }
 
   async confirm(title: string, detail: string): Promise<boolean> {
-    // A genuinely interactive confirm in chat requires routing button clicks
-    // back through a command; for the boilerplate we surface the action and
-    // use a modal as the approval gate so the flow is safe out of the box.
-    // The modal carries the full detail, so the stream echo is best-effort:
-    // a stale or disposed stream must not break the approval flow.
-    try {
-      this.stream?.markdown(`\n**${title}**\n\n\`\`\`\n${detail}\n\`\`\`\n`);
-    } catch {
-      // The stream's request has ended; the modal below still shows the detail.
+    const stream = this.stream;
+    if (stream) {
+      try {
+        const id = String(this.nextApprovalId++);
+        stream.markdown(messages.approval.block(title, detail));
+        stream.button({
+          command: APPROVAL_COMMAND_ID,
+          title: messages.approval.approve,
+          arguments: [id, true],
+        });
+        stream.button({
+          command: APPROVAL_COMMAND_ID,
+          title: messages.approval.decline,
+          arguments: [id, false],
+        });
+        return await new Promise<boolean>((resolve) => this.pending.set(id, resolve));
+      } catch {
+        // The stream's request has ended mid-render; the modal below keeps
+        // the approval gate working.
+      }
     }
     const pick = await vscode.window.showWarningMessage(
       `${title}?`,
@@ -56,6 +94,15 @@ export class ChatApprover implements Approver {
       'Approve'
     );
     return pick === 'Approve';
+  }
+
+  /** Resolve one pending approval; a stale button click is a no-op. */
+  private settle(id: string, approved: boolean): void {
+    const resolve = this.pending.get(id);
+    if (resolve) {
+      this.pending.delete(id);
+      resolve(approved);
+    }
   }
 }
 

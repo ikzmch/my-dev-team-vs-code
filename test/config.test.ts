@@ -75,6 +75,14 @@ describe('messages templates', () => {
     expect(messages.notApproved.write).toMatch(/not.*approved/i);
   });
 
+  it('renders the in-chat approval question with the detail fenced', () => {
+    const block = messages.approval.block('Write file', 'File: a.py');
+    expect(block).toContain('**Write file?**');
+    expect(block).toContain('```\nFile: a.py\n```');
+    expect(messages.approval.approve).toBe('Approve');
+    expect(messages.approval.decline).toBe('Decline');
+  });
+
   it('appends the Ollama troubleshooting hint to executor errors', () => {
     const text = messages.execution.error('model missing');
     expect(text).toContain('**Executor error:** model missing');
@@ -350,6 +358,17 @@ describe('tool configs', () => {
     }
   });
 
+  it('names a preview argument matching each tool\'s input schema', () => {
+    // The transcript shows this argument's value instead of the args JSON
+    // (e.g. just the file name for write); the names must match the zod
+    // input schemas in tools/agentTools.ts or the preview silently falls
+    // back to JSON.
+    expect(toolConfigs.read.previewArg).toBe('path');
+    expect(toolConfigs.write.previewArg).toBe('path');
+    expect(toolConfigs.search.previewArg).toBe('query');
+    expect(toolConfigs.run.previewArg).toBe('command');
+  });
+
   it('renders a tools section with one line per tool', () => {
     const section = renderToolsSection(['read', 'write']);
     expect(section).toContain('You have exactly 2 tools available:');
@@ -465,6 +484,17 @@ describe('agent configs', () => {
     const p = agents.planner.instructions;
     expect(p).toContain('never more than 8');
     expect(p).toMatch(/JSON object/i);
+  });
+
+  it('keeps the planner describing steps, not authoring file contents', () => {
+    // Code generation belongs to the executor (the routed coding specialist);
+    // a plan step that inlines a whole file wastes the routing, bloats the
+    // structured output, and crowds the executor's context. Snippets that pin
+    // down an interface stay allowed.
+    const p = agents.planner.instructions;
+    expect(p).toMatch(/Never include full file contents/);
+    expect(p).toMatch(/executor writes the code/);
+    expect(p).toMatch(/fragment of a few lines/);
   });
 
   it('renders the tools section into the planner prompt at the placeholder', () => {

@@ -26,7 +26,9 @@ export const PlanStepSchema = z.object({
     .describe('The workspace tool this step will likely use, or "none" for pure reasoning.'),
   detail: z
     .string()
-    .describe('One sentence on what this step does and why it is needed.'),
+    .describe(
+      'One sentence on what this step does and why it is needed - a concise instruction, never full file contents.'
+    ),
 });
 
 export const PlanSchema = z.object({

@@ -43,8 +43,10 @@ describe('activate', () => {
       'myDevTeam.agent',
       expect.any(Function)
     );
-    // Four tools + the participant get pushed for disposal.
-    expect(context.subscriptions).toHaveLength(5);
+    // The approval command + four tools + the participant get pushed for
+    // disposal.
+    expect(context.subscriptions).toHaveLength(6);
+    expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
   });
 
   it('fires the Ollama health check without blocking activation', () => {

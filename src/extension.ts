@@ -20,8 +20,10 @@ export function activate(context: vscode.ExtensionContext) {
 
   // --- Approval seam: Phase 1 uses the chat-based approver ---
   // Created before the agents because the Executor's side-effecting tools
-  // (run, write) are gated by it.
+  // (run, write) are gated by it. Registering wires up the command its
+  // in-chat Approve/Decline buttons invoke.
   const approver = new ChatApprover();
+  approver.register(context);
 
   // --- Agent core (UI-agnostic) ---
   // Each agent declares weighted capability requirements and the router
@@ -44,9 +46,13 @@ export function activate(context: vscode.ExtensionContext) {
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {
       approver.setStream(stream); // wire approver to this request's stream
+      // A cancelled request leaves an approval waiting for a click that can
+      // never come; clearing the stream declines it so the run unblocks.
+      const cancellation = token.onCancellationRequested(() => approver.clearStream());
       try {
         return await handler(request, ctx, stream, token);
       } finally {
+        cancellation.dispose();
         approver.clearStream(); // never leave a finished request's stream behind
       }
     }

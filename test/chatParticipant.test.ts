@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  APPROVAL_COMMAND_ID,
   ChatApprover,
   createHandler,
   renderReply,
@@ -29,7 +30,7 @@ beforeEach(() => {
 });
 
 function fakeStream() {
-  return { markdown: vi.fn(), progress: vi.fn() };
+  return { markdown: vi.fn(), progress: vi.fn(), button: vi.fn() };
 }
 
 /** Minimal CancellationToken double; flip `isCancellationRequested` to cancel. */
@@ -114,11 +115,88 @@ function emitted(stream: ReturnType<typeof fakeStream>): string {
 }
 
 describe('ChatApprover', () => {
-  it('returns true only when the user picks Approve', async () => {
+  /**
+   * Wire an approver the way activate() does: registered command plus an
+   * attached stream. Returns a click(n) helper that presses the n-th rendered
+   * button by invoking the registered command with that button's arguments.
+   */
+  function wiredApprover() {
     const approver = new ChatApprover();
+    const context = { subscriptions: [] as unknown[] };
+    approver.register(context as any);
     const stream = fakeStream();
     approver.setStream(stream as any);
+    const click = (n: number) => {
+      const button = stream.button.mock.calls[n][0] as {
+        command: string;
+        arguments: unknown[];
+      };
+      __state.registeredCommands.get(button.command)!(...button.arguments);
+    };
+    return { approver, stream, click, context };
+  }
 
+  it('renders the question with Approve/Decline buttons into the chat', async () => {
+    const { approver, stream, click } = wiredApprover();
+
+    const pending = approver.confirm('Write file', 'preview body');
+    expect(stream.markdown).toHaveBeenCalledOnce();
+    expect(stream.markdown.mock.calls[0][0]).toContain('**Write file?**');
+    expect(stream.markdown.mock.calls[0][0]).toContain('preview body');
+    expect(stream.button).toHaveBeenCalledTimes(2);
+    expect(stream.button.mock.calls[0][0]).toMatchObject({
+      command: APPROVAL_COMMAND_ID,
+      title: 'Approve',
+    });
+    expect(stream.button.mock.calls[1][0]).toMatchObject({
+      command: APPROVAL_COMMAND_ID,
+      title: 'Decline',
+    });
+
+    click(0); // Approve
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it('resolves false when the user clicks Decline', async () => {
+    const { approver, click } = wiredApprover();
+
+    const pending = approver.confirm('Run command', '$ ls');
+    click(1); // Decline
+    await expect(pending).resolves.toBe(false);
+  });
+
+  it('settles concurrent approvals independently by id', async () => {
+    const { approver, stream, click } = wiredApprover();
+
+    const first = approver.confirm('Write file', 'one');
+    const second = approver.confirm('Run command', 'two');
+    expect(stream.button).toHaveBeenCalledTimes(4);
+
+    click(3); // decline the second
+    click(0); // approve the first
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
+  });
+
+  it('ignores a stale button click after the approval settled', async () => {
+    const { approver, click } = wiredApprover();
+
+    const pending = approver.confirm('Run command', '$ ls');
+    click(0);
+    await expect(pending).resolves.toBe(true);
+    expect(() => click(1)).not.toThrow(); // late Decline click is a no-op
+  });
+
+  it('declines whatever is still pending when the stream is cleared', async () => {
+    const { approver } = wiredApprover();
+
+    const pending = approver.confirm('Write file', 'preview');
+    approver.clearStream(); // request ended or was cancelled
+    await expect(pending).resolves.toBe(false);
+  });
+
+  it('falls back to the modal when no stream has been attached', async () => {
+    const approver = new ChatApprover();
     __state.warningResponse = 'Approve';
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
 
@@ -126,33 +204,14 @@ describe('ChatApprover', () => {
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(false);
   });
 
-  it('echoes the action into the chat stream', async () => {
-    const approver = new ChatApprover();
-    const stream = fakeStream();
-    approver.setStream(stream as any);
-    __state.warningResponse = 'Approve';
-
-    await approver.confirm('Write file', 'preview body');
-    expect(stream.markdown).toHaveBeenCalledOnce();
-    expect(stream.markdown.mock.calls[0][0]).toContain('**Write file**');
-    expect(stream.markdown.mock.calls[0][0]).toContain('preview body');
-  });
-
-  it('still works when no stream has been attached', async () => {
-    const approver = new ChatApprover();
-    __state.warningResponse = 'Approve';
-    await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
-  });
-
-  it('stops echoing into a stream after clearStream', async () => {
-    const approver = new ChatApprover();
-    const stream = fakeStream();
-    approver.setStream(stream as any);
+  it('asks via the modal, not the stream, after clearStream', async () => {
+    const { approver, stream } = wiredApprover();
     approver.clearStream();
     __state.warningResponse = 'Approve';
 
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
     expect(stream.markdown).not.toHaveBeenCalled();
+    expect(stream.button).not.toHaveBeenCalled();
   });
 
   it('survives a disposed stream and still asks via the modal', async () => {
@@ -161,6 +220,7 @@ describe('ChatApprover', () => {
       markdown: vi.fn(() => {
         throw new Error('stream is closed');
       }),
+      button: vi.fn(),
     };
     approver.setStream(closed as any);
     __state.warningResponse = 'Approve';

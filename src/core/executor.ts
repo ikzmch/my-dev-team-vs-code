@@ -4,6 +4,7 @@ import { resolveModel } from './models';
 import { Approver } from './types';
 import { agents } from '../config/agents';
 import { settings } from '../config/settings';
+import { toolConfigs } from '../config/tools';
 import { buildAgentTools } from '../tools/agentTools';
 
 /**
@@ -27,7 +28,10 @@ export const ToolEventSchema = z.object({
   kind: z.literal('tool'),
   /** Tool name from the config registry (read | search | run | write). */
   tool: z.string(),
-  /** Compact JSON preview of the call arguments, truncated. */
+  /**
+   * Display preview of the call arguments, truncated: the tool's configured
+   * preview argument (e.g. the path for write) or compact JSON of all args.
+   */
   input: z.string(),
   /** Preview of the tool's result, truncated; absent while the call runs. */
   result: z.string().optional(),
@@ -62,13 +66,24 @@ function truncate(text: string, max: number): string {
   return text.length > max ? text.slice(0, max) + '…' : text;
 }
 
-/** Compact JSON preview of a tool call's arguments, without Mastra's metadata. */
-function inputPreview(args: unknown): string {
+/**
+ * Display preview of a tool call's arguments. When the tool's config names a
+ * `previewArg`, only that value is shown - the transcript should say
+ * "write calculator.py", not dump the args JSON with the file contents.
+ * Otherwise falls back to compact JSON without Mastra's metadata.
+ */
+function inputPreview(tool: string, args: unknown): string {
+  const max = settings.executor.inputPreviewMaxChars;
   if (typeof args !== 'object' || args === null) {
-    return truncate(JSON.stringify(args) ?? '{}', settings.executor.inputPreviewMaxChars);
+    return truncate(JSON.stringify(args) ?? '{}', max);
   }
   const { __mastraMetadata, ...rest } = args as Record<string, unknown>;
-  return truncate(JSON.stringify(rest), settings.executor.inputPreviewMaxChars);
+  const previewArg = toolConfigs[tool]?.previewArg;
+  const headline = previewArg === undefined ? undefined : rest[previewArg];
+  if (typeof headline === 'string' && headline) {
+    return truncate(headline, max);
+  }
+  return truncate(JSON.stringify(rest), max);
 }
 
 /** Bounded preview of a tool result (ours return strings; be safe anyway). */
@@ -137,10 +152,11 @@ export class Executor {
           break;
         }
         case 'tool-call': {
+          const tool = String(chunk.payload?.toolName ?? '');
           const event = {
             kind: 'tool' as const,
-            tool: String(chunk.payload?.toolName ?? ''),
-            input: inputPreview(chunk.payload?.args),
+            tool,
+            input: inputPreview(tool, chunk.payload?.args),
           };
           events.push(event);
           pendingCalls.set(String(chunk.payload?.toolCallId ?? ''), event);
