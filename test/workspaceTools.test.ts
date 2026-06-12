@@ -35,6 +35,7 @@ import {
   searchFiles,
   runCommand,
   writeFile,
+  editFile,
 } from '../src/tools/workspaceTools';
 import { Approver, RunMirror } from '../src/tools/types';
 import { settings } from '../src/config/settings';
@@ -461,5 +462,145 @@ describe('writeFile', () => {
     const out = await writeFile('new.ts', 'hello', approver, controller.signal);
     expect(out).toBe('Write was cancelled; the file was not changed.');
     expect(__state.files.has('/ws/new.ts')).toBe(false);
+  });
+});
+
+describe('editFile', () => {
+  it('replaces a unique match and reports the edit when approved', async () => {
+    __setFile('a.ts', 'const a = 1;\nconst b = 2;\n');
+    const out = await editFile('a.ts', 'const a = 1;', 'const a = 42;', makeApprover(true));
+    expect(out).toBe('Edited a.ts (1 replacement).');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 42;\nconst b = 2;\n');
+  });
+
+  it('asks the approver with the path above a diff-style old/new pair', async () => {
+    __setFile('a.ts', 'line one\nline two\n');
+    const approver = makeApprover(true);
+    await editFile('a.ts', 'line one', 'line 1', approver);
+    expect(approver.calls).toEqual([
+      { title: 'Edit file', detail: 'a.ts\n\n- line one\n+ line 1' },
+    ]);
+  });
+
+  it('does not interpret $-patterns in the replacement text', async () => {
+    // String.replace treats $& and friends as substitutions; model-written
+    // code legitimately contains them (regex, shell, templates).
+    __setFile('a.ts', 'const re = OLD;');
+    await editFile('a.ts', 'OLD', "'$&-$1'", makeApprover(true));
+    expect(__state.files.get('/ws/a.ts')).toBe("const re = '$&-$1';");
+  });
+
+  it('refuses a missing file and points the model at the write tool', async () => {
+    const approver = makeApprover(true);
+    const out = await editFile('ghost.ts', 'old', 'new', approver);
+    expect(out).toBe('File does not exist: ghost.ts. Use the write tool to create a new file.');
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('reports a missing match with an instruction to re-read the file', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    const approver = makeApprover(true);
+    const out = await editFile('a.ts', 'const b = 2;', 'x', approver);
+    expect(out).toMatch(/not found in a\.ts/);
+    expect(out).toMatch(/read the file/i);
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('reports an ambiguous match with the count and asks for more context', async () => {
+    __setFile('a.ts', 'let x = 0;\nlet x = 0;\nlet x = 0;');
+    const approver = makeApprover(true);
+    const out = await editFile('a.ts', 'let x = 0;', 'let y = 0;', approver);
+    expect(out).toContain('matches 3 places in a.ts');
+    expect(out).toMatch(/surrounding/);
+    expect(__state.files.get('/ws/a.ts')).toBe('let x = 0;\nlet x = 0;\nlet x = 0;');
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('rejects an edit whose oldText and newText are identical', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    const out = await editFile('a.ts', 'const a = 1;', 'const a = 1;', makeApprover(true));
+    expect(out).toMatch(/identical/);
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
+  });
+
+  it('matches an LF snippet against a CRLF file without rewriting its line endings', async () => {
+    // Models usually emit LF; files on Windows are often CRLF. The snippet is
+    // adapted to the file, so the match succeeds and the untouched parts of
+    // the file keep their endings.
+    __setFile('a.ts', 'one\r\ntwo\r\nthree\r\n');
+    const out = await editFile('a.ts', 'one\ntwo', 'uno\ndos', makeApprover(true));
+    expect(out).toBe('Edited a.ts (1 replacement).');
+    expect(__state.files.get('/ws/a.ts')).toBe('uno\r\ndos\r\nthree\r\n');
+  });
+
+  it('matches a CRLF snippet against an LF file', async () => {
+    __setFile('a.ts', 'one\ntwo\nthree\n');
+    await editFile('a.ts', 'one\r\ntwo', 'uno\r\ndos', makeApprover(true));
+    expect(__state.files.get('/ws/a.ts')).toBe('uno\ndos\nthree\n');
+  });
+
+  it('caps each side of the approval preview but applies the full edit', async () => {
+    const oldBig = 'a'.repeat(settings.writeApprovalPreviewMaxChars + 10);
+    const newBig = 'b'.repeat(settings.writeApprovalPreviewMaxChars + 10);
+    __setFile('big.ts', `start ${oldBig} end`);
+    const approver = makeApprover(true);
+    await editFile('big.ts', oldBig, newBig, approver);
+
+    const detail = approver.calls[0].detail;
+    expect(detail).toContain('…(truncated)');
+    expect(detail.length).toBeLessThan(2 * settings.writeApprovalPreviewMaxChars + 200);
+    // The cap bounds only the preview; the file gets the complete replacement.
+    expect(__state.files.get('/ws/big.ts')).toBe(`start ${newBig} end`);
+  });
+
+  it('does not edit when the user declines', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    const out = await editFile('a.ts', '1', '2', makeApprover(false));
+    expect(out).toBe('Edit was not approved by the user; the file was not changed.');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
+  });
+
+  it('rejects a traversal path before reading or consulting the approver', async () => {
+    const approver = makeApprover(true);
+    await expect(editFile('../evil.ts', 'a', 'b', approver)).rejects.toThrow(
+      /outside the workspace/
+    );
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('rejects editing through a symbolic link before consulting the approver', async () => {
+    __setSymlink('link.ts', 'old');
+    const approver = makeApprover(true);
+    await expect(editFile('link.ts', 'old', 'new', approver)).rejects.toThrow(
+      /symbolic link/
+    );
+    expect(__state.files.get('/ws/link.ts')).toBe('old');
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('does not edit or prompt when the request was already cancelled', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    const controller = new AbortController();
+    controller.abort();
+    const approver = makeApprover(true);
+    const out = await editFile('a.ts', '1', '2', approver, controller.signal);
+    expect(out).toBe('Edit was cancelled; the file was not changed.');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('does not edit when the request is cancelled while the prompt is open', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    const controller = new AbortController();
+    const approver: Approver = {
+      async confirm() {
+        controller.abort();
+        return true;
+      },
+    };
+    const out = await editFile('a.ts', '1', '2', approver, controller.signal);
+    expect(out).toBe('Edit was cancelled; the file was not changed.');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
   });
 });

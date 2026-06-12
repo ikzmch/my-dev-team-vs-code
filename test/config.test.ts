@@ -79,6 +79,27 @@ describe('messages templates', () => {
     );
   });
 
+  it('provides an approval title and decline reply for the edit tool', () => {
+    expect(messages.approval.editFileTitle).toBeTruthy();
+    expect(messages.notApproved.edit).toMatch(/not.*approved/i);
+    // The model is told the file was untouched, so it can report the skip.
+    expect(messages.notApproved.edit).toMatch(/not changed/i);
+  });
+
+  it('renders the edit approval detail as a diff-style old/new pair', () => {
+    expect(
+      messages.approval.editFileDetail('src/a.ts', 'old1\nold2', 'new1')
+    ).toBe('src/a.ts\n\n- old1\n- old2\n+ new1');
+  });
+
+  it('phrases every edit failure as a recovery instruction for the model', () => {
+    expect(messages.editFailed.missingFile('a.ts')).toMatch(/write tool/);
+    expect(messages.editFailed.notFound('a.ts')).toMatch(/read the file/i);
+    expect(messages.editFailed.multipleMatches(3, 'a.ts')).toContain('3');
+    expect(messages.editFailed.multipleMatches(3, 'a.ts')).toMatch(/surrounding/);
+    expect(messages.editFailed.identical).toMatch(/identical/);
+  });
+
   it('renders the in-chat approval question with the detail fenced', () => {
     const block = messages.approval.block('Run command', '$ ls');
     expect(block).toContain('**Run command?**');
@@ -425,21 +446,22 @@ describe('environment', () => {
 });
 
 describe('tool configs', () => {
-  it('discovers the four workspace tools', () => {
+  it('discovers the five workspace tools', () => {
     // Order follows the config filenames, so compare as a sorted set.
-    expect([...toolNames].sort()).toEqual(['read', 'run', 'search', 'write']);
+    expect([...toolNames].sort()).toEqual(['edit', 'read', 'run', 'search', 'write']);
   });
 
-  it('marks run and write as side-effecting; read and search are not', () => {
+  it('marks run, write, and edit as side-effecting; read and search are not', () => {
     expect(toolConfigs.read.sideEffecting).toBe(false);
     expect(toolConfigs.search.sideEffecting).toBe(false);
     expect(toolConfigs.run.sideEffecting).toBe(true);
     expect(toolConfigs.write.sideEffecting).toBe(true);
+    expect(toolConfigs.edit.sideEffecting).toBe(true);
   });
 
   it('agrees with the protocol contract on the tool vocabulary', () => {
     // The engine's tool configs (model-facing) and the protocol's client
-    // tools (ids, display names, input schemas) describe the same four
+    // tools (ids, display names, input schemas) describe the same five
     // tools; a tool added on one side only would silently break the other.
     expect([...toolNames].sort()).toEqual([...clientToolNames].sort());
     for (const name of clientToolNames) {
@@ -463,15 +485,17 @@ describe('tool configs', () => {
     // back to JSON.
     expect(toolConfigs.read.previewArg).toBe('path');
     expect(toolConfigs.write.previewArg).toBe('path');
+    expect(toolConfigs.edit.previewArg).toBe('path');
     expect(toolConfigs.search.previewArg).toBe('query');
     expect(toolConfigs.run.previewArg).toBe('command');
   });
 
-  it('names write\'s contents as its snippet argument; the others have none', () => {
+  it('names write\'s and edit\'s snippet arguments; the others have none', () => {
     // The transcript shows this argument's first lines as a fenced snippet
     // under the call line; the name must match the input schema in
     // protocol/toolContract.ts or the snippet silently disappears.
     expect(toolConfigs.write.snippetArg).toBe('contents');
+    expect(toolConfigs.edit.snippetArg).toBe('newText');
     expect(toolConfigs.read.snippetArg).toBeUndefined();
     expect(toolConfigs.search.snippetArg).toBeUndefined();
     expect(toolConfigs.run.snippetArg).toBeUndefined();
@@ -548,11 +572,11 @@ describe('agent configs', () => {
     expect(agents.executor.capabilities.coding).toBe(1);
   });
 
-  it('keeps the executor contract: all four tools, decline handling, a report', () => {
+  it('keeps the executor contract: all five tools, decline handling, a report', () => {
     expect([...agents.executor.tools].sort()).toEqual([...toolNames].sort());
     const p = agents.executor.instructions;
     expect(p).not.toContain('{{tools}}');
-    expect(p).toContain('You have exactly 4 tools available:');
+    expect(p).toContain('You have exactly 5 tools available:');
     expect(p).toContain('not approved');
     expect(p).toMatch(/report/i);
   });
@@ -604,7 +628,7 @@ describe('agent configs', () => {
     expect(p).toContain('create a python script');
   });
 
-  it('keeps the planner contract: all four tools, the step cap, and JSON output', () => {
+  it('keeps the planner contract: all five tools, the step cap, and JSON output', () => {
     expect([...agents.planner.tools].sort()).toEqual([...toolNames].sort());
     const p = agents.planner.instructions;
     expect(p).toContain('never more than 8');
@@ -626,7 +650,7 @@ describe('agent configs', () => {
   it('renders the tools section into the planner prompt at the placeholder', () => {
     const p = agents.planner.instructions;
     expect(p).not.toContain('{{tools}}');
-    expect(p).toContain('You have exactly 4 tools available:');
+    expect(p).toContain('You have exactly 5 tools available:');
     for (const name of toolNames) {
       expect(p).toContain(`- "${name}": ${toolConfigs[name].description}`);
     }

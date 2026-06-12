@@ -11,7 +11,7 @@ function makeHost(result = 'ok'): ToolHost & {
   const calls: Array<{ tool: string; args: unknown; signal?: AbortSignal }> = [];
   return {
     calls,
-    tools: ['read', 'search', 'run', 'write'],
+    tools: ['read', 'search', 'run', 'write', 'edit'],
     execute: async (tool, args, signal) => {
       calls.push({ tool, args, signal });
       return result;
@@ -25,9 +25,9 @@ function invoke(tool: { execute?: Function }, input: unknown): Promise<unknown> 
 }
 
 describe('buildAgentTools', () => {
-  it('exposes the four workspace tools under their config names', () => {
+  it('exposes the five workspace tools under their config names', () => {
     const tools = buildAgentTools(makeHost());
-    expect(Object.keys(tools).sort()).toEqual(['read', 'run', 'search', 'write']);
+    expect(Object.keys(tools).sort()).toEqual(['edit', 'read', 'run', 'search', 'write']);
     for (const [name, tool] of Object.entries(tools)) {
       expect(tool.id).toBe(toolConfigs[name].name);
       expect(tool.description).toBe(toolConfigs[name].description);
@@ -47,8 +47,17 @@ describe('buildAgentTools', () => {
     await expect(
       invoke(tools.write, { path: 'a.ts', contents: 'x' })
     ).resolves.toBe('the result');
+    await expect(
+      invoke(tools.edit, { path: 'a.ts', oldText: 'x', newText: 'y' })
+    ).resolves.toBe('the result');
 
-    expect(host.calls.map((c) => c.tool)).toEqual(['read', 'search', 'run', 'write']);
+    expect(host.calls.map((c) => c.tool)).toEqual([
+      'read',
+      'search',
+      'run',
+      'write',
+      'edit',
+    ]);
     expect(host.calls[0].args).toMatchObject({ path: 'src/a.ts' });
     expect(host.calls[2].args).toMatchObject({ command: 'echo hi' });
   });

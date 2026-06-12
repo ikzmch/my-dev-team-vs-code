@@ -72,7 +72,7 @@ const anExecution: ExecutionResult = {
 
 /** The client-side ToolHost stub the handler passes to the engine. */
 const hostStub: ToolHost = {
-  tools: ['read', 'search', 'run', 'write'],
+  tools: ['read', 'search', 'run', 'write', 'edit'],
   execute: async () => 'ok',
 };
 
@@ -1430,7 +1430,7 @@ describe('createHandler protocol envelope', () => {
     expect(captured).toMatchObject({
       protocolVersion: 1,
       prompt: 'hi',
-      offeredTools: ['read', 'search', 'run', 'write'],
+      offeredTools: ['read', 'search', 'run', 'write', 'edit'],
     });
     expect((captured as { environment: object }).environment).toMatchObject({
       os: expect.any(String),

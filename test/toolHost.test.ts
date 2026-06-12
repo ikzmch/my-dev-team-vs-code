@@ -152,6 +152,50 @@ describe('WorkspaceToolHost', () => {
     expect(__state.files.get('/ws/src/exists.ts')).toBe('old');
   });
 
+  it('edit replaces the matched text through the given approver', async () => {
+    __setFile('src/a.ts', 'const a = 1;');
+    const approver = makeApprover(true);
+    const host = new WorkspaceToolHost(approver);
+
+    const result = await host.execute('edit', {
+      path: 'src/a.ts',
+      oldText: 'a = 1',
+      newText: 'a = 2',
+    });
+    expect(result).toBe('Edited src/a.ts (1 replacement).');
+    expect(__state.files.get('/ws/src/a.ts')).toBe('const a = 2;');
+    expect(approver.calls).toEqual([
+      { title: 'Edit file', detail: 'src/a.ts\n\n- a = 1\n+ a = 2' },
+    ]);
+  });
+
+  it('edit does not touch the file when the approver declines', async () => {
+    __setFile('src/a.ts', 'const a = 1;');
+    const host = new WorkspaceToolHost(makeApprover(false));
+
+    await expect(
+      host.execute('edit', { path: 'src/a.ts', oldText: 'a = 1', newText: 'a = 2' })
+    ).resolves.toBe('Edit was not approved by the user; the file was not changed.');
+    expect(__state.files.get('/ws/src/a.ts')).toBe('const a = 1;');
+  });
+
+  it('passes the signal to edit, so a cancelled request skips it', async () => {
+    __setFile('src/a.ts', 'const a = 1;');
+    const controller = new AbortController();
+    controller.abort();
+    const approver = makeApprover(true);
+    const host = new WorkspaceToolHost(approver);
+    await expect(
+      host.execute(
+        'edit',
+        { path: 'src/a.ts', oldText: 'a = 1', newText: 'a = 2' },
+        controller.signal
+      )
+    ).resolves.toBe('Edit was cancelled; the file was not changed.');
+    expect(__state.files.get('/ws/src/a.ts')).toBe('const a = 1;');
+    expect(approver.calls).toHaveLength(0);
+  });
+
   it('rejects an unknown tool before touching anything', async () => {
     const host = new WorkspaceToolHost(makeApprover(true));
     await expect(host.execute('delete-everything', {})).rejects.toThrow(

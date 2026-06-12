@@ -40,18 +40,18 @@ function fakeContext() {
 }
 
 describe('activate', () => {
-  it('registers the four tools and creates the chat participant', () => {
+  it('registers the five tools and creates the chat participant', () => {
     const context = fakeContext();
     activate(context as any);
 
-    expect([...__state.registeredTools.keys()]).toHaveLength(4);
+    expect([...__state.registeredTools.keys()]).toHaveLength(5);
     expect(chat.createChatParticipant).toHaveBeenCalledWith(
       'myDevTeam.agent',
       expect.any(Function)
     );
-    // The approval command + the run-mirror terminal + four tools + the
+    // The approval command + the run-mirror terminal + five tools + the
     // participant get pushed for disposal.
-    expect(context.subscriptions).toHaveLength(7);
+    expect(context.subscriptions).toHaveLength(8);
     expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
   });
 

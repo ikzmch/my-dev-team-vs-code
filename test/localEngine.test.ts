@@ -23,7 +23,7 @@ beforeEach(() => {
 });
 
 const hostStub: ToolHost = {
-  tools: ['read', 'search', 'run', 'write'],
+  tools: ['read', 'search', 'run', 'write', 'edit'],
   execute: async () => 'ok',
 };
 

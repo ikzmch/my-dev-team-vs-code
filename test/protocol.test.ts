@@ -60,8 +60,19 @@ describe('protocol schemas', () => {
     ).toThrow();
   });
 
-  it('exposes the four tools in a stable order', () => {
-    expect(clientToolNames).toEqual(['read', 'search', 'run', 'write']);
+  it('exposes the five tools in a stable order', () => {
+    expect(clientToolNames).toEqual(['read', 'search', 'run', 'write', 'edit']);
+  });
+
+  it('requires a non-empty oldText for the edit tool', () => {
+    // An empty oldText matches everywhere; the schema rejects it before the
+    // implementation has to.
+    expect(() =>
+      clientTools.edit.inputSchema.parse({ path: 'a.ts', oldText: 'x', newText: 'y' })
+    ).not.toThrow();
+    expect(() =>
+      clientTools.edit.inputSchema.parse({ path: 'a.ts', oldText: '', newText: 'y' })
+    ).toThrow();
   });
 });
 

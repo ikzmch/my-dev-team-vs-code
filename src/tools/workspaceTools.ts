@@ -243,3 +243,94 @@ export async function writeFile(
   await vscode.workspace.fs.writeFile(uri, Buffer.from(contents, 'utf8'));
   return `Wrote ${relPath} (${Buffer.byteLength(contents, 'utf8')} bytes).`;
 }
+
+/**
+ * Adapt a model-emitted snippet's line endings to the file's. Models usually
+ * emit LF while files on Windows are often CRLF, so an exact match that fails
+ * only on line endings would be a spurious "not found"; the snippet is
+ * converted instead of the file, so an edit never rewrites the file's own
+ * line endings as a side effect.
+ */
+function matchLineEndings(fileText: string, snippet: string): string {
+  const lf = snippet.replaceAll('\r\n', '\n');
+  return fileText.includes('\r\n') ? lf.replaceAll('\n', '\r\n') : lf;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}
+
+/** Cap one side of the edit approval preview. */
+function editPreview(text: string): string {
+  return text.length > settings.writeApprovalPreviewMaxChars
+    ? text.slice(0, settings.writeApprovalPreviewMaxChars) + '\n…(truncated)'
+    : text;
+}
+
+/**
+ * Replace text in an existing file. SIDE-EFFECTING: gated by the Approver
+ * with a diff-style old/new preview. The replaced text must match exactly one
+ * place in the file - zero or multiple matches return a recovery instruction
+ * to the model instead of touching the file, so a misremembered snippet can
+ * never corrupt it. Creating files stays the write tool's job: a missing
+ * target is an error here, not an empty file to fill.
+ */
+export async function editFile(
+  relPath: string,
+  oldText: string,
+  newText: string,
+  approver: Approver,
+  signal?: AbortSignal
+): Promise<string> {
+  // Resolve (and so validate) the path first: a traversal or symlink target
+  // is rejected outright and never reaches the approval prompt.
+  const uri = await resolveWorkspaceUri(relPath);
+  if (oldText === newText) {
+    return messages.editFailed.identical;
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = await vscode.workspace.fs.readFile(uri);
+  } catch {
+    return messages.editFailed.missingFile(relPath);
+  }
+  const text = Buffer.from(bytes).toString('utf8');
+
+  // Exact match first; on a miss, retry with the snippets' line endings
+  // adapted to the file's (the replacement must be adapted alongside, or an
+  // LF snippet pasted into a CRLF file would mix endings).
+  let needle = oldText;
+  let replacement = newText;
+  if (!text.includes(needle)) {
+    needle = matchLineEndings(text, oldText);
+    replacement = matchLineEndings(text, newText);
+  }
+  const count = countOccurrences(text, needle);
+  if (count === 0) {
+    return messages.editFailed.notFound(relPath);
+  }
+  if (count > 1) {
+    return messages.editFailed.multipleMatches(count, relPath);
+  }
+
+  // A request cancelled before (or during) the approval prompt must not land
+  // an edit on disk.
+  if (signal?.aborted) {
+    return messages.cancelled.edit;
+  }
+  const ok = await approver.confirm(
+    messages.approval.editFileTitle,
+    messages.approval.editFileDetail(relPath, editPreview(needle), editPreview(replacement))
+  );
+  if (!ok) {
+    return messages.notApproved.edit;
+  }
+  if (signal?.aborted) {
+    return messages.cancelled.edit;
+  }
+  // The replacement goes through a function so replace() cannot interpret
+  // `$&`-style patterns inside model-written code as substitutions.
+  const updated = text.replace(needle, () => replacement);
+  await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
+  return `Edited ${relPath} (1 replacement).`;
+}

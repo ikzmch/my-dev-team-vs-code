@@ -40,12 +40,24 @@ export const messages = {
   approval: {
     runCommandTitle: 'Run command',
     writeFileTitle: 'Write file',
+    editFileTitle: 'Edit file',
     /**
      * Preview of a pending write shown in the approval question: the target
      * path above the leading new contents (already capped by the caller, see
      * settings.writeApprovalPreviewMaxChars).
      */
     writeFileDetail: (path: string, preview: string) => `${path}\n\n${preview}`,
+    /**
+     * Preview of a pending edit shown in the approval question: the target
+     * path above a diff-style old/new pair, each side's lines prefixed so the
+     * user sees exactly what is removed and what replaces it (both sides
+     * already capped by the caller).
+     */
+    editFileDetail: (path: string, oldText: string, newText: string) => {
+      const prefix = (mark: string, text: string) =>
+        text.split('\n').map((line) => `${mark} ${line}`).join('\n');
+      return `${path}\n\n${prefix('-', oldText)}\n${prefix('+', newText)}`;
+    },
     /** The in-chat approval question: the action title plus its preview. */
     block: (title: string, detail: string) =>
       `\n\n**${title}?**\n\n${fence(detail, 3)}\n`,
@@ -58,6 +70,7 @@ export const messages = {
   notApproved: {
     run: 'Command was not approved by the user.',
     write: 'Write was not approved by the user; the file was not changed.',
+    edit: 'Edit was not approved by the user; the file was not changed.',
   },
 
   /**
@@ -67,6 +80,24 @@ export const messages = {
   cancelled: {
     run: 'Command was cancelled before running.',
     write: 'Write was cancelled; the file was not changed.',
+    edit: 'Edit was cancelled; the file was not changed.',
+  },
+
+  /**
+   * Returned to the model when an edit cannot be applied. Each message says
+   * how to recover, so the executor's loop self-corrects instead of retrying
+   * the same failing call.
+   */
+  editFailed: {
+    missingFile: (path: string) =>
+      `File does not exist: ${path}. Use the write tool to create a new file.`,
+    notFound: (path: string) =>
+      `oldText was not found in ${path}. Read the file and copy the text to ` +
+      'replace exactly, including whitespace and indentation.',
+    multipleMatches: (count: number, path: string) =>
+      `oldText matches ${count} places in ${path}. Include more surrounding ` +
+      'lines so it matches exactly one place.',
+    identical: 'oldText and newText are identical; nothing to change.',
   },
 
   /** Copy for the terminal mirroring the run tool's commands (ui/runTerminal.ts). */

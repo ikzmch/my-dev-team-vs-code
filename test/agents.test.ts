@@ -89,7 +89,7 @@ function fakeChunkOutput(chunks: Array<{ type: string; payload?: unknown }>) {
 }
 
 const toolHostStub: ToolHost = {
-  tools: ['read', 'search', 'run', 'write'],
+  tools: ['read', 'search', 'run', 'write', 'edit'],
   execute: async () => 'ok',
 };
 
@@ -296,7 +296,7 @@ describe('Executor', () => {
     });
   });
 
-  it('is configured with executor instructions and the four workspace tools', () => {
+  it('is configured with executor instructions and the five workspace tools', () => {
     new Executor(toolHostStub);
     const config = agentCtor.mock.calls[0][0] as {
       id: string;
@@ -305,7 +305,13 @@ describe('Executor', () => {
     };
     expect(config.id).toBe('executor');
     expect(config.instructions).toContain('executor');
-    expect(Object.keys(config.tools).sort()).toEqual(['read', 'run', 'search', 'write']);
+    expect(Object.keys(config.tools).sort()).toEqual([
+      'edit',
+      'read',
+      'run',
+      'search',
+      'write',
+    ]);
   });
 
   it('previews a call by the tool\'s configured key argument, not the args JSON', async () => {

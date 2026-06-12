@@ -7,7 +7,7 @@
  * the user's machine, so an engine can only ever *ask* for a side effect.
  */
 import { Approver, RunMirror } from './types';
-import { readFile, searchFiles, runCommand, writeFile } from './workspaceTools';
+import { readFile, searchFiles, runCommand, writeFile, editFile } from './workspaceTools';
 import { clientTools, clientToolNames, ToolHost } from '../protocol/toolContract';
 
 export class WorkspaceToolHost implements ToolHost {
@@ -44,6 +44,10 @@ export class WorkspaceToolHost implements ToolHost {
       case 'write': {
         const { path, contents } = clientTools.write.inputSchema.parse(args);
         return writeFile(path, contents, this.approver, signal);
+      }
+      case 'edit': {
+        const { path, oldText, newText } = clientTools.edit.inputSchema.parse(args);
+        return editFile(path, oldText, newText, this.approver, signal);
       }
       default:
         throw new Error(`Unknown tool "${tool}".`);

@@ -46,6 +46,7 @@ export function buildAgentTools(
     search: proxy('search'),
     run: proxy('run'),
     write: proxy('write'),
+    edit: proxy('edit'),
   };
 }
 

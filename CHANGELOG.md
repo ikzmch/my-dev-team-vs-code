@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-06-12
+
+### Added
+
+- **Edit tool for targeted file changes**. A fifth workspace tool,
+  `devteam__edit`, replaces an exact, unique text match in an existing file,
+  so the executor no longer has to rewrite a whole file for a small change.
+  A zero or ambiguous match returns a recovery instruction instead of
+  touching the file, line-ending mismatches are bridged without rewriting
+  the file's endings, and the approval prompt shows a diff-style old/new
+  preview. The write tool stays the way to create files or fully rewrite
+  them.
+
 ## [0.17.0] - 2026-06-12
 
 ### Added

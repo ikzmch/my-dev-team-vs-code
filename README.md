@@ -2,17 +2,17 @@
 
 An agentic chat participant for VS Code. It lives in the **native chat panel**
 (invoke with `@devteam`), gets 👍/👎 **feedback for free**, and can **read,
-search, run, and write** files in your workspace via the Language Model Tools
-API.
+search, run, write, and edit** files in your workspace via the Language Model
+Tools API.
 
 The agent routes each request through a **local triage agent** (Ollama via
 the Vercel AI SDK + Mastra) before deciding how to respond. Agents don't name
 models: each declares **weighted capability requirements**, and a router picks
 the best match from a **registry of models scored per capability**, discovered
 from `.md` config files at build time. The side-effecting
-actions - running a command and writing a file - are gated by an **approval
-seam**, so the chat confirmation can later be swapped for a rich Webview
-dialog **without touching the agent core**.
+actions - running a command and writing or editing a file - are gated by an
+**approval seam**, so the chat confirmation can later be swapped for a rich
+Webview dialog **without touching the agent core**.
 
 The whole agent pipeline sits behind an **engine protocol**
 (`src/protocol/`): the UI starts a run, receives a stream of typed events,
@@ -25,7 +25,7 @@ contract (see [The engine protocol](#the-engine-protocol-srcprotocol)). A
 > **planner**, the **oneshot answerer**, and the **executor**. The workflow
 > classifies your request, answers `oneshot` questions directly, and for
 > `planning` requests drafts a step-by-step plan and then **executes it**: the
-> executor's capability-routed model drives a tool-calling loop over the four
+> executor's capability-routed model drives a tool-calling loop over the five
 > workspace tools, with side effects gated by the approval seam. Every turn
 > carries the **conversation history** (size-capped), so follow-ups like
 > "now rename it too" resolve against the earlier exchanges. The pipeline now
@@ -73,7 +73,7 @@ src/
     messages.ts           user-facing chat copy (errors, warnings, templates)
     environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
   tools/                  the client's hands - these never move to a backend
-    workspaceTools.ts     read / search / run / write implementations (UI-agnostic)
+    workspaceTools.ts     read / search / run / write / edit implementations (UI-agnostic)
     toolHost.ts           WorkspaceToolHost: validates + dispatches every tool call (engine or editor)
     registerTools.ts      registers the tools with vscode.lm, delegating to the same host
     types.ts              the client seams: Approver (approval) + RunMirror (run-command transparency)
@@ -158,8 +158,8 @@ engine/core/workflow.ts        Mastra workflow (createWorkflow + createStep)
         ├─▶ execute-plan       ── Executor.execute(executionPrompt, onPartial)  (a plan was drafted)
         │                         conversation + prompt + attachment text + the
         │                         numbered plan;
-        │                         Mastra runs the tool-calling loop over the four
-        │                         workspace tools (run/write Approver-gated);
+        │                         Mastra runs the tool-calling loop over the five
+        │                         workspace tools (run/write/edit Approver-gated);
         │                         → { events[] } transcript (capability-routed model);
         │                         pushes every transcript snapshot to the sink
         └─▶ deliver-answer     ── pass-through for the oneshot path, so a oneshot
@@ -301,7 +301,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
 | `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
-| `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file shown under a `write` call in the transcript (`0` hides the snippet) |
+| `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file (or an edit's replacement text) shown under a `write`/`edit` call in the transcript (`0` hides the snippet) |
 | `myDevTeam.telemetry.evalLog`        | `false`                  | Opt-in local eval log: store per-run route/usage/outcome records and 👍/👎 feedback as JSON lines in extension storage (no prompt or reply text; nothing leaves the machine) |
 
 Invalid values (wrong type, non-positive numbers, an endpoint that is not an
@@ -406,8 +406,8 @@ decisions, in the order they matter:
   file path for `write`, falling back to compact args JSON for tools without
   one; the matching `tool-result`/`tool-error` chunk - correlated by
   `toolCallId` - completes it with a result preview and a `failed` flag).
-  A tool with a configured `snippetArg` (write's `contents`) also records a
-  `snippet`: the first `myDevTeam.chat.toolSnippetLines` lines of that
+  A tool with a configured `snippetArg` (write's `contents`, edit's
+  `newText`) also records a `snippet`: the first `myDevTeam.chat.toolSnippetLines` lines of that
   argument (default 5, `0` turns snippets off), so the transcript can show
   the start of the file being written; when the file has more lines, the
   snippet ends in an `…(truncated)` line. Order is preserved because "searched,
@@ -431,8 +431,9 @@ decisions, in the order they matter:
   as `(no output)`.
 - **Approvals live in the host, not the engine.** The proxies delegate to
   the same `WorkspaceToolHost` the editor-wide registrations use, so `run`
-  invokes the same `Approver` with the same command echo and `write` with
-  the same path + contents preview - and the engine never learns how the
+  invokes the same `Approver` with the same command echo, `write` with the
+  same path + contents preview, and `edit` with the same path + diff-style
+  old/new preview - and the engine never learns how the
   decision was made. A decline is not an error: the tool returns the "not
   approved" message and the system prompt tells the model to skip that
   action and note it in the report.
@@ -456,14 +457,23 @@ Either way the same Approver gates the same side effects.
 | `devteam__search`      | Glob file names or grep content | none (read-only)|
 | `devteam__run`         | Run a shell command (configurable timeout, 60s default) | **Approver** |
 | `devteam__write`       | Create/overwrite a file         | **Approver**    |
+| `devteam__edit`        | Replace text in an existing file | **Approver**   |
 
 The tools treat their inputs as untrusted (they are callable by any
 tool-calling chat model in the editor, not just `@devteam`):
 
-- `read`/`write` resolve paths against the workspace root and **reject
+- `read`/`write`/`edit` resolve paths against the workspace root and **reject
   anything that escapes it** (absolute paths, `..` traversal, and a path that
   resolves to a **symbolic link**, which could point outside the workspace);
   `read` also caps how much text it returns.
+- `edit` replaces an **exact, unique match**: the given old text must match
+  exactly one place in the file (a model that misremembers the file gets a
+  recovery instruction - re-read, or add surrounding lines - instead of a
+  corrupted file), it never creates files (that stays `write`'s job), and an
+  LF/CRLF mismatch between the model's snippet and the file is bridged by
+  adapting the snippet, never by rewriting the file's line endings. The
+  replacement is literal: `$&`-style substitution patterns in code are not
+  interpreted.
 - `search` never scans `node_modules`, `.git`, `dist`, `out`, or `coverage`,
   and content mode skips binary and oversized files (see
   `config/settings.ts` for the limits; the result/scan caps are user-tunable
@@ -489,8 +499,10 @@ tool-calling chat model in the editor, not just `@devteam`):
 
 The side-effecting tools call `approver.confirm(title, detail)`: `run` with
 the command echo, `write` with the target path above a capped preview of the
-new contents (`settings.writeApprovalPreviewMaxChars`), so an in-workspace
-overwrite - itself destructive, with no undo - never lands silently. The
+new contents (`settings.writeApprovalPreviewMaxChars`), and `edit` with the
+target path above a diff-style pair (the matched text prefixed `-`, its
+replacement prefixed `+`, each side capped), so an in-workspace
+change - itself destructive, with no undo - never lands silently. The
 Phase-1 `ChatApprover` renders the proposed action into the chat panel
 followed by **Approve / Decline buttons** (wired through the
 `myDevTeam.approval` command) and blocks the tool until one is clicked; a
@@ -498,8 +510,8 @@ finished or cancelled request declines whatever is still pending so a run can
 never hang on an unanswered question. When a tool is invoked outside a
 `@devteam` turn (they are registered editor-wide, so any chat model can call
 them) there is no stream to ask in, and the approver falls back to a modal
-dialog. A declined `write` returns "not approved" to the model and leaves
-the file untouched.
+dialog. A declined `write` or `edit` returns "not approved" to the model and
+leaves the file untouched.
 
 ## Current behavior
 
@@ -551,8 +563,11 @@ Out of the box, `@devteam <prompt>`:
 6. Then **executes the plan**: the
    executor's routed model (currently `qwen3-coder`) is briefed with the full
    request plus the numbered plan and runs a Mastra tool-calling loop over
-   `read`/`search`/`run`/`write` (up to `settings.executor.maxSteps`
-   iterations). The planner and executor prompts state the host OS and shell
+   `read`/`search`/`run`/`write`/`edit` (up to `settings.executor.maxSteps`
+   iterations). The executor changes an existing file with `edit` (an exact,
+   unique text replacement; on a failed or ambiguous match the tool answers
+   with a recovery instruction instead of touching the file) and uses `write`
+   for new files and full rewrites. The planner and executor prompts state the host OS and shell
    (from `config/environment.ts`), so `run` commands are written for the
    machine they execute on - PowerShell on Windows - instead of defaulting
    to Linux commands. The transcript streams in behind an "**Execution:**" header
@@ -563,25 +578,27 @@ Out of the box, `@devteam <prompt>`:
    truncated result preview (`→ \`…\``, or `→ **failed** \`…\`` when the
    tool errored), and the executor's closing report of what changed. A
    completed `write` call additionally shows the first lines of the written
-   file in a fenced snippet under its line (`myDevTeam.chat.toolSnippetLines`,
-   default 5; `0` hides it); a longer file ends in an `…(truncated)` line.
+   file (and an `edit` call the first lines of its replacement text) in a
+   fenced snippet under its line (`myDevTeam.chat.toolSnippetLines`,
+   default 5; `0` hides it); longer content ends in an `…(truncated)` line.
 7. Side effects still ask first: when the loop reaches a `run` call the
    `ChatApprover` renders the command into the chat, and when it reaches a
    `write` call it renders the target path above a capped preview of the new
-   contents (`settings.writeApprovalPreviewMaxChars`), each followed by
+   contents (`settings.writeApprovalPreviewMaxChars`); an `edit` call renders
+   the path above a diff-style old/new pair. Each is followed by
    Approve and Decline buttons, and waits for the click. A cancelled request
    declines pending approvals automatically, and a tool invoked outside a
    `@devteam` turn falls back to a modal dialog. Declining does not abort the
    run - the tool returns "not approved" to the model, which is instructed to
    skip that action and carry on, noting the skip in its report; a declined
-   `write` leaves the file untouched.
+   `write` or `edit` leaves the file untouched.
 8. Every approved command's real output also streams into the **"Dev Team"
    terminal** in the terminal panel: open the tab to watch commands run live,
    or later to read the session log of everything the agent executed
    (replayed in full when the terminal is opened). The chat transcript keeps
    showing only the truncated previews.
 
-The four workspace tools also stay registered with `vscode.lm`, callable by
+The five workspace tools also stay registered with `vscode.lm`, callable by
 any VS Code chat model that supports tool calling - every call goes through
 the same `WorkspaceToolHost` validation and approval gate the engine uses.
 
@@ -602,8 +619,9 @@ call) instead of letting it finish in the background; a cancelled turn stops
 rendering immediately (plan content already streamed before the cancellation
 stays visible, nothing more is added). The cancellation also reaches the
 executor's tool loop through an `AbortSignal`: an in-flight `run` command has
-its process tree killed and a pending `write` is dropped rather than landing on
-disk, so a cancel is honoured end to end and not just at the next step.
+its process tree killed and a pending `write` or `edit` is dropped rather than
+landing on disk, so a cancel is honoured end to end and not just at the next
+step.
 
 If Ollama is not reachable, the failed run is rendered with the step that
 failed (delivered as a protocol `RunFailedError`) and an engine-supplied
@@ -641,8 +659,8 @@ npm run build      # esbuild bundle -> dist/extension.js
 
 In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 For ready-made prompts to try, see [`examples/`](examples/README.md): oneshot
-questions, simple planning requests (e.g. a console calculator), and
-advanced multi-step planning requests.
+questions, simple planning requests (e.g. a console calculator), advanced
+multi-step planning requests, and edits to existing files.
 An `/explain` slash command is declared in `package.json`, but it has no
 dedicated handling — its prompt flows through the same
 triage → plan → execute workflow as any other message. It is still useful as

@@ -55,6 +55,23 @@ export const clientTools = {
       contents: z.string().describe('The full new contents of the file.'),
     }),
   },
+  edit: {
+    lmToolId: 'devteam__edit',
+    displayName: 'Edit File',
+    inputSchema: z.object({
+      path: z
+        .string()
+        .describe('Workspace-relative path of the existing file to edit.'),
+      oldText: z
+        .string()
+        .min(1)
+        .describe(
+          'The exact text to replace, copied verbatim from the file. ' +
+            'Must match exactly one place; include surrounding lines to make it unique.'
+        ),
+      newText: z.string().describe('The text that replaces oldText.'),
+    }),
+  },
 } as const;
 
 export type ClientToolName = keyof typeof clientTools;

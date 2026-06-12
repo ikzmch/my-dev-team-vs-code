@@ -36,7 +36,7 @@ beforeEach(() => {
 });
 
 describe('registerTools', () => {
-  it('registers all four workspace tools and pushes disposables', () => {
+  it('registers all five workspace tools and pushes disposables', () => {
     const context = fakeContext();
     registerTools(context as any, new WorkspaceToolHost(makeApprover(true)));
 
@@ -45,14 +45,15 @@ describe('registerTools', () => {
       'devteam__search',
       'devteam__run',
       'devteam__write',
+      'devteam__edit',
     ]);
-    expect(context.subscriptions).toHaveLength(4);
+    expect(context.subscriptions).toHaveLength(5);
   });
 
   it('delegates each registered tool to the shared host with its short name', async () => {
     const calls: Array<{ tool: string; args: unknown }> = [];
     const host: ToolHost = {
-      tools: ['read', 'search', 'run', 'write'],
+      tools: ['read', 'search', 'run', 'write', 'edit'],
       execute: async (tool, args) => {
         calls.push({ tool, args });
         return 'host says hi';
@@ -135,6 +136,30 @@ describe('registerTools', () => {
     });
     expect(out).toBe('Wrote out.ts (5 bytes).');
     expect(__state.files.get('/ws/out.ts')).toBe('hello');
+  });
+
+  it('edit tool replaces the matched text when the approver approves', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(true)));
+    const out = await invokeTool('devteam__edit', {
+      path: 'a.ts',
+      oldText: 'a = 1',
+      newText: 'a = 2',
+    });
+    expect(out).toBe('Edited a.ts (1 replacement).');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 2;');
+  });
+
+  it('edit tool respects a declining approver', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(false)));
+    const out = await invokeTool('devteam__edit', {
+      path: 'a.ts',
+      oldText: 'a = 1',
+      newText: 'a = 2',
+    });
+    expect(out).toBe('Edit was not approved by the user; the file was not changed.');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
   });
 
   it('write tool respects a declining approver', async () => {

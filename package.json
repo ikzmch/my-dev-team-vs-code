@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -182,6 +182,36 @@
           "required": [
             "path",
             "contents"
+          ]
+        }
+      },
+      {
+        "name": "devteam__edit",
+        "displayName": "Edit File",
+        "modelDescription": "Replace text in an existing workspace file. The exact old text must match one place in the file. This is a side-effecting action and requires user confirmation.",
+        "tags": [
+          "myDevTeam"
+        ],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Workspace-relative path of the existing file to edit."
+            },
+            "oldText": {
+              "type": "string",
+              "description": "The exact text to replace, copied verbatim from the file. Must match exactly one place; include surrounding lines to make it unique."
+            },
+            "newText": {
+              "type": "string",
+              "description": "The text that replaces oldText."
+            }
+          },
+          "required": [
+            "path",
+            "oldText",
+            "newText"
           ]
         }
       }
