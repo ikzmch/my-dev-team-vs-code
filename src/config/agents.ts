@@ -21,6 +21,7 @@ import { CapabilityScoresSchema } from './models';
 import { toolNames, renderToolsSection } from './tools';
 import triage from './agents/triage.md';
 import planner from './agents/planner.md';
+import answerer from './agents/answerer.md';
 
 const TOOLS_PLACEHOLDER = '{{tools}}';
 
@@ -62,6 +63,7 @@ function loadAgent(raw: string): AgentConfig {
 export const agents = {
   triage: loadAgent(triage),
   planner: loadAgent(planner),
+  answerer: loadAgent(answerer),
 } as const;
 
 export type AgentName = keyof typeof agents;

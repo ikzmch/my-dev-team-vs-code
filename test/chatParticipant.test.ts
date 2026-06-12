@@ -8,6 +8,7 @@ import {
 import { createDevTeamWorkflow, ReplyProgress } from '../src/core/workflow';
 import { TriageResult } from '../src/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/core/planner';
+import { AnswerProgress } from '../src/core/answerer';
 import {
   __reset,
   __state,
@@ -52,7 +53,9 @@ function makeWorkflow(
     reason: 'simple',
   }),
   plan: (prompt: string, onPartial?: PlanProgress) => Promise<PlanResult> = async () =>
-    aPlan
+    aPlan,
+  answer: (prompt: string, onPartial?: AnswerProgress) => Promise<string> = async () =>
+    'It is 4.'
 ) {
   const seen = { prompt: undefined as string | undefined };
   const workflow = createDevTeamWorkflow(
@@ -62,7 +65,8 @@ function makeWorkflow(
         return classify(prompt);
       },
     } as any,
-    { plan } as any
+    { plan } as any,
+    { answer } as any
   );
   return { workflow, seen };
 }
@@ -128,11 +132,12 @@ describe('ChatApprover', () => {
 });
 
 describe('createHandler', () => {
-  it('renders the detected intent for a oneshot request', async () => {
-    const { workflow } = makeWorkflow(async () => ({
-      intent: 'oneshot',
-      reason: 'simple question',
-    }));
+  it('renders the detected intent and the answer for a oneshot request', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'oneshot', reason: 'simple question' }),
+      undefined,
+      async () => 'It is **4**.'
+    );
     const stream = fakeStream();
 
     await createHandler(workflow)(
@@ -145,8 +150,9 @@ describe('createHandler', () => {
     const text = emitted(stream);
     expect(text).toContain('**Detected intent:** `oneshot`');
     expect(text).toContain('**Reason:** simple question');
-    expect(text).toContain('answer the question directly');
+    expect(text).toContain('**Answer:**\n\nIt is **4**.');
     expect(stream.progress).toHaveBeenCalledWith('Understanding your request…');
+    expect(stream.progress).toHaveBeenCalledWith('Answering…');
   });
 
   it('renders a planning request as a numbered checklist', async () => {
@@ -210,6 +216,29 @@ describe('createHandler', () => {
 
     const text = emitted(stream);
     expect(text).toContain('**Planner error:**');
+    expect(text).toContain('model not found');
+    expect(text).toContain('Ollama');
+  });
+
+  it('surfaces an answerer failure with the Ollama hint', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'oneshot', reason: 'x' }),
+      undefined,
+      async () => {
+        throw new Error('model not found');
+      }
+    );
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'what is 2+2', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    const text = emitted(stream);
+    expect(text).toContain('**Answerer error:**');
     expect(text).toContain('model not found');
     expect(text).toContain('Ollama');
   });
@@ -420,6 +449,44 @@ describe('createHandler streaming', () => {
     expect(count(text, 'Find the file')).toBe(1);
   });
 
+  it('streams a oneshot answer incrementally and never repeats content', async () => {
+    const snapshots = ['It', 'It is', 'It is 4.'];
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'oneshot', reason: 'simple' }),
+      undefined,
+      async (_prompt, onPartial) => {
+        for (const snapshot of snapshots) {
+          onPartial?.(snapshot);
+        }
+        return 'It is 4.';
+      }
+    );
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'what is 2+2', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    // The reply arrived in several appended chunks, not one blob.
+    expect(stream.markdown.mock.calls.length).toBeGreaterThan(2);
+
+    // The triage block was emitted before any answer content.
+    const first = stream.markdown.mock.calls[0][0] as string;
+    expect(first).toContain('**Detected intent:** `oneshot`');
+    expect(first).not.toContain('**Answer:**');
+
+    // The concatenation is exactly the final reply, with nothing duplicated.
+    const text = emitted(stream);
+    expect(text).toBe(
+      renderReply({ intent: 'oneshot', reason: 'simple', answer: 'It is 4.' }, true)
+    );
+    expect(count(text, '**Answer:**')).toBe(1);
+    expect(count(text, 'It is 4.')).toBe(1);
+  });
+
   it('falls back to the complete reply when a snapshot is inconsistent', async () => {
     const { workflow } = makeWorkflow(
       async () => ({ intent: 'planning', reason: 'needs steps' }),
@@ -546,16 +613,41 @@ describe('renderReply', () => {
     expect(mid.endsWith('1. **Fi')).toBe(true);
   });
 
-  it('appends the footer and the oneshot next step only when done', () => {
+  it('appends the plan footer only when done', () => {
     const planning = renderReply(progress(aPlan), false);
     expect(planning).not.toContain('**Next step');
     expect(renderReply(progress(aPlan), true)).toContain(
       '**Next step (not yet implemented):** execute these steps with tools.'
     );
+  });
 
-    const oneshot: ReplyProgress = { intent: 'oneshot', reason: 'simple' };
-    expect(renderReply(oneshot, false)).not.toContain('answer the question directly');
-    expect(renderReply(oneshot, true)).toContain('answer the question directly');
+  it('renders the answer behind its header', () => {
+    const reply: ReplyProgress = {
+      intent: 'oneshot',
+      reason: 'simple',
+      answer: 'It is 4.',
+    };
+    expect(renderReply(reply, true)).toContain('**Answer:**\n\nIt is 4.');
+  });
+
+  it('renders nothing past the triage block until the answer starts', () => {
+    const noAnswer: ReplyProgress = { intent: 'oneshot', reason: 'simple' };
+    expect(renderReply(noAnswer, false)).not.toContain('**Answer:**');
+  });
+
+  it('renders growing answers as prefix-extensions of each other', () => {
+    const snapshots = ['It', 'It is', 'It is 4.'];
+    let previous = '';
+    for (const answer of snapshots) {
+      const rendered = renderReply({ intent: 'oneshot', reason: 'simple', answer }, false);
+      expect(rendered.startsWith(previous)).toBe(true);
+      previous = rendered;
+    }
+    const final = renderReply(
+      { intent: 'oneshot', reason: 'simple', answer: 'It is 4.' },
+      true
+    );
+    expect(final.startsWith(previous)).toBe(true);
   });
 });
 

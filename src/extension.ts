@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { Triage } from './core/triage';
 import { Planner } from './core/planner';
+import { Answerer } from './core/answerer';
 import { createDevTeamWorkflow } from './core/workflow';
 import { registerTools } from './tools/registerTools';
 import {
@@ -21,7 +22,7 @@ export function activate(context: vscode.ExtensionContext) {
   // (`config/models.ts` + `core/models.ts`) wires the best registered model;
   // tune capabilities and the registry there, not here. The Mastra workflow
   // orchestrates them: triage → branch → draft a plan / answer directly.
-  const workflow = createDevTeamWorkflow(new Triage(), new Planner());
+  const workflow = createDevTeamWorkflow(new Triage(), new Planner(), new Answerer());
 
   // --- Approval seam: Phase 1 uses the chat-based approver ---
   const approver = new ChatApprover();

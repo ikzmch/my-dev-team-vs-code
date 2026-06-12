@@ -3,6 +3,7 @@ import type { RequestContext } from '@mastra/core/request-context';
 import { z } from 'zod';
 import { Triage, TriageSchema } from './triage';
 import { Planner, PlanSchema, PartialPlan } from './planner';
+import { Answerer } from './answerer';
 
 /**
  * Step ids of the dev-team workflow. Exported so the UI layer can map the
@@ -24,25 +25,29 @@ const TriagedSchema = RequestSchema.extend(TriageSchema.shape);
 
 /**
  * What the workflow produces: the routing decision plus, for "planning"
- * requests, the drafted plan. Rendering this into chat markdown is the UI
- * layer's job (see ui/chatParticipant.ts).
+ * requests, the drafted plan, or, for "oneshot" requests, the direct answer.
+ * Rendering this into chat markdown is the UI layer's job (see
+ * ui/chatParticipant.ts).
  */
 export const ReplySchema = z.object({
   intent: TriageSchema.shape.intent,
   reason: z.string(),
   plan: PlanSchema.optional(),
+  answer: z.string().optional(),
 });
 export type ReplyResult = z.infer<typeof ReplySchema>;
 
 /**
  * A snapshot of the reply while the run is still producing it: the triage
  * decision is always complete (it comes from buffered structured output), the
- * plan grows as the planner streams it.
+ * plan grows as the planner streams it, the answer grows as the answerer
+ * streams it.
  */
 export type ReplyProgress = {
   intent: ReplyResult['intent'];
   reason: string;
   plan?: PartialPlan;
+  answer?: string;
 };
 
 /** Receives reply snapshots as the workflow streams them. Must not throw. */
@@ -65,13 +70,14 @@ function progressSink(requestContext: RequestContext): ReplyProgressSink | undef
  *   triage ──▶ branch ──▶ draft-plan       (intent === "planning")
  *                     └─▶ answer-directly  (intent === "oneshot")
  *
- * An executor step that walks the drafted plan with the workspace tools is
- * the next roadmap item; until then "answer-directly" just reports the
- * routing decision.
+ * "answer-directly" streams a real answer from the Answerer agent. An
+ * executor step that walks the drafted plan with the workspace tools is the
+ * next roadmap item.
  */
 export function createDevTeamWorkflow(
   triage: Triage,
-  planner: Planner
+  planner: Planner,
+  answerer: Answerer
 ) {
   const triageStep = createStep({
     id: stepIds.triage,
@@ -108,8 +114,15 @@ export function createDevTeamWorkflow(
     outputSchema: ReplySchema,
     execute: async ({ inputData, requestContext }) => {
       const { intent, reason } = inputData;
-      progressSink(requestContext)?.({ intent, reason });
-      return { intent, reason };
+      const sink = progressSink(requestContext);
+      // Surface the triage decision right away, then forward every answer
+      // snapshot the answerer streams, mirroring the draft-plan step.
+      sink?.({ intent, reason });
+      const answer = await answerer.answer(
+        inputData.prompt,
+        sink && ((text) => sink({ intent, reason, answer: text }))
+      );
+      return { intent, reason, answer };
     },
   });
 

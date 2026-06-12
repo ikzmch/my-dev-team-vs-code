@@ -20,6 +20,7 @@ vi.mock('@mastra/core/agent', () => ({
 
 import { Triage, TriageSchema } from '../src/core/triage';
 import { Planner, PlanSchema, PartialPlan } from '../src/core/planner';
+import { Answerer } from '../src/core/answerer';
 
 beforeEach(() => {
   generateMock.mockReset();
@@ -42,6 +43,24 @@ function fakeStreamOutput(partials: unknown[], final: unknown) {
       },
     }),
     object: Promise.resolve(final),
+  };
+}
+
+/**
+ * Fake of the MastraModelOutput the answerer consumes: a text-delta stream
+ * plus the final full text.
+ */
+function fakeTextOutput(deltas: string[], final = deltas.join('')) {
+  return {
+    textStream: new ReadableStream({
+      start(controller) {
+        for (const delta of deltas) {
+          controller.enqueue(delta);
+        }
+        controller.close();
+      },
+    }),
+    text: Promise.resolve(final),
   };
 }
 
@@ -114,5 +133,41 @@ describe('Planner', () => {
   it('rejects when the final object does not match the plan schema', async () => {
     streamMock.mockResolvedValue(fakeStreamOutput([], { summary: 's', steps: [] }));
     await expect(new Planner().plan('bad')).rejects.toThrow();
+  });
+});
+
+describe('Answerer', () => {
+  it('returns the final text from the stream', async () => {
+    streamMock.mockResolvedValue(fakeTextOutput(['It is', ' 4.']));
+    await expect(new Answerer().answer('what is 2+2')).resolves.toBe('It is 4.');
+  });
+
+  it('forwards accumulated snapshots, not deltas, to the callback', async () => {
+    streamMock.mockResolvedValue(fakeTextOutput(['It', ' is', ' 4.']));
+
+    const seen: string[] = [];
+    await new Answerer().answer('what is 2+2', (text) => seen.push(text));
+    expect(seen).toEqual(['It', 'It is', 'It is 4.']);
+  });
+
+  it('drains the stream even without a callback', async () => {
+    streamMock.mockResolvedValue(fakeTextOutput(['a', 'b']));
+    await expect(new Answerer().answer('q')).resolves.toBe('ab');
+  });
+
+  it('passes the prompt to the model with no structured output', async () => {
+    streamMock.mockResolvedValue(fakeTextOutput(['ok']));
+    await new Answerer().answer('explain closures');
+
+    const [messages, options] = streamMock.mock.calls[0];
+    expect(messages).toEqual([{ role: 'user', content: 'explain closures' }]);
+    expect(options).toBeUndefined();
+  });
+
+  it('is configured with answerer instructions', async () => {
+    new Answerer();
+    const config = agentCtor.mock.calls[0][0] as { id: string; instructions: string };
+    expect(config.id).toBe('answerer');
+    expect(config.instructions).toContain('answerer');
   });
 });

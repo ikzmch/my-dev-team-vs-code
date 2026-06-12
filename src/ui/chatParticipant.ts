@@ -104,6 +104,7 @@ async function renderReferences(
 const progressByStep: Record<string, string> = {
   [stepIds.triage]: messages.progress.understanding,
   [stepIds.plan]: messages.progress.drafting,
+  [stepIds.answer]: messages.progress.answering,
 };
 
 /**
@@ -167,8 +168,10 @@ export function renderReply(reply: ReplyProgress | ReplyResult, done: boolean): 
   let text = messages.triage.block(reply.intent, reply.reason);
   if (reply.plan) {
     text += formatPlan(reply.plan, done);
-  } else if (done) {
-    text += messages.triage.oneshotNextStep;
+  } else if (reply.answer !== undefined) {
+    // The answer snapshots are grow-only accumulated text, so appending them
+    // behind the header keeps successive renders prefix-extensions.
+    text += messages.answer.header + reply.answer;
   }
   return text;
 }
@@ -217,9 +220,13 @@ function renderFailure(
     typeof error === 'object' && error !== null && 'message' in error
       ? String((error as { message: unknown }).message)
       : String(error);
-  return steps[stepIds.plan]?.status === 'failed'
-    ? messages.plan.error(detail)
-    : messages.triage.error(detail);
+  if (steps[stepIds.plan]?.status === 'failed') {
+    return messages.plan.error(detail);
+  }
+  if (steps[stepIds.answer]?.status === 'failed') {
+    return messages.answer.error(detail);
+  }
+  return messages.triage.error(detail);
 }
 
 /**
@@ -290,8 +297,7 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
     }
 
     if (result.status === 'success') {
-      // Emits whatever the streaming path has not already rendered (for a
-      // oneshot reply, that is the whole thing).
+      // Emits whatever the streaming path has not already rendered.
       streamer.finish(renderReply(result.result, true));
     } else if (result.status === 'failed') {
       const separator = streamer.hasEmitted ? '\n\n' : '';

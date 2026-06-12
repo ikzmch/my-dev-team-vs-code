@@ -43,19 +43,28 @@ describe('messages templates', () => {
     expect(text).toContain(settings.ollamaEndpoint);
   });
 
+  it('appends the Ollama troubleshooting hint to answerer errors', () => {
+    const text = messages.answer.error('model missing');
+    expect(text).toContain('**Answerer error:** model missing');
+    expect(text).toContain(settings.ollamaEndpoint);
+    expect(text).toContain(selectModel(agents.answerer.capabilities).model);
+  });
+
   it('derives the hint endpoint from the user setting, not a constant', () => {
     __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
     expect(messages.triage.error('x')).toContain('http://gpu-box:11434');
     expect(messages.plan.error('x')).toContain('http://gpu-box:11434');
   });
 
-  it('provides the plan header as a streamable prefix', () => {
+  it('provides the plan and answer headers as streamable prefixes', () => {
     expect(messages.plan.header).toBe('**Plan:** ');
+    expect(messages.answer.header).toBe('**Answer:**\n\n');
   });
 
-  it('labels both progress phases', () => {
+  it('labels all three progress phases', () => {
     expect(messages.progress.understanding).toBeTruthy();
     expect(messages.progress.drafting).toBeTruthy();
+    expect(messages.progress.answering).toBeTruthy();
   });
 
   it('provides approval titles and decline replies for side-effecting tools', () => {
@@ -65,8 +74,7 @@ describe('messages templates', () => {
     expect(messages.notApproved.write).toMatch(/not.*approved/i);
   });
 
-  it('marks every not-yet-implemented next step so the reply stays honest', () => {
-    expect(messages.triage.oneshotNextStep).toContain('not yet implemented');
+  it('marks the not-yet-implemented executor step so the reply stays honest', () => {
     expect(messages.plan.nextStep).toContain('not yet implemented');
   });
 
@@ -212,6 +220,7 @@ describe('model registry and selection', () => {
     for (const requirements of [
       agents.triage.capabilities,
       agents.planner.capabilities,
+      agents.answerer.capabilities,
     ]) {
       const selected = selectModel(requirements);
       const best = Math.max(
@@ -337,8 +346,12 @@ describe('agent configs', () => {
     expect(agents.planner.id).toBe('planner');
     expect(agents.planner.name).toBe('Planner');
     expect(agents.planner.description).toBeTruthy();
+    expect(agents.answerer.id).toBe('answerer');
+    expect(agents.answerer.name).toBe('Answerer');
+    expect(agents.answerer.description).toBeTruthy();
     expect(agents.triage.instructions).toContain('triage agent');
     expect(agents.planner.instructions).toContain('planner');
+    expect(agents.answerer.instructions).toContain('answerer');
   });
 
   it('declares only known capabilities with weights in [0, 1] for each agent', () => {
@@ -356,6 +369,18 @@ describe('agent configs', () => {
   it('weights triage toward fast classification and the planner toward planning', () => {
     expect(agents.triage.capabilities.classification).toBe(1);
     expect(agents.planner.capabilities.planning).toBe(1);
+  });
+
+  it('weights the answerer toward reasoning with speed close behind', () => {
+    expect(agents.answerer.capabilities.reasoning).toBe(1);
+    expect(agents.answerer.capabilities.speed).toBeGreaterThan(0);
+  });
+
+  it('keeps the answerer contract: no tools, oneshot framing', () => {
+    expect(agents.answerer.tools).toEqual([]);
+    const p = agents.answerer.instructions;
+    expect(p).toContain('"oneshot"');
+    expect(p).not.toContain('tools available');
   });
 
   // The prose lives in standalone .md files, so these lock the structural

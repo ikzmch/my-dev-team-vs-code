@@ -10,6 +10,7 @@ import {
 } from '../src/core/workflow';
 import { TriageResult } from '../src/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/core/planner';
+import { AnswerProgress } from '../src/core/answerer';
 
 function fakeTriage(impl: (prompt: string) => Promise<TriageResult>) {
   return { classify: impl } as any;
@@ -19,6 +20,13 @@ function fakePlanner(
   impl: (prompt: string, onPartial?: PlanProgress) => Promise<PlanResult>
 ) {
   return { plan: impl } as any;
+}
+
+function fakeAnswerer(
+  impl: (prompt: string, onPartial?: AnswerProgress) => Promise<string> = async () =>
+    'the answer'
+) {
+  return { answer: impl } as any;
 }
 
 const aPlan: PlanResult = {
@@ -32,29 +40,39 @@ async function runWorkflow(workflow: DevTeamWorkflow, prompt: string) {
 }
 
 describe('dev-team workflow routing', () => {
-  it('routes a oneshot request to answer-directly and skips the planner', async () => {
+  it('routes a oneshot request to the answerer and skips the planner', async () => {
     let plannerCalled = false;
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'oneshot', reason: 'simple question' })),
       fakePlanner(async () => {
         plannerCalled = true;
         return aPlan;
-      })
+      }),
+      fakeAnswerer(async () => 'It is 4.')
     );
 
     const result = await runWorkflow(workflow, 'what is 2+2');
 
     expect(result.status).toBe('success');
     if (result.status === 'success') {
-      expect(result.result).toEqual({ intent: 'oneshot', reason: 'simple question' });
+      expect(result.result).toEqual({
+        intent: 'oneshot',
+        reason: 'simple question',
+        answer: 'It is 4.',
+      });
     }
     expect(plannerCalled).toBe(false);
   });
 
-  it('routes a planning request through the planner and returns the plan', async () => {
+  it('routes a planning request through the planner and skips the answerer', async () => {
+    let answererCalled = false;
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'planning', reason: 'multi-step' })),
-      fakePlanner(async () => aPlan)
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async () => {
+        answererCalled = true;
+        return 'unused';
+      })
     );
 
     const result = await runWorkflow(workflow, 'add a feature');
@@ -64,7 +82,9 @@ describe('dev-team workflow routing', () => {
       expect(result.result.intent).toBe('planning');
       expect(result.result.reason).toBe('multi-step');
       expect(result.result.plan).toEqual(aPlan);
+      expect(result.result.answer).toBeUndefined();
     }
+    expect(answererCalled).toBe(false);
   });
 
   it('hands the original prompt to both the triage agent and the planner', async () => {
@@ -77,7 +97,8 @@ describe('dev-team workflow routing', () => {
       fakePlanner(async (p) => {
         seen.planner = p;
         return aPlan;
-      })
+      }),
+      fakeAnswerer()
     );
 
     await runWorkflow(workflow, 'refactor the module');
@@ -86,10 +107,27 @@ describe('dev-team workflow routing', () => {
     expect(seen.planner).toBe('refactor the module');
   });
 
+  it('hands the original prompt to the answerer on the oneshot path', async () => {
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (p) => {
+        seen.answerer = p;
+        return 'ok';
+      })
+    );
+
+    await runWorkflow(workflow, 'what is a closure');
+
+    expect(seen.answerer).toBe('what is a closure');
+  });
+
   it('emits a step-start event per step so the UI can show progress', async () => {
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'planning', reason: 'x' })),
-      fakePlanner(async () => aPlan)
+      fakePlanner(async () => aPlan),
+      fakeAnswerer()
     );
 
     const startedSteps: string[] = [];
@@ -126,7 +164,8 @@ describe('dev-team workflow reply progress', () => {
           onPartial?.(partial);
         }
         return aPlan;
-      })
+      }),
+      fakeAnswerer()
     );
 
     const seen: ReplyProgress[] = [];
@@ -143,10 +182,17 @@ describe('dev-team workflow reply progress', () => {
     ]);
   });
 
-  it('reports the triage decision for a oneshot request through the sink', async () => {
+  it('streams the triage decision and every answer snapshot through the sink', async () => {
+    const snapshots = ['It', 'It is', 'It is 4.'];
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'oneshot', reason: 'simple' })),
-      fakePlanner(async () => aPlan)
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (_prompt, onPartial) => {
+        for (const snapshot of snapshots) {
+          onPartial?.(snapshot);
+        }
+        return 'It is 4.';
+      })
     );
 
     const seen: ReplyProgress[] = [];
@@ -156,7 +202,12 @@ describe('dev-team workflow reply progress', () => {
       requestContext: sinkContext((progress) => seen.push(progress)),
     });
 
-    expect(seen).toEqual([{ intent: 'oneshot', reason: 'simple' }]);
+    expect(seen).toEqual([
+      { intent: 'oneshot', reason: 'simple' },
+      { intent: 'oneshot', reason: 'simple', answer: 'It' },
+      { intent: 'oneshot', reason: 'simple', answer: 'It is' },
+      { intent: 'oneshot', reason: 'simple', answer: 'It is 4.' },
+    ]);
   });
 
   it('hands the planner no callback when no sink was provided', async () => {
@@ -166,10 +217,27 @@ describe('dev-team workflow reply progress', () => {
       fakePlanner(async (_prompt, onPartial) => {
         receivedCallback = onPartial;
         return aPlan;
-      })
+      }),
+      fakeAnswerer()
     );
 
     const result = await runWorkflow(workflow, 'add a feature');
+    expect(result.status).toBe('success');
+    expect(receivedCallback).toBeUndefined();
+  });
+
+  it('hands the answerer no callback when no sink was provided', async () => {
+    let receivedCallback: AnswerProgress | undefined | 'unset' = 'unset';
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (_prompt, onPartial) => {
+        receivedCallback = onPartial;
+        return 'ok';
+      })
+    );
+
+    const result = await runWorkflow(workflow, 'what is 2+2');
     expect(result.status).toBe('success');
     expect(receivedCallback).toBeUndefined();
   });
@@ -181,7 +249,8 @@ describe('dev-team workflow failures', () => {
       fakeTriage(async () => {
         throw new Error('connection refused');
       }),
-      fakePlanner(async () => aPlan)
+      fakePlanner(async () => aPlan),
+      fakeAnswerer()
     );
 
     const result = await runWorkflow(workflow, 'hi');
@@ -198,7 +267,8 @@ describe('dev-team workflow failures', () => {
       fakeTriage(async () => ({ intent: 'planning', reason: 'needs steps' })),
       fakePlanner(async () => {
         throw new Error('model not found');
-      })
+      }),
+      fakeAnswerer()
     );
 
     const result = await runWorkflow(workflow, 'do work');
@@ -207,6 +277,24 @@ describe('dev-team workflow failures', () => {
     if (result.status === 'failed') {
       expect(result.error.message).toContain('model not found');
       expect(result.steps[stepIds.plan]?.status).toBe('failed');
+    }
+  });
+
+  it('fails the run on the answer step when the answerer throws', async () => {
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'simple' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async () => {
+        throw new Error('model not found');
+      })
+    );
+
+    const result = await runWorkflow(workflow, 'what is 2+2');
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') {
+      expect(result.error.message).toContain('model not found');
+      expect(result.steps[stepIds.answer]?.status).toBe('failed');
     }
   });
 });

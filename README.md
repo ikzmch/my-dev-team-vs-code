@@ -14,11 +14,12 @@ actions (run command, write file) are gated by an **approval seam**, so the chat
 confirmation can later be swapped for a rich Webview diff dialog **without
 touching the agent core**.
 
-> **Status:** the routing layer (triage) and the **planner** are
-> live; the **executor is not wired up yet**. Today the workflow classifies your
-> request and, for `planning` requests, drafts a step-by-step plan — but it does
-> not yet execute that plan with tools. See
-> [Current behavior](#current-behavior) and [Roadmap](#roadmap).
+> **Status:** the routing layer (triage), the **planner**, and the **oneshot
+> answerer** are live; the **executor is not wired up yet**. Today the workflow
+> classifies your request, answers `oneshot` questions directly, and drafts a
+> step-by-step plan for `planning` requests — but it does not yet execute that
+> plan with tools. See [Current behavior](#current-behavior) and
+> [Roadmap](#roadmap).
 
 ## Architecture
 
@@ -29,6 +30,7 @@ src/
     agents/
       triage.md           triage config: frontmatter + system prompt
       planner.md          planner config: frontmatter + system prompt
+      answerer.md         answerer config: frontmatter + system prompt
     models/
       *.md                one registered model per file: provider, model id, capability scores
     tools/
@@ -46,6 +48,7 @@ src/
     models.ts             provider wiring: turns the selected registry entry into an AI SDK model
     triage.ts             Mastra agent: triage request as oneshot | planning
     planner.ts            Mastra agent: draft an ordered, tool-aware plan, streamed as partial snapshots
+    answerer.ts           Mastra agent: answer a oneshot request directly, streamed as accumulated text
   tools/
     workspaceTools.ts     read / search / run / write (UI-agnostic)
     registerTools.ts      registers tools with vscode.lm
@@ -84,8 +87,10 @@ core/workflow.ts               Mastra workflow (createWorkflow + createStep)
         │                         → { summary, steps[] } (capability-routed model);
         │                         pushes the triage decision and every partial
         │                         plan snapshot to the sink as the model streams
-        └─▶ answer-directly    ── placeholder: reports the routing decision
-        │                         (the executor is the next roadmap item)
+        └─▶ answer-directly    ── Answerer.answer(prompt, onPartial)  (intent = "oneshot")
+        │                         → markdown answer (capability-routed model);
+        │                         pushes the triage decision and the growing
+        │                         answer text to the sink as the model streams
         ▼
   the UI streams the reply onto the chat panel as it forms: each snapshot is
   rendered conservatively and only the newly appended markdown is emitted,
@@ -184,10 +189,11 @@ registering a stronger model — no agent code changes either way. Only register
 models that are actually available (pulled in Ollama): selection assumes every
 registered model can run.
 
-| Agent     | Weights (what it cares about)                                | Currently selects |
-| --------- | ------------------------------------------------------------ | ----------------- |
-| `triage`  | classification 1, speed 0.8, structured-output 0.5           | Ollama `qwen3:8b` |
-| `planner` | planning 1, reasoning 0.8, structured-output 0.6, speed 0.3  | Ollama `qwen3:14b`|
+| Agent      | Weights (what it cares about)                                | Currently selects |
+| ---------- | ------------------------------------------------------------ | ----------------- |
+| `triage`   | classification 1, speed 0.8, structured-output 0.5           | Ollama `qwen3:8b` |
+| `planner`  | planning 1, reasoning 0.8, structured-output 0.6, speed 0.3  | Ollama `qwen3:14b`|
+| `answerer` | reasoning 1, speed 0.9                                       | Ollama `qwen3:8b` |
 
 ```yaml
 # config/models/qwen3-14b.md — a registered model (scores):
@@ -269,7 +275,11 @@ Out of the box, `@devteam <prompt>`:
    object.
 4. Renders the **detected intent and reason** back to the panel as soon as
    triage completes, without waiting for the rest of the run.
-5. For `planning` requests, streams "Drafting a plan…" and then **streams the
+5. For `oneshot` requests, streams "Answering…" and then **streams a real
+   answer** - the answerer's routed model (currently `qwen3:8b`) replies in a
+   single call with no tools, and the markdown answer appears incrementally
+   behind an "**Answer:**" header as the model writes it.
+6. For `planning` requests, streams "Drafting a plan…" and then **streams the
    plan itself** - an ordered, tool-aware checklist (`summary` + at most 8
    numbered steps, each hinting which workspace tool it would use) appears
    incrementally while the planner's routed model (currently `qwen3:14b`)
@@ -299,7 +309,7 @@ model the router selected for that agent pulled.
 
   ```bash
   ollama serve                 # listens on http://localhost:11434
-  ollama pull qwen3:8b         # currently selected for triage
+  ollama pull qwen3:8b         # currently selected for triage and the answerer
   ollama pull qwen3:14b        # currently selected for the planner
   ollama pull gemma3:4b        # registered fast fallback
   ollama pull qwen3-coder      # registered code specialist
@@ -350,7 +360,7 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Tech stack
 
-- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (triage, planner) + the orchestrating workflow
+- **[Mastra](https://mastra.ai)** (`@mastra/core`) — agents (triage, planner, answerer) + the orchestrating workflow
 - **[Vercel AI SDK](https://sdk.vercel.ai)** (`ai`) — model interface
 - **`ollama-ai-provider-v2`** — AI SDK provider for local Ollama models
 - **`zod`** — structured-output schemas for the triage agent and planner, the workflow's step I/O schemas, and validation of the `.md` config frontmatter (agents, models, tools)
@@ -358,14 +368,15 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Roadmap
 
-- **Wire the executor.** The planner is live: the workflow branches on intent
-  and, for `planning`, drafts a plan with the capability-routed planner model
-  (`core/planner.ts`). What's left is an executor step in `core/workflow.ts`
-  that walks the plan's steps and runs a tool-calling loop over the registered
-  tools (with `Approver`-gated side effects) — an executor agent would simply
-  declare `coding`-heavy capability weights and let the router pick (e.g. the
-  registered `qwen3-coder`, or a paid Anthropic model once that provider is
-  added to the registry).
+- **Wire the executor.** The planner and the oneshot answerer are live: the
+  workflow branches on intent, answers `oneshot` requests directly
+  (`core/answerer.ts`), and drafts a plan with the capability-routed planner
+  model (`core/planner.ts`) for `planning` requests. What's left is an
+  executor step in `core/workflow.ts` that walks the plan's steps and runs a
+  tool-calling loop over the registered tools (with `Approver`-gated side
+  effects) — an executor agent would simply declare `coding`-heavy capability
+  weights and let the router pick (e.g. the registered `qwen3-coder`, or a
+  paid Anthropic model once that provider is added to the registry).
 - **Add a Webview front end.**
   1. Add a `WebviewApprover implements Approver` with a diff/confirm UI.
   2. Pass it instead of `ChatApprover` in `extension.ts`.

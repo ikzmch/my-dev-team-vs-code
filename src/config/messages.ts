@@ -23,6 +23,7 @@ export const messages = {
   progress: {
     understanding: 'Understanding your request…',
     drafting: 'Drafting a plan…',
+    answering: 'Answering…',
   },
 
   /** Approval-dialog titles for side-effecting tools. */
@@ -40,10 +41,16 @@ export const messages = {
   triage: {
     block: (intent: string, reason: string) =>
       `**Detected intent:** \`${intent}\`\n\n` + `**Reason:** ${reason}\n\n`,
-    oneshotNextStep:
-      '**Next step (not yet implemented):** answer the question directly.\n\n',
     error: (detail: string) =>
       `**Triage error:** ${detail}\n\n` + ollamaHint('triage'),
+  },
+
+  answer: {
+    error: (detail: string) =>
+      `**Answerer error:** ${detail}\n\n` + ollamaHint('answerer'),
+    // A prefix rather than a template: the renderer streams the answer text
+    // in behind it while the model is still writing it.
+    header: '**Answer:**\n\n',
   },
 
   plan: {
