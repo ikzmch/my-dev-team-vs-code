@@ -8,8 +8,14 @@ import {
   ChatApprover,
   createHandler,
 } from './ui/chatParticipant';
+import { checkOllamaAtStartup } from './ui/startupCheck';
 
 export function activate(context: vscode.ExtensionContext) {
+  // Fire-and-forget health check: warn now if the configured Ollama endpoint
+  // is unreachable or a router-selected model is not pulled, instead of
+  // failing on the first chat request. Never blocks activation.
+  void checkOllamaAtStartup();
+
   // --- Agent core (UI-agnostic) ---
   // Each agent declares weighted capability requirements and the router
   // (`config/models.ts` + `core/models.ts`) wires the best registered model;

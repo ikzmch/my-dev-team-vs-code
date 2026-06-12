@@ -38,8 +38,8 @@ src/
     tools.ts              discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
     frontmatter.ts        minimal frontmatter parser for the .md config files
     markdown.d.ts         lets TS treat `*.md` and `glob:` imports as strings / string[]
-    settings.ts           operational limits (timeouts, size caps, search excludes, truncation)
-    messages.ts           user-facing chat copy (progress, errors, templates)
+    settings.ts           operational limits; the endpoint/timeout/search caps read live from VS Code settings
+    messages.ts           user-facing chat copy (progress, errors, warnings, templates)
   core/
     types.ts              Approver — the approval seam
     workflow.ts           Mastra workflow: triage -> branch -> plan | answer
@@ -51,6 +51,7 @@ src/
     registerTools.ts      registers tools with vscode.lm
   ui/
     chatParticipant.ts    chat handler + Phase-1 ChatApprover
+    startupCheck.ts       activation health check: ping Ollama, verify routed models are pulled
 test/                     Vitest unit tests + an in-memory `vscode` mock
 esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
 md-glob.mjs               build-time `glob:./dir/*.md` expansion, shared with Vitest
@@ -104,8 +105,8 @@ inline.
 | `config/models.ts`           | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
 | `config/frontmatter.ts`      | Minimal parser for the frontmatter subset the config files use |
-| `config/settings.ts`         | Operational limits: run timeout/output buffer, read cap, search caps + excludes, truncation |
-| `config/messages.ts`         | Progress labels, error text, and reply markdown templates     |
+| `config/settings.ts`         | Operational limits: run timeout/output buffer, read cap, search caps + excludes, truncation. The Ollama endpoint, run timeout, and search caps are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/messages.ts`         | Progress labels, error text, startup warnings, and reply markdown templates |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
 text loader inlines them into the bundle at build time (see `esbuild.mjs`), so
@@ -128,6 +129,37 @@ agent is a one-line frontmatter change. The planner's `tool` enum in its output
 schema is derived from the same registry, so the prompt and the schema can
 never drift apart.
 
+### User settings (`contributes.configuration`)
+
+The runtime knobs an end user may need to turn are real VS Code settings
+(Settings UI → "My Dev Team", or `settings.json`), declared in `package.json`
+and read **live** by `config/settings.ts` on every access - no reload needed:
+
+| Setting                              | Default                  | Controls                                  |
+| ------------------------------------ | ------------------------ | ----------------------------------------- |
+| `myDevTeam.ollama.endpoint`          | `http://localhost:11434` | Ollama server origin (no `/api` suffix)   |
+| `myDevTeam.run.commandTimeoutMs`     | `60000`                  | `run` tool shell-command timeout (ms)     |
+| `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
+| `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
+| `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
+
+Invalid values (wrong type, non-positive numbers, an endpoint that is not an
+http(s) URL) silently fall back to the defaults, so the tools always see sane
+limits. The endpoint is the **single source of truth**: the provider wiring
+(`createOllama({ baseURL })` in `core/models.ts`), the troubleshooting hint in
+chat errors, and the activation health check all derive from
+`settings.ollamaEndpoint`, so they can never disagree. Changing the endpoint
+mid-session rebuilds the provider and drops the memoised model instances; the
+next request talks to the new server. Everything not listed above
+(buffer/truncation caps, search excludes) stays a compile-time constant in
+`config/settings.ts`.
+
+On activation the extension pings `<endpoint>/api/tags`
+(`ui/startupCheck.ts`, 3s timeout, never blocks activation) and shows a
+warning if the server is unreachable or one of the router-selected models is
+not pulled - instead of letting the first chat request be the thing that
+fails.
+
 ### Capability-based model router (`config/models.ts` + `core/models.ts`)
 
 Agents never name a concrete model. Instead:
@@ -140,7 +172,8 @@ Agents never name a concrete model. Instead:
 - `selectModel` (`config/models.ts`) picks the registered model with the
   highest weighted score (Σ weight × score; an unscored capability counts
   as 0), and `resolveModel` (`core/models.ts`) wires the winner onto an
-  [AI SDK](https://sdk.vercel.ai) provider instance, memoised per model.
+  [AI SDK](https://sdk.vercel.ai) provider instance built from the configured
+  `myDevTeam.ollama.endpoint`, memoised per model and endpoint.
 
 Retune an agent by editing its weights, and upgrade the whole system by
 registering a stronger model — no agent code changes either way. Only register
@@ -192,7 +225,7 @@ implementations in `workspaceTools.ts` are UI-agnostic.
 | ---------------------- | ------------------------------- | --------------- |
 | `devteam__read`        | Read a file's text              | none (read-only)|
 | `devteam__search`      | Glob file names or grep content | none (read-only)|
-| `devteam__run`         | Run a shell command (60s cap)   | **Approver**    |
+| `devteam__run`         | Run a shell command (configurable timeout, 60s default) | **Approver** |
 | `devteam__write`       | Create/overwrite a file         | **Approver**    |
 
 The tools treat their inputs as untrusted (they are callable by any
@@ -203,10 +236,12 @@ tool-calling chat model in the editor, not just `@devteam`):
   caps how much text it returns.
 - `search` never scans `node_modules`, `.git`, `dist`, `out`, or `coverage`,
   and content mode skips binary and oversized files (see
-  `config/settings.ts` for the limits).
-- `run` executes with a configured timeout (the whole spawned process tree is
-  killed, also on Windows) and output buffer; a failed command's stdout and
-  stderr are returned so a caller can diagnose it.
+  `config/settings.ts` for the limits; the result/scan caps are user-tunable
+  via the `myDevTeam.search.*` settings).
+- `run` executes with a configured timeout (`myDevTeam.run.commandTimeoutMs`;
+  the whole spawned process tree is killed, also on Windows) and output
+  buffer; a failed command's stdout and stderr are returned so a caller can
+  diagnose it.
 
 Side-effecting tools call `approver.confirm(title, detail)`. The Phase-1
 `ChatApprover` streams the proposed action into the chat panel and gates it
@@ -214,6 +249,10 @@ behind a modal confirmation. The `writeFile` tool builds a current/proposed
 preview so the approval prompt shows what will change.
 
 ## Current behavior
+
+On activation, the extension pings the configured Ollama endpoint and warns
+(once, non-blocking) if the server is down or a router-selected model is not
+pulled.
 
 Out of the box, `@devteam <prompt>`:
 
@@ -237,8 +276,8 @@ call) instead of letting it finish in the background; a cancelled turn renders
 nothing.
 
 If Ollama is not reachable, the failed run is rendered with the step that
-failed and a reminder to start Ollama with the model the router selected for
-that agent pulled.
+failed and a reminder to start Ollama (on the configured endpoint) with the
+model the router selected for that agent pulled.
 
 ## Prerequisites
 
@@ -254,6 +293,10 @@ that agent pulled.
   ollama pull gemma3:4b        # registered fast fallback
   ollama pull qwen3-coder      # registered code specialist
   ```
+
+  If your server listens elsewhere, set `myDevTeam.ollama.endpoint`; the
+  activation health check will tell you if the endpoint or a routed model is
+  missing.
 
 ## Run it
 

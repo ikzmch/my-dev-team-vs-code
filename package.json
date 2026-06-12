@@ -17,6 +17,40 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "My Dev Team",
+      "properties": {
+        "myDevTeam.ollama.endpoint": {
+          "type": "string",
+          "default": "http://localhost:11434",
+          "description": "Base URL of the Ollama server (origin only, no /api suffix). Model calls, error hints, and the startup health check all use this value."
+        },
+        "myDevTeam.run.commandTimeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1,
+          "description": "Timeout in milliseconds for shell commands started by the run tool. The whole process tree is killed when it expires."
+        },
+        "myDevTeam.search.globMaxResults": {
+          "type": "number",
+          "default": 200,
+          "minimum": 1,
+          "description": "Maximum number of files a glob search returns."
+        },
+        "myDevTeam.search.contentScanLimit": {
+          "type": "number",
+          "default": 500,
+          "minimum": 1,
+          "description": "Maximum number of files a content search scans."
+        },
+        "myDevTeam.search.contentMaxMatches": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Maximum number of matches a content search collects before stopping early."
+        }
+      }
+    },
     "chatParticipants": [
       {
         "id": "myDevTeam.agent",

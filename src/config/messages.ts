@@ -6,18 +6,17 @@
  */
 import { selectModel } from './models';
 import { agents, AgentName } from './agents';
-
-/** Where the local Ollama server is expected to be listening. */
-export const OLLAMA_ENDPOINT = 'http://localhost:11434';
+import { settings } from './settings';
 
 /**
  * Hint appended to triage/planner errors, naming the model the router
- * actually selected for that agent so the troubleshooting text can never
- * drift from the model in use.
+ * actually selected for that agent and the endpoint the provider wiring
+ * actually uses (`settings.ollamaEndpoint`), so the troubleshooting text can
+ * never drift from either.
  */
 function ollamaHint(agent: AgentName): string {
   const { model } = selectModel(agents[agent].capabilities);
-  return `Is Ollama running on ${OLLAMA_ENDPOINT} with \`${model}\` pulled?\n\n`;
+  return `Is Ollama running on ${settings.ollamaEndpoint} with \`${model}\` pulled?\n\n`;
 }
 
 export const messages = {
@@ -58,5 +57,15 @@ export const messages = {
     /** Shown when the workflow run ends in a state we do not render yet. */
     unexpectedStatus: (status: string) =>
       `**The workflow run ended with status \`${status}\`.**\n\n`,
+  },
+
+  /** Warnings the activation health check may surface (ui/startupCheck.ts). */
+  startup: {
+    unreachable: (endpoint: string) =>
+      `My Dev Team: cannot reach Ollama at ${endpoint}. ` +
+      'Start it with "ollama serve", or point the "myDevTeam.ollama.endpoint" setting at your server.',
+    missingModels: (models: readonly string[]) =>
+      `My Dev Team: Ollama is missing the model(s) the router selected: ${models.join(', ')}. ` +
+      'Pull them with "ollama pull <model>".',
   },
 } as const;

@@ -80,6 +80,8 @@ interface MockState {
   findFilesResult: Uri[];
   warningResponse: string | undefined;
   registeredTools: Map<string, unknown>;
+  /** User settings by `<section>.<key>` (e.g. "myDevTeam.ollama.endpoint"). */
+  configuration: Map<string, unknown>;
 }
 
 export const __state: MockState = {
@@ -88,6 +90,7 @@ export const __state: MockState = {
   findFilesResult: [],
   warningResponse: undefined,
   registeredTools: new Map(),
+  configuration: new Map(),
 };
 
 export function __reset(): void {
@@ -96,6 +99,12 @@ export function __reset(): void {
   __state.findFilesResult = [];
   __state.warningResponse = undefined;
   __state.registeredTools = new Map();
+  __state.configuration = new Map();
+}
+
+/** Seed a user setting, e.g. __setConfig('myDevTeam.ollama.endpoint', url). */
+export function __setConfig(fullKey: string, value: unknown): void {
+  __state.configuration.set(fullKey, value);
 }
 
 /** Seed a file into the fake fs under the workspace root. */
@@ -137,6 +146,15 @@ export const workspace = {
     }
     return uri.path;
   }),
+
+  getConfiguration: vi.fn((section?: string) => ({
+    get: <T>(key: string, fallback?: T): T | undefined => {
+      const fullKey = section ? `${section}.${key}` : key;
+      return __state.configuration.has(fullKey)
+        ? (__state.configuration.get(fullKey) as T)
+        : fallback;
+    },
+  })),
 
   openTextDocument: vi.fn(async (uri: Uri) => ({
     getText: (range?: Range): string => {

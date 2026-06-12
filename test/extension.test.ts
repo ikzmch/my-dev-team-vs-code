@@ -16,9 +16,16 @@ import {
   ChatResultFeedbackKind,
 } from './mocks/vscode';
 
+// activate() fires the Ollama startup health check; stub fetch so tests never
+// touch the network. The fake server reports no pulled models, which the
+// check only ever turns into a warning - activation must not depend on it.
+const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) }));
+vi.stubGlobal('fetch', fetchMock);
+
 beforeEach(() => {
   __reset();
   generateMock.mockReset();
+  fetchMock.mockClear();
   vi.mocked(chat.createChatParticipant).mockClear();
 });
 
@@ -38,6 +45,14 @@ describe('activate', () => {
     );
     // Four tools + the participant get pushed for disposal.
     expect(context.subscriptions).toHaveLength(5);
+  });
+
+  it('fires the Ollama health check without blocking activation', () => {
+    activate(fakeContext() as any);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/api/tags'),
+      expect.anything()
+    );
   });
 
   it('wires a feedback listener that classifies helpful vs unhelpful', () => {

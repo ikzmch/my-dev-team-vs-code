@@ -17,17 +17,47 @@ import {
   ProviderName,
   selectModel,
 } from '../config/models';
+import { settings } from '../config/settings';
 
-const ollama = createOllama();
+type OllamaProvider = ReturnType<typeof createOllama>;
 
 /** The AI SDK model type all providers produce. */
-export type RoutedModel = ReturnType<typeof ollama>;
-
-const factories: Record<ProviderName, (model: string) => RoutedModel> = {
-  ollama: (model) => ollama(model),
-};
+export type RoutedModel = ReturnType<OllamaProvider>;
 
 const instances = new Map<string, RoutedModel>();
+
+let ollama: OllamaProvider | undefined;
+let ollamaEndpoint: string | undefined;
+
+/**
+ * The Ollama provider, built lazily from the configured endpoint
+ * (`settings.ollamaEndpoint`, the same value the error hints show). When the
+ * user changes the setting the provider is rebuilt and the memoised model
+ * instances are dropped, so the next request talks to the new endpoint
+ * without a reload.
+ */
+function ollamaProvider(): OllamaProvider {
+  const endpoint = settings.ollamaEndpoint;
+  if (!ollama || ollamaEndpoint !== endpoint) {
+    ollama = createOllama({ baseURL: `${endpoint}/api` });
+    ollamaEndpoint = endpoint;
+    instances.clear();
+  }
+  return ollama;
+}
+
+const factories: Record<ProviderName, (model: string) => RoutedModel> = {
+  ollama: (model) => ollamaProvider()(model),
+};
+
+/**
+ * Memoisation key for a wired instance. The endpoint is part of the key so a
+ * memoised model can never outlive an endpoint change: a new endpoint always
+ * misses, runs the factory, and the factory drops the stale entries.
+ */
+function instanceKey(id: string): string {
+  return `${settings.ollamaEndpoint}::${id}`;
+}
 
 /**
  * Resolve a capability requirement profile (an agent's `capabilities`
@@ -35,10 +65,11 @@ const instances = new Map<string, RoutedModel>();
  */
 export function resolveModel(requirements: CapabilityScores): RoutedModel {
   const info = selectModel(requirements);
-  let model = instances.get(info.id);
+  const key = instanceKey(info.id);
+  let model = instances.get(key);
   if (!model) {
     model = factories[info.provider](info.model);
-    instances.set(info.id, model);
+    instances.set(key, model);
   }
   return model;
 }

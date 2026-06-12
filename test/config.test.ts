@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
-import { messages, OLLAMA_ENDPOINT } from '../src/config/messages';
-import { settings } from '../src/config/settings';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { messages } from '../src/config/messages';
+import { defaults, settings } from '../src/config/settings';
+import { __reset, __setConfig } from './mocks/vscode';
 import {
   capabilityNames,
   loadModels,
@@ -18,6 +19,10 @@ import {
 } from '../src/config/tools';
 import { PlanStepSchema } from '../src/core/planner';
 
+beforeEach(() => {
+  __reset();
+});
+
 describe('messages templates', () => {
   it('renders the intent block with the intent and reason', () => {
     const block = messages.triage.block('oneshot', 'because');
@@ -28,14 +33,20 @@ describe('messages templates', () => {
   it('appends the Ollama troubleshooting hint to triage errors', () => {
     const text = messages.triage.error('connection refused');
     expect(text).toContain('**Triage error:** connection refused');
-    expect(text).toContain(OLLAMA_ENDPOINT);
+    expect(text).toContain(settings.ollamaEndpoint);
     expect(text).toContain(selectModel(agents.triage.capabilities).model);
   });
 
   it('appends the Ollama troubleshooting hint to planner errors', () => {
     const text = messages.plan.error('model missing');
     expect(text).toContain('**Planner error:** model missing');
-    expect(text).toContain(OLLAMA_ENDPOINT);
+    expect(text).toContain(settings.ollamaEndpoint);
+  });
+
+  it('derives the hint endpoint from the user setting, not a constant', () => {
+    __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
+    expect(messages.triage.error('x')).toContain('http://gpu-box:11434');
+    expect(messages.plan.error('x')).toContain('http://gpu-box:11434');
   });
 
   it('renders the plan header from the summary', () => {
@@ -96,6 +107,61 @@ describe('settings', () => {
     // dependency and VCS folders out of scans.
     expect(settings.search.excludeGlob).toContain('node_modules');
     expect(settings.search.excludeGlob).toContain('.git');
+  });
+});
+
+describe('user-tunable settings (VS Code configuration)', () => {
+  it('falls back to the defaults when nothing is configured', () => {
+    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+    expect(settings.runCommandTimeoutMs).toBe(defaults.runCommandTimeoutMs);
+    expect(settings.search.globMaxResults).toBe(defaults.search.globMaxResults);
+    expect(settings.search.contentScanLimit).toBe(defaults.search.contentScanLimit);
+    expect(settings.search.contentMaxMatches).toBe(defaults.search.contentMaxMatches);
+  });
+
+  it('reads user-configured values live', () => {
+    __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
+    __setConfig('myDevTeam.run.commandTimeoutMs', 5_000);
+    __setConfig('myDevTeam.search.globMaxResults', 10);
+    __setConfig('myDevTeam.search.contentScanLimit', 20);
+    __setConfig('myDevTeam.search.contentMaxMatches', 5);
+
+    expect(settings.ollamaEndpoint).toBe('http://gpu-box:11434');
+    expect(settings.runCommandTimeoutMs).toBe(5_000);
+    expect(settings.search.globMaxResults).toBe(10);
+    expect(settings.search.contentScanLimit).toBe(20);
+    expect(settings.search.contentMaxMatches).toBe(5);
+  });
+
+  it('normalises the endpoint: trims whitespace and trailing slashes', () => {
+    __setConfig('myDevTeam.ollama.endpoint', '  http://gpu-box:11434/// ');
+    expect(settings.ollamaEndpoint).toBe('http://gpu-box:11434');
+  });
+
+  it('rejects a non-http(s) or non-string endpoint and falls back', () => {
+    __setConfig('myDevTeam.ollama.endpoint', 'gpu-box:11434');
+    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+    __setConfig('myDevTeam.ollama.endpoint', 42);
+    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+    __setConfig('myDevTeam.ollama.endpoint', '');
+    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+  });
+
+  it('rejects non-positive, non-finite, or non-number limits and falls back', () => {
+    __setConfig('myDevTeam.run.commandTimeoutMs', 0);
+    __setConfig('myDevTeam.search.globMaxResults', -5);
+    __setConfig('myDevTeam.search.contentScanLimit', Number.NaN);
+    __setConfig('myDevTeam.search.contentMaxMatches', 'lots');
+
+    expect(settings.runCommandTimeoutMs).toBe(defaults.runCommandTimeoutMs);
+    expect(settings.search.globMaxResults).toBe(defaults.search.globMaxResults);
+    expect(settings.search.contentScanLimit).toBe(defaults.search.contentScanLimit);
+    expect(settings.search.contentMaxMatches).toBe(defaults.search.contentMaxMatches);
+  });
+
+  it('floors fractional limits to whole numbers', () => {
+    __setConfig('myDevTeam.run.commandTimeoutMs', 1500.9);
+    expect(settings.runCommandTimeoutMs).toBe(1500);
   });
 });
 
