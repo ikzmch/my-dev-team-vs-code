@@ -336,6 +336,47 @@ describe('createHandler', () => {
     expect(seen.executor).toContain('1. Find the file (tool: search) - locate it');
   });
 
+  it('relays the slash command so the engine pins the route without triage', async () => {
+    const { engine, seen } = makeEngine(async () => {
+      throw new Error('triage must not run for a known command');
+    });
+    const stream = fakeStream();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'the tests are failing', command: 'fix', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(seen.triage).toBeUndefined();
+    const text = emitted(stream);
+    expect(text).toContain('**Detected intent:** `planning`');
+    expect(text).toContain('Requested via /fix.');
+    // The command's preamble briefs the planner and the executor.
+    expect(seen.planner).toContain('/fix');
+    expect(seen.executor).toContain('/fix');
+  });
+
+  it('renders a /plan run as the plan plus the not-executed note', async () => {
+    const { engine, seen } = makeEngine();
+    const stream = fakeStream();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'add a feature', command: 'plan', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(seen.executor).toBeUndefined();
+    const text = emitted(stream);
+    expect(text).toContain('Requested via /plan.');
+    expect(text).toContain('**Plan:** Add a feature');
+    expect(text).not.toContain('**Execution:**');
+    expect(text).toContain('nothing was executed');
+  });
+
   it('surfaces a triage failure with the Ollama hint', async () => {
     const { engine } = makeEngine(async () => {
       throw new Error('connection refused');
@@ -1156,6 +1197,22 @@ describe('renderReply', () => {
 
   it('no longer advertises a not-yet-implemented executor step', () => {
     expect(renderReply(progress(aPlan), true)).not.toContain('not yet implemented');
+  });
+
+  it('appends the not-executed note only to a finished plan-only reply', () => {
+    // Finished with a plan and no transcript: the /plan path.
+    expect(renderReply(progress(aPlan), true)).toContain('nothing was executed');
+    // In-flight snapshots never carry the note (it would break the
+    // prefix-extension property the streamer relies on)...
+    expect(renderReply(progress(aPlan), false)).not.toContain('nothing was executed');
+    // ...and neither does a reply whose plan was executed.
+    const executed: Reply = {
+      intent: 'planning',
+      reason: 'needs steps',
+      plan: aPlan,
+      execution: anExecution,
+    };
+    expect(renderReply(executed, true)).not.toContain('nothing was executed');
   });
 
   const withExecution = (execution: PartialExecution): ReplyProgress => ({

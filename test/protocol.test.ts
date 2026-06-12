@@ -21,6 +21,15 @@ describe('protocol schemas', () => {
         offeredTools: ['read'],
       })
     ).not.toThrow();
+    // The slash command travels by name, and stays optional.
+    expect(() =>
+      RunRequestSchema.parse({
+        protocolVersion: 1,
+        prompt: 'hi',
+        command: 'fix',
+        offeredTools: ['read'],
+      })
+    ).not.toThrow();
     // Missing offeredTools.
     expect(() =>
       RunRequestSchema.parse({ protocolVersion: 1, prompt: 'hi' })

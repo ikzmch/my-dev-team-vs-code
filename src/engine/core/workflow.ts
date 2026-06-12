@@ -6,6 +6,7 @@ import { Planner, PlanProgress } from './planner';
 import { Answerer } from './answerer';
 import { Executor, ExecutionProgress } from './executor';
 import { AgentUsage } from './usage';
+import { commandConfigs, pinnedReason, CommandConfig } from '../config/commands';
 import {
   Attachment,
   AttachmentSchema,
@@ -35,17 +36,28 @@ export const stepIds = {
 
 /**
  * What the workflow consumes: the user's prompt plus any attached
- * files/selections and the prior turns of the conversation. They stay
- * separate so each step can decide how much of each its model actually needs
- * to see - important with small local Ollama models, whose context windows a
- * single attached file can easily crowd out.
+ * files/selections, the prior turns of the conversation, and the slash
+ * command the user invoked, if any. They stay separate so each step can
+ * decide how much of each its model actually needs to see - important with
+ * small local Ollama models, whose context windows a single attached file can
+ * easily crowd out.
  */
 export const RequestSchema = z.object({
   prompt: z.string(),
   attachments: z.array(AttachmentSchema).optional(),
   history: z.array(HistoryTurnSchema).optional(),
+  command: z.string().optional(),
 });
 export type RequestInput = z.infer<typeof RequestSchema>;
+
+/**
+ * The registered config of the request's slash command. An unknown command
+ * name (a client newer than this engine) resolves to undefined: the prompt is
+ * then treated as plain text, so version skew degrades, never breaks.
+ */
+function commandFor(input: RequestInput): CommandConfig | undefined {
+  return input.command ? commandConfigs[input.command] : undefined;
+}
 
 /**
  * The prior turns rendered as a clearly delimited conversation section, so a
@@ -87,18 +99,23 @@ export function triagePrompt(input: RequestInput): string {
 }
 
 /**
- * The prompt the planner and answerer see: the conversation so far, the
- * question, and the full attachment text, one fenced block per attachment.
+ * The prompt the planner and answerer see: the conversation so far, the slash
+ * command's preamble (when one was invoked - the preamble frames the request,
+ * e.g. /fix's diagnose-first briefing), the question, and the full attachment
+ * text, one fenced block per attachment. Triage never sees the preamble: when
+ * a command is known its route is pinned and triage is skipped.
  */
 export function fullPrompt(input: RequestInput): string {
+  const preamble = commandFor(input)?.preamble;
+  const prompt = preamble ? `${preamble}\n\n${input.prompt}` : input.prompt;
   const attachments = input.attachments ?? [];
   if (attachments.length === 0) {
-    return withHistory(input, input.prompt);
+    return withHistory(input, prompt);
   }
   const blocks = attachments.map((a) => `${a.label}\n\`\`\`\n${a.text}\n\`\`\``);
   return withHistory(
     input,
-    `${input.prompt}\n\n--- Attached context ---\n${blocks.join('\n\n')}`
+    `${prompt}\n\n--- Attached context ---\n${blocks.join('\n\n')}`
   );
 }
 
@@ -202,13 +219,17 @@ function abortSignal(requestContext: RequestContext): AbortSignal | undefined {
  *   triage ──▶ branch ──▶ draft-plan       (intent === "planning")
  *          │          └─▶ answer-directly  (intent === "oneshot")
  *          ▼
- *             branch ──▶ execute-plan      (a plan was drafted)
- *                    └─▶ deliver-answer    (the oneshot path; pass-through)
+ *             branch ──▶ execute-plan      (a plan was drafted and the
+ *                    │                      command did not opt out)
+ *                    └─▶ deliver-answer    (oneshot and plan-only paths;
+ *                                           pass-through)
  *
  * "answer-directly" streams a real answer from the Answerer agent;
  * "execute-plan" walks the drafted plan with the Executor's tool-calling
  * loop. The second branch is a branch rather than a plain step so a oneshot
- * run never starts an executor step.
+ * (or plan-only) run never starts an executor step. A known slash command on
+ * the request pins the triage decision without a model call, and a command
+ * with `execute: false` (/plan) stops the run after the plan is drafted.
  */
 export function createDevTeamWorkflow(
   triage: Triage,
@@ -220,15 +241,26 @@ export function createDevTeamWorkflow(
     id: stepIds.triage,
     inputSchema: RequestSchema,
     outputSchema: TriagedSchema,
-    execute: async ({ inputData, requestContext }) => ({
-      prompt: inputData.prompt,
-      attachments: inputData.attachments,
-      history: inputData.history,
-      ...(await triage.classify(
-        triagePrompt(inputData),
-        usageReporter(requestContext, 'triage')
-      )),
-    }),
+    execute: async ({ inputData, requestContext }) => {
+      // A known slash command pins the route: the user typing /fix already is
+      // the routing decision, so the triage model call would only add latency
+      // and a chance to misroute. The pinned reason renders where the model's
+      // reason would, so the UI needs no special case.
+      const command = commandFor(inputData);
+      const decision = command
+        ? { intent: command.intent, reason: pinnedReason(command.name) }
+        : await triage.classify(
+            triagePrompt(inputData),
+            usageReporter(requestContext, 'triage')
+          );
+      return {
+        prompt: inputData.prompt,
+        attachments: inputData.attachments,
+        history: inputData.history,
+        command: inputData.command,
+        ...decision,
+      };
+    },
   });
 
   const draftPlan = createStep({
@@ -236,7 +268,7 @@ export function createDevTeamWorkflow(
     inputSchema: TriagedSchema,
     outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, history, intent, reason } = inputData;
+      const { prompt, attachments, history, command, intent, reason } = inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every plan
       // snapshot the planner streams, so the UI can render tokens as they
@@ -249,7 +281,7 @@ export function createDevTeamWorkflow(
         onPartial,
         usageReporter(requestContext, 'plan')
       );
-      return { prompt, attachments, history, intent, reason, plan };
+      return { prompt, attachments, history, command, intent, reason, plan };
     },
   });
 
@@ -258,7 +290,7 @@ export function createDevTeamWorkflow(
     inputSchema: TriagedSchema,
     outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, history, intent, reason } = inputData;
+      const { prompt, attachments, history, command, intent, reason } = inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every answer
       // snapshot the answerer streams, mirroring the draft-plan step.
@@ -268,7 +300,7 @@ export function createDevTeamWorkflow(
         sink && ((text) => sink({ intent, reason, answer: text })),
         usageReporter(requestContext, 'answer')
       );
-      return { prompt, attachments, history, intent, reason, answer };
+      return { prompt, attachments, history, command, intent, reason, answer };
     },
   });
 
@@ -277,7 +309,7 @@ export function createDevTeamWorkflow(
     inputSchema: StagedReplySchema,
     outputSchema: ReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, history, intent, reason, plan } = inputData;
+      const { prompt, attachments, history, command, intent, reason, plan } = inputData;
       if (!plan) {
         throw new Error('execute-plan reached without a drafted plan.');
       }
@@ -288,7 +320,7 @@ export function createDevTeamWorkflow(
       const onPartial: ExecutionProgress | undefined =
         sink && ((partial) => sink({ intent, reason, plan, execution: partial }));
       const execution = await executor.execute(
-        executionPrompt({ prompt, attachments, history }, plan),
+        executionPrompt({ prompt, attachments, history, command }, plan),
         onPartial,
         abortSignal(requestContext),
         usageReporter(requestContext, 'execute')
@@ -297,7 +329,8 @@ export function createDevTeamWorkflow(
     },
   });
 
-  // The oneshot path is already complete after answer-directly; this
+  // The oneshot path is already complete after answer-directly, and a
+  // plan-only run (a command with execute: false) after draft-plan; this
   // pass-through only strips the carried request fields back off.
   const deliverAnswer = createStep({
     id: stepIds.deliver,
@@ -306,12 +339,15 @@ export function createDevTeamWorkflow(
     execute: async ({ inputData }) => ({
       intent: inputData.intent,
       reason: inputData.reason,
+      plan: inputData.plan,
       answer: inputData.answer,
     }),
   });
 
-  const hasPlan = async ({ inputData }: { inputData: StagedReply }) =>
-    inputData.plan !== undefined;
+  // A drafted plan is executed unless the run's slash command opted out
+  // (/plan stops after drafting, so the user can inspect the steps first).
+  const shouldExecute = async ({ inputData }: { inputData: StagedReply }) =>
+    inputData.plan !== undefined && commandFor(inputData)?.execute !== false;
 
   // The generics are explicit because TS cannot infer them from the zod
   // schemas: a zod v4 schema matches more than one member of Mastra's
@@ -329,8 +365,11 @@ export function createDevTeamWorkflow(
     // branch() emits { [stepId]: output }; flatten to the single staged reply.
     .map(async ({ inputData }) => inputData[stepIds.plan] ?? inputData[stepIds.answer])
     .branch([
-      [hasPlan, executePlan],
-      [async (args: { inputData: StagedReply }) => !(await hasPlan(args)), deliverAnswer],
+      [shouldExecute, executePlan],
+      [
+        async (args: { inputData: StagedReply }) => !(await shouldExecute(args)),
+        deliverAnswer,
+      ],
     ])
     .map(
       async ({ inputData }) => inputData[stepIds.execute] ?? inputData[stepIds.deliver]

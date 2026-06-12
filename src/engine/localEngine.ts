@@ -231,6 +231,7 @@ export class LocalEngine implements Engine {
             prompt: input.prompt,
             attachments: input.attachments,
             history: input.history,
+            command: input.command,
           },
           requestContext,
         });

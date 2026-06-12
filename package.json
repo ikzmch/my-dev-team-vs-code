@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -84,8 +84,28 @@
         "isSticky": true,
         "commands": [
           {
+            "name": "do",
+            "description": "Plan and execute workspace changes - no triage."
+          },
+          {
             "name": "explain",
-            "description": "Explain a file or selection."
+            "description": "Explain a file, selection, or concept in the chat - no changes made."
+          },
+          {
+            "name": "fix",
+            "description": "Diagnose a bug, fix its root cause, and verify the fix."
+          },
+          {
+            "name": "plan",
+            "description": "Draft the step-by-step plan but do not execute it."
+          },
+          {
+            "name": "review",
+            "description": "Review the attached code or selection - findings in chat, no edits."
+          },
+          {
+            "name": "test",
+            "description": "Write or update tests for the target code, then run them."
           }
         ]
       }

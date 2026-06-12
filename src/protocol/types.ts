@@ -53,11 +53,16 @@ export type EnvironmentFacts = z.infer<typeof EnvironmentFactsSchema>;
 /**
  * Everything the client sends to start a run. `offeredTools` names the
  * client-side tools the engine may ask it to execute (see toolContract.ts) -
- * the implementations always stay on the client.
+ * the implementations always stay on the client. `command` is the slash
+ * command the user invoked (without the slash), if any: what a command does
+ * is the engine's business (its command registry pins the route and shapes
+ * the prompts), the client only relays the name, and an engine that does not
+ * know the name treats the prompt as plain text.
  */
 export const RunRequestSchema = z.object({
   protocolVersion: z.number().int().positive(),
   prompt: z.string(),
+  command: z.string().optional(),
   attachments: z.array(AttachmentSchema).optional(),
   history: z.array(HistoryTurnSchema).optional(),
   environment: EnvironmentFactsSchema.optional(),

@@ -128,6 +128,13 @@ export const messages = {
     // A prefix rather than a template: the renderer streams the summary in
     // behind it while the planner is still writing it.
     header: '**Plan:** ',
+    /**
+     * Appended to a finished reply that drafted a plan but never executed it
+     * (the /plan command), so the user knows nothing has happened yet and how
+     * to proceed.
+     */
+    notExecuted:
+      '\n\n_Plan only - nothing was executed. Say "go ahead" to carry it out._',
   },
 
   execution: {

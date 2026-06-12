@@ -312,6 +312,11 @@ export function renderReply(reply: ReplyProgress | Reply, done: boolean): string
     text += formatPlan(reply.plan, done || reply.execution !== undefined);
     if (reply.execution) {
       text += '\n\n' + formatExecution(reply.execution, done);
+    } else if (done) {
+      // A finished run whose reply holds a plan but no transcript is the
+      // /plan command's plan-only path; in-flight snapshots (`done` false)
+      // never carry the note, so streamed renders stay prefix-extensions.
+      text += messages.plan.notExecuted;
     }
   } else if (reply.answer !== undefined) {
     // The answer snapshots are grow-only accumulated text, so appending them
@@ -463,6 +468,11 @@ export function createHandler(
       {
         protocolVersion: PROTOCOL_VERSION,
         prompt: request.prompt,
+        // The slash command travels by name only: what it does (route
+        // pinning, prompt preamble) is the engine's command registry's
+        // business, and an engine that does not know the name treats the
+        // prompt as plain text.
+        command: request.command,
         attachments,
         history,
         environment: { os: environment.os, shell: environment.shell },

@@ -352,6 +352,232 @@ describe('dev-team workflow routing', () => {
   });
 });
 
+describe('dev-team workflow slash commands', () => {
+  it('pins the route of a planning command without calling the triage agent', async () => {
+    let triageCalled = false;
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => {
+        triageCalled = true;
+        return { intent: 'oneshot', reason: 'should not run' };
+      }),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor()
+    );
+
+    const run = await workflow.createRun();
+    const result = await run.start({
+      inputData: { prompt: 'the tests are failing', command: 'fix' },
+    });
+
+    expect(triageCalled).toBe(false);
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.intent).toBe('planning');
+      expect(result.result.reason).toBe('Requested via /fix.');
+      expect(result.result.execution).toEqual(anExecution);
+    }
+  });
+
+  it('pins a oneshot command to the answerer', async () => {
+    let triageCalled = false;
+    let plannerCalled = false;
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => {
+        triageCalled = true;
+        return { intent: 'planning', reason: 'should not run' };
+      }),
+      fakePlanner(async () => {
+        plannerCalled = true;
+        return aPlan;
+      }),
+      fakeAnswerer(async () => 'an explanation'),
+      fakeExecutor()
+    );
+
+    const run = await workflow.createRun();
+    const result = await run.start({
+      inputData: { prompt: 'this function', command: 'explain' },
+    });
+
+    expect(triageCalled).toBe(false);
+    expect(plannerCalled).toBe(false);
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result).toEqual({
+        intent: 'oneshot',
+        reason: 'Requested via /explain.',
+        answer: 'an explanation',
+      });
+    }
+  });
+
+  it('stops a /plan run after drafting: plan-only reply, executor never starts', async () => {
+    let executorCalled = false;
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'unused' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async () => {
+        executorCalled = true;
+        return anExecution;
+      })
+    );
+
+    const startedSteps: string[] = [];
+    const run = await workflow.createRun();
+    const unwatch = run.watch((event) => {
+      if (event.type === 'workflow-step-start') {
+        startedSteps.push(event.payload.id);
+      }
+    });
+    const result = await run.start({
+      inputData: { prompt: 'add a feature', command: 'plan' },
+    });
+    unwatch();
+
+    expect(executorCalled).toBe(false);
+    expect(startedSteps).not.toContain(stepIds.execute);
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result).toEqual({
+        intent: 'planning',
+        reason: 'Requested via /plan.',
+        plan: aPlan,
+      });
+    }
+  });
+
+  it('routes an unknown command through triage as a plain prompt', async () => {
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async (p) => {
+        seen.triage = p;
+        return { intent: 'oneshot', reason: 'question' };
+      }),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (p) => {
+        seen.answerer = p;
+        return 'ok';
+      }),
+      fakeExecutor()
+    );
+
+    const run = await workflow.createRun();
+    const result = await run.start({
+      inputData: { prompt: 'what is 2+2', command: 'frobnicate' },
+    });
+
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.reason).toBe('question');
+    }
+    // No registered preamble: the agents see the bare prompt.
+    expect(seen.triage).toBe('what is 2+2');
+    expect(seen.answerer).toBe('what is 2+2');
+  });
+
+  it("hands the command's preamble to the planner and executor, after the history", async () => {
+    const history: HistoryTurn[] = [{ role: 'user', text: 'earlier turn' }];
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'unused' })),
+      fakePlanner(async (p) => {
+        seen.planner = p;
+        return aPlan;
+      }),
+      fakeAnswerer(),
+      fakeExecutor(async (p) => {
+        seen.executor = p;
+        return anExecution;
+      })
+    );
+
+    const run = await workflow.createRun();
+    await run.start({
+      inputData: { prompt: 'the tests are failing', command: 'fix', history },
+    });
+
+    for (const prompt of [seen.planner, seen.executor]) {
+      expect(prompt).toContain('/fix');
+      expect(prompt).toContain('the tests are failing');
+      expect(prompt.indexOf('/fix')).toBeGreaterThan(
+        prompt.indexOf('--- End of conversation ---')
+      );
+      expect(prompt.indexOf('/fix')).toBeLessThan(
+        prompt.indexOf('the tests are failing')
+      );
+    }
+  });
+
+  it("hands a oneshot command's preamble to the answerer", async () => {
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'unused' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (p) => {
+        seen.answerer = p;
+        return 'ok';
+      }),
+      fakeExecutor()
+    );
+
+    const run = await workflow.createRun();
+    await run.start({ inputData: { prompt: 'this module', command: 'review' } });
+
+    expect(seen.answerer).toContain('/review');
+    expect(seen.answerer).toContain('this module');
+  });
+
+  it('emits no triage usage report when a command pins the route', async () => {
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async (_p, onUsage) => {
+        onUsage?.({ model: 'm-triage', inputTokens: 1 });
+        return { intent: 'planning', reason: 'unused' };
+      }),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor()
+    );
+
+    const seen: StepUsage[] = [];
+    const requestContext = new RequestContext();
+    requestContext.set(usageSinkKey, (usage: StepUsage) => seen.push(usage));
+    const run = await workflow.createRun();
+    await run.start({
+      inputData: { prompt: 'add a feature', command: 'do' },
+      requestContext,
+    });
+
+    expect(seen.map((u) => u.step)).not.toContain('triage');
+  });
+
+  it('streams the pinned decision and the final plan through the sink on /plan', async () => {
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'unused' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor()
+    );
+
+    const seen: ReplyProgress[] = [];
+    const requestContext = new RequestContext();
+    requestContext.set(replyProgressKey, (progress: ReplyProgress) =>
+      seen.push(progress)
+    );
+    const run = await workflow.createRun();
+    await run.start({
+      inputData: { prompt: 'add a feature', command: 'plan' },
+      requestContext,
+    });
+
+    expect(seen[0]).toEqual({
+      intent: 'planning',
+      reason: 'Requested via /plan.',
+    });
+  });
+});
+
 describe('prompt assembly', () => {
   const attachments: Attachment[] = [
     { label: 'File: src/a.ts', text: 'const a = 1;' },
@@ -368,6 +594,26 @@ describe('prompt assembly', () => {
     expect(fullPrompt({ prompt: 'hi' })).toBe('hi');
     expect(triagePrompt({ prompt: 'hi', attachments: [], history: [] })).toBe('hi');
     expect(fullPrompt({ prompt: 'hi', attachments: [], history: [] })).toBe('hi');
+  });
+
+  it('prepends a known command preamble to the full prompt, not the triage prompt', () => {
+    const full = fullPrompt({ prompt: 'the tests fail', command: 'fix' });
+    expect(full).toContain('/fix');
+    expect(full.indexOf('/fix')).toBeLessThan(full.indexOf('the tests fail'));
+    // Triage is skipped for a known command, so its prompt never carries the
+    // preamble; an unknown command has none to carry.
+    expect(triagePrompt({ prompt: 'the tests fail', command: 'fix' })).toBe(
+      'the tests fail'
+    );
+    expect(fullPrompt({ prompt: 'hi', command: 'frobnicate' })).toBe('hi');
+  });
+
+  it('keeps the command preamble ahead of the attached context', () => {
+    const prompt = fullPrompt({ prompt: 'review this', command: 'review', attachments });
+    expect(prompt.indexOf('/review')).toBeLessThan(prompt.indexOf('review this'));
+    expect(prompt.indexOf('review this')).toBeLessThan(
+      prompt.indexOf('--- Attached context ---')
+    );
   });
 
   it('lists attachment labels without contents for triage', () => {

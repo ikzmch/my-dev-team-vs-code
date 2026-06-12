@@ -28,7 +28,10 @@ contract (see [The engine protocol](#the-engine-protocol-srcprotocol)). A
 > executor's capability-routed model drives a tool-calling loop over the five
 > workspace tools, with side effects gated by the approval seam. Every turn
 > carries the **conversation history** (size-capped), so follow-ups like
-> "now rename it too" resolve against the earlier exchanges. The pipeline now
+> "now rename it too" resolve against the earlier exchanges. Six **slash
+> commands** (`/explain`, `/review`, `/plan`, `/do`, `/fix`, `/test`) pin the
+> route without a triage call and frame the request for the agents; `/plan`
+> stops after the plan is drafted. The pipeline now
 > runs behind the engine protocol (Phase A of the backend split): only the
 > local engine exists, but the seam, the event stream, the tool inversion,
 > and the usage (billing) events are in place. See
@@ -59,9 +62,11 @@ src/
       agents/*.md         one agent per file: frontmatter + system prompt
       models/*.md         one registered model per file: provider, model id, capability scores
       tools/*.md          model-facing tool descriptions + transcript preview hints
+      commands/*.md       one slash command per file: pinned route, execute flag + prompt preamble
       agents.ts           loads agents/*.md, renders the tools + environment sections, exports `agents`
       models.ts           discovers models/*.md, exports the registry + capability-based `selectModel`
       tools.ts            discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
+      commands.ts         discovers commands/*.md, exports `commandConfigs` (route pinning + preambles)
       frontmatter.ts      minimal frontmatter parser for the .md config files
       markdown.d.ts       lets TS treat `*.md` and `glob:` imports as strings / string[]
   client/
@@ -142,7 +147,9 @@ engine/core/workflow.ts        Mastra workflow (createWorkflow + createStep)
         │                         because a follow-up cannot be routed
         │                         without the conversation it follows)
         │                         → { intent: "oneshot" | "planning", reason }
-        ▼                         (model picked by the capability router)
+        │                         (model picked by the capability router; a
+        │                         known slash command pins the intent without
+        ▼                         the model call - see Slash commands)
       branch
         ├─▶ draft-plan         ── Planner.plan(fullPrompt, onPartial)  (intent = "planning")
         │                         conversation + prompt + full attachment text;
@@ -249,9 +256,11 @@ never carry literals inline.
 | `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
 | `engine/config/models/*.md`     | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
 | `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts` |
+| `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
 | `engine/config/models.ts`       | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `engine/config/tools.ts`        | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
+| `engine/config/commands.ts`     | Discovers the command files, exports `commandConfigs`/`commandNames` and the pinned-route reason |
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
 | `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
@@ -377,6 +386,44 @@ model: resolveModel(agents.planner.capabilities),
 //   const anthropic = createAnthropic({ apiKey: /* … */ });
 //   const factories = { ollama: …, anthropic: (model) => anthropic(model) };
 ```
+
+### Slash commands (`engine/config/commands/` + `engine/config/commands.ts`)
+
+`@devteam` offers six slash commands. Each is a `.md` config file
+(discovered like the models and tools - dropping a file in registers the
+command) that does exactly two things:
+
+- **Pins the route.** A known command skips the triage model call entirely:
+  the user typing `/fix` already *is* the routing decision, so the call would
+  only add latency and a chance to misroute. The workflow returns the
+  command's `intent` with the reason `Requested via /<name>.`, rendered where
+  the model's reason would be - the UI needs no special case. `/plan`
+  additionally carries `execute: false`, so the run stops after the plan is
+  drafted. Every command-pinned run is also a labelled example of what triage
+  *should* have decided - the eval log records the command per run, so triage
+  accuracy can be measured against it.
+- **Frames the request.** The file's markdown body is a preamble rendered
+  ahead of the user's prompt for the planner, answerer, and executor (after
+  the conversation section, before the attachments) - e.g. `/fix` briefs the
+  agents to diagnose the root cause before editing.
+
+| Command    | Route                  | What it does                                          |
+| ---------- | ---------------------- | ----------------------------------------------------- |
+| `/explain` | oneshot                | Explain a file, selection, or concept - no changes    |
+| `/review`  | oneshot                | Review the attached code - findings in chat, no edits |
+| `/plan`    | planning, plan-only    | Draft the plan and stop; the reply ends with a "nothing was executed" note. A follow-up ("go ahead") re-plans with the drafted plan in the conversation history and executes |
+| `/do`      | planning               | Plan and execute - for when triage misrouting is the annoyance |
+| `/fix`     | planning               | Diagnose first (read, search, run tests), fix the root cause, verify |
+| `/test`    | planning               | Write or update tests for the target code, then run them |
+
+The command travels on the protocol as `RunRequest.command` - the name only.
+What a command does is the engine's business; the client just relays what the
+user typed, and an engine that does not know the name (version skew with a
+Phase-B backend) treats the prompt as plain text, so unknown commands degrade
+instead of breaking. VS Code's autocomplete reads the static declarations in
+`package.json` (`contributes.chatParticipants[].commands`); a unit test
+(`test/commands.test.ts`) asserts they match the discovered configs, so the
+two lists cannot drift.
 
 ### Executor (`engine/core/executor.ts` + `engine/core/agentTools.ts`)
 
@@ -532,7 +579,10 @@ Out of the box, `@devteam <prompt>`:
 2. Triages the prompt as `oneshot` or `planning` via the capability-routed
    local Ollama model (currently `qwen3:8b`) - this stays a buffered
    structured-output call, since its whole product is a small validated
-   object. The boundary is the deliverable, not the difficulty: requests
+   object. A slash command (`/explain`, `/review`, `/plan`, `/do`, `/fix`,
+   `/test` - see [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts))
+   skips this call and pins the route directly, with `Requested via /<name>.`
+   as the rendered reason. The boundary is the deliverable, not the difficulty: requests
    whose product is text in the chat are `oneshot`; anything that should
    create or modify workspace files - even one small new file that needs no
    exploration - is `planning`, so it reaches the executor and its `write`
@@ -660,13 +710,14 @@ npm run build      # esbuild bundle -> dist/extension.js
 In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 For ready-made prompts to try, see [`examples/`](examples/README.md): oneshot
 questions, simple planning requests (e.g. a console calculator), advanced
-multi-step planning requests, and edits to existing files.
-An `/explain` slash command is declared in `package.json`, but it has no
-dedicated handling — its prompt flows through the same
-triage → plan → execute workflow as any other message. It is still useful as
-a follow-up: the conversation history gives "/explain what you just did" a
-real referent (and prior `/explain` turns keep their slash command when they
-are folded into later prompts).
+multi-step planning requests, and edits to existing files. Type `/` after
+`@devteam` to pick a slash command (`/explain`, `/review`, `/plan`, `/do`,
+`/fix`, `/test`): a command pins the route without a triage call and frames
+the request for the agents - see
+[Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts).
+Commands work in follow-ups too: the conversation history gives
+"/explain what you just did" a real referent (and prior command turns keep
+their slash command when they are folded into later prompts).
 
 Scripts:
 

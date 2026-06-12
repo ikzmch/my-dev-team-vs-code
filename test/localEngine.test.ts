@@ -195,6 +195,38 @@ describe('LocalEngine.startRun', () => {
     ]);
   });
 
+  it('pins the route from the request slash command without calling triage', async () => {
+    let triageCalled = false;
+    const engine = new LocalEngine(
+      fakes({
+        triage: {
+          classify: async () => {
+            triageCalled = true;
+            return { intent: 'oneshot', reason: 'should not run' };
+          },
+        } as any,
+      })
+    );
+
+    const events: RunEvent[] = [];
+    const reply = await engine
+      .startRun(request({ command: 'plan' }), client(events))
+      .result;
+
+    expect(triageCalled).toBe(false);
+    // /plan stops after drafting: the reply carries the plan, no transcript.
+    expect(reply).toEqual({
+      intent: 'planning',
+      reason: 'Requested via /plan.',
+      plan: aPlan,
+    });
+    expect(events[0]).toEqual({
+      type: 'triaged',
+      intent: 'planning',
+      reason: 'Requested via /plan.',
+    });
+  });
+
   it('binds the executor to the ToolHost the client handed in', async () => {
     let receivedHost: ToolHost | undefined;
     const engine = new LocalEngine(
