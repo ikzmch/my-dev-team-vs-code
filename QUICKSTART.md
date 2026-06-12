@@ -75,8 +75,6 @@ The agent decides on its own whether your request is a question (it answers
 directly) or work on files (it plans, then executes). You watch the plan and
 an execution transcript stream into the chat as it happens.
 
-For more ready-made prompts to try, see [examples/](examples/README.md).
-
 ## 4. Slash commands
 
 Type `/` after `@devteam` to pick a command. A command skips the automatic

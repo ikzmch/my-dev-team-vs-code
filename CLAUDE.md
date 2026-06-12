@@ -1,10 +1,13 @@
 # Project instructions
 
-## Keep README.md in sync
+## Keep DESIGN.md in sync
 
-Every time a significant change is made, update README.md in the same piece of
-work - do not leave it for a follow-up. Significant means anything the README
-describes or a reader would rely on, e.g.:
+DESIGN.md is the developer documentation: architecture, request flow, the
+engine protocol, configuration, the model router, the tools, development
+setup, and the roadmap. Every time a significant change is made, update
+DESIGN.md in the same piece of work - do not leave it for a follow-up.
+Significant means anything DESIGN.md describes or a reader would rely on,
+e.g.:
 
 - architecture: new/renamed/deleted files in `src/`, new layers or seams
 - configuration: the `.md` config formats (agents, models, tools), frontmatter
@@ -17,7 +20,17 @@ capability-router section, "Current behavior", "Prerequisites", and the
 scripts table - they name concrete files and models and drift easily.
 
 Pure refactors that change no structure or behavior, and test-only changes, do
-not require a README update.
+not require a DESIGN.md update.
+
+## Keep README.md high-level
+
+README.md is the front page, written to attract developers and end users: a
+short pitch, the highlights, links to QUICKSTART.md (end users) and DESIGN.md
+(developers), a minimal getting-started snippet, the tech stack, and the
+license. Keep it at that altitude - detail belongs in DESIGN.md or
+QUICKSTART.md, never here. Update it only when the pitch-level facts change:
+what the extension is and does, a headline feature, the tech stack, the
+build/launch one-liner, the license, or the set of documents it links to.
 
 ## Keep QUICKSTART.md in sync
 
