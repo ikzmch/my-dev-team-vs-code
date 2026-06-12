@@ -49,8 +49,8 @@ describe('messages templates', () => {
     expect(messages.plan.error('x')).toContain('http://gpu-box:11434');
   });
 
-  it('renders the plan header from the summary', () => {
-    expect(messages.plan.header('Do the thing')).toContain('**Plan:** Do the thing');
+  it('provides the plan header as a streamable prefix', () => {
+    expect(messages.plan.header).toBe('**Plan:** ');
   });
 
   it('labels both progress phases', () => {

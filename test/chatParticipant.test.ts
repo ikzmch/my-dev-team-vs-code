@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   ChatApprover,
   createHandler,
+  renderReply,
   PARTICIPANT_ID,
 } from '../src/ui/chatParticipant';
-import { createDevTeamWorkflow } from '../src/core/workflow';
+import { createDevTeamWorkflow, ReplyProgress } from '../src/core/workflow';
 import { TriageResult } from '../src/core/triage';
-import { PlanResult } from '../src/core/planner';
+import { PartialPlan, PlanProgress, PlanResult } from '../src/core/planner';
 import {
   __reset,
   __state,
@@ -50,7 +51,8 @@ function makeWorkflow(
     intent: 'oneshot',
     reason: 'simple',
   }),
-  plan: (prompt: string) => Promise<PlanResult> = async () => aPlan
+  plan: (prompt: string, onPartial?: PlanProgress) => Promise<PlanResult> = async () =>
+    aPlan
 ) {
   const seen = { prompt: undefined as string | undefined };
   const workflow = createDevTeamWorkflow(
@@ -164,9 +166,9 @@ describe('createHandler', () => {
     const text = emitted(stream);
     expect(text).toContain('**Detected intent:** `planning`');
     expect(text).toContain('**Plan:** Add a feature');
-    expect(text).toContain('1. **Find the file** _(search)_ — locate it');
+    expect(text).toContain('1. **Find the file** _(search)_ - locate it');
     // tool "none" must not render a tool suffix.
-    expect(text).toContain('2. **Think** — reason about it');
+    expect(text).toContain('2. **Think** - reason about it');
     expect(text).not.toContain('Think** _(none)_');
     expect(stream.progress).toHaveBeenCalledWith('Drafting a plan…');
   });
@@ -354,6 +356,206 @@ describe('createHandler', () => {
       )
     ).resolves.toBeDefined();
     expect(stream.markdown).not.toHaveBeenCalled();
+  });
+});
+
+describe('createHandler streaming', () => {
+  const count = (text: string, needle: string) => text.split(needle).length - 1;
+
+  /** Growing snapshots the way the partial-JSON stream would deliver them. */
+  const partials: PartialPlan[] = [
+    { summary: 'Add' },
+    { summary: 'Add a feature' },
+    { summary: 'Add a feature', steps: [{ title: 'Find the' }] },
+    {
+      summary: 'Add a feature',
+      steps: [{ title: 'Find the file', tool: 'sea' }],
+    },
+    {
+      summary: 'Add a feature',
+      steps: [{ title: 'Find the file', tool: 'search', detail: 'locate it' }],
+    },
+    {
+      summary: 'Add a feature',
+      steps: [
+        { title: 'Find the file', tool: 'search', detail: 'locate it' },
+        { title: 'Think', tool: 'none', detail: 'reason about it' },
+      ],
+    },
+  ];
+
+  it('streams the plan incrementally and never repeats content', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'planning', reason: 'needs steps' }),
+      async (_prompt, onPartial) => {
+        for (const partial of partials) {
+          onPartial?.(partial);
+        }
+        return aPlan;
+      }
+    );
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    // The reply arrived in several appended chunks, not one blob.
+    expect(stream.markdown.mock.calls.length).toBeGreaterThan(2);
+
+    // The triage block was emitted before any plan content.
+    const first = stream.markdown.mock.calls[0][0] as string;
+    expect(first).toContain('**Detected intent:** `planning`');
+    expect(first).not.toContain('**Plan:**');
+
+    // The concatenation is exactly the final reply, with nothing duplicated.
+    const text = emitted(stream);
+    expect(text).toBe(
+      renderReply({ intent: 'planning', reason: 'needs steps', plan: aPlan }, true)
+    );
+    expect(count(text, '**Plan:**')).toBe(1);
+    expect(count(text, 'Find the file')).toBe(1);
+  });
+
+  it('falls back to the complete reply when a snapshot is inconsistent', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'planning', reason: 'needs steps' }),
+      async (_prompt, onPartial) => {
+        onPartial?.({ summary: 'B' });
+        onPartial?.({ summary: 'A different summary' }); // not an extension
+        return aPlan;
+      }
+    );
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    // The full reply is still rendered after the stale streamed prefix.
+    const text = emitted(stream);
+    expect(text).toContain('**Plan:** Add a feature');
+    expect(text).toContain('1. **Find the file** _(search)_ - locate it');
+  });
+
+  it('separates a planner failure from already-streamed output', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'planning', reason: 'needs steps' }),
+      async (_prompt, onPartial) => {
+        onPartial?.({ summary: 'Add a feature' });
+        throw new Error('model not found');
+      }
+    );
+    const stream = fakeStream();
+
+    await createHandler(workflow)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    const text = emitted(stream);
+    expect(text).toContain('**Plan:** Add a feature');
+    expect(text).toContain('\n\n**Planner error:** model not found');
+  });
+
+  it('does not fail the run when a streamed chunk cannot be written', async () => {
+    const { workflow } = makeWorkflow(
+      async () => ({ intent: 'planning', reason: 'needs steps' }),
+      async (_prompt, onPartial) => {
+        onPartial?.({ summary: 'Add' });
+        return aPlan;
+      }
+    );
+    const stream = fakeStream();
+    // The write triggered by the first snapshot throws; later writes work.
+    stream.markdown.mockImplementationOnce(() => {
+      throw new Error('stream not ready');
+    });
+
+    await createHandler(workflow)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    // The run still succeeded and the final render delivered the full reply.
+    const text = emitted(stream);
+    expect(text).toContain('**Plan:** Add a feature');
+    expect(text).not.toContain('**Planner error');
+  });
+});
+
+describe('renderReply', () => {
+  const progress = (plan?: PartialPlan): ReplyProgress => ({
+    intent: 'planning',
+    reason: 'needs steps',
+    plan,
+  });
+
+  it('renders growing snapshots as prefix-extensions of each other', () => {
+    const snapshots: PartialPlan[] = [
+      {},
+      { summary: 'Add' },
+      { summary: 'Add a feature' },
+      { summary: 'Add a feature', steps: [] },
+      { summary: 'Add a feature', steps: [{ title: 'Find' }] },
+      { summary: 'Add a feature', steps: [{ title: 'Find the file', tool: 'sea' }] },
+      {
+        summary: 'Add a feature',
+        steps: [{ title: 'Find the file', tool: 'search', detail: 'locate' }],
+      },
+      {
+        summary: 'Add a feature',
+        steps: [
+          { title: 'Find the file', tool: 'search', detail: 'locate it' },
+          { title: 'Think', tool: 'none', detail: 'reason about it' },
+        ],
+      },
+    ];
+
+    let previous = '';
+    for (const snapshot of snapshots) {
+      const rendered = renderReply(progress(snapshot), false);
+      expect(rendered.startsWith(previous)).toBe(true);
+      previous = rendered;
+    }
+    const final = renderReply(progress(aPlan), true);
+    expect(final.startsWith(previous)).toBe(true);
+  });
+
+  it('withholds the tool suffix until the detail field starts', () => {
+    const mid = renderReply(
+      progress({ summary: 's', steps: [{ title: 'Find', tool: 'sea' }] }),
+      false
+    );
+    expect(mid).toContain('1. **Find**');
+    expect(mid).not.toContain('sea');
+  });
+
+  it('withholds the closing bold marker while the title still streams', () => {
+    const mid = renderReply(progress({ summary: 's', steps: [{ title: 'Fi' }] }), false);
+    expect(mid.endsWith('1. **Fi')).toBe(true);
+  });
+
+  it('appends the footer and the oneshot next step only when done', () => {
+    const planning = renderReply(progress(aPlan), false);
+    expect(planning).not.toContain('**Next step');
+    expect(renderReply(progress(aPlan), true)).toContain(
+      '**Next step (not yet implemented):** execute these steps with tools.'
+    );
+
+    const oneshot: ReplyProgress = { intent: 'oneshot', reason: 'simple' };
+    expect(renderReply(oneshot, false)).not.toContain('answer the question directly');
+    expect(renderReply(oneshot, true)).toContain('answer the question directly');
   });
 });
 

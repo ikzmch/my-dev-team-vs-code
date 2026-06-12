@@ -42,15 +42,15 @@ src/
     messages.ts           user-facing chat copy (progress, errors, warnings, templates)
   core/
     types.ts              Approver — the approval seam
-    workflow.ts           Mastra workflow: triage -> branch -> plan | answer
+    workflow.ts           Mastra workflow: triage -> branch -> plan | answer; streams reply progress to a per-run sink
     models.ts             provider wiring: turns the selected registry entry into an AI SDK model
     triage.ts             Mastra agent: triage request as oneshot | planning
-    planner.ts            Mastra agent: draft an ordered, tool-aware plan
+    planner.ts            Mastra agent: draft an ordered, tool-aware plan, streamed as partial snapshots
   tools/
     workspaceTools.ts     read / search / run / write (UI-agnostic)
     registerTools.ts      registers tools with vscode.lm
   ui/
-    chatParticipant.ts    chat handler + Phase-1 ChatApprover
+    chatParticipant.ts    chat handler, streaming reply renderer + Phase-1 ChatApprover
     startupCheck.ts       activation health check: ping Ollama, verify routed models are pulled
 test/                     Vitest unit tests + an in-memory `vscode` mock
 esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
@@ -72,21 +72,25 @@ Three layers, deliberately decoupled:
         ▼
 ui/chatParticipant.ts          fold attachments into the prompt, start a run of
   createHandler                the workflow, bridge its step events onto the
-        │                      chat stream as progress labels
+        │                      chat stream as progress labels, and hand the run
+        │                      a reply-progress sink (Mastra RequestContext)
         ▼
 core/workflow.ts               Mastra workflow (createWorkflow + createStep)
   triage                       ── Triage.classify(prompt)
         │                         → { intent: "oneshot" | "planning", reason }
         ▼                         (model picked by the capability router)
       branch
-        ├─▶ draft-plan         ── Planner.plan(prompt)   (intent = "planning")
-        │                         → { summary, steps[] } (capability-routed model)
+        ├─▶ draft-plan         ── Planner.plan(prompt, onPartial)  (intent = "planning")
+        │                         → { summary, steps[] } (capability-routed model);
+        │                         pushes the triage decision and every partial
+        │                         plan snapshot to the sink as the model streams
         └─▶ answer-directly    ── placeholder: reports the routing decision
         │                         (the executor is the next roadmap item)
         ▼
-  the UI renders the structured reply (intent + reason, and for planning the
-  drafted plan) back to the chat panel. An executor step would walk the
-  plan's steps here.
+  the UI streams the reply onto the chat panel as it forms: each snapshot is
+  rendered conservatively and only the newly appended markdown is emitted,
+  then the validated final result completes the render. An executor step
+  would walk the plan's steps here.
 ```
 
 ### Configuration vs. code (`config/`)
@@ -260,20 +264,27 @@ Out of the box, `@devteam <prompt>`:
    dev-team workflow.
 2. Streams "Understanding your request…" when the triage step starts.
 3. Triages the prompt as `oneshot` or `planning` via the capability-routed
-   local Ollama model (currently `qwen3:8b`).
-4. Renders the **detected intent and reason** back to the panel.
-5. For `planning` requests, streams "Drafting a plan…" and renders an ordered,
-   tool-aware **plan** (`summary` + at most 8 numbered steps, each hinting
-   which workspace tool it would use) via the planner's routed model
-   (currently `qwen3:14b`).
+   local Ollama model (currently `qwen3:8b`) - this stays a buffered
+   structured-output call, since its whole product is a small validated
+   object.
+4. Renders the **detected intent and reason** back to the panel as soon as
+   triage completes, without waiting for the rest of the run.
+5. For `planning` requests, streams "Drafting a plan…" and then **streams the
+   plan itself** - an ordered, tool-aware checklist (`summary` + at most 8
+   numbered steps, each hinting which workspace tool it would use) appears
+   incrementally while the planner's routed model (currently `qwen3:14b`)
+   writes it. The partial-JSON snapshots are rendered conservatively so the
+   already-emitted markdown is never revised, and the validated final result
+   completes the reply.
 
 The four workspace tools are registered and callable by any VS Code chat model
 that supports tool calling; the workflow itself does not yet drive a
 tool-calling loop.
 
 Cancelling the chat request cancels the workflow run (and with it the model
-call) instead of letting it finish in the background; a cancelled turn renders
-nothing.
+call) instead of letting it finish in the background; a cancelled turn stops
+rendering immediately (plan content already streamed before the cancellation
+stays visible, nothing more is added).
 
 If Ollama is not reachable, the failed run is rendered with the step that
 failed and a reminder to start Ollama (on the configured endpoint) with the

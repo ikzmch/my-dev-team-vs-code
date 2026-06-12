@@ -1,7 +1,8 @@
 import { createWorkflow, createStep } from '@mastra/core/workflows';
+import type { RequestContext } from '@mastra/core/request-context';
 import { z } from 'zod';
 import { Triage, TriageSchema } from './triage';
-import { Planner, PlanSchema } from './planner';
+import { Planner, PlanSchema, PartialPlan } from './planner';
 
 /**
  * Step ids of the dev-team workflow. Exported so the UI layer can map the
@@ -34,6 +35,31 @@ export const ReplySchema = z.object({
 export type ReplyResult = z.infer<typeof ReplySchema>;
 
 /**
+ * A snapshot of the reply while the run is still producing it: the triage
+ * decision is always complete (it comes from buffered structured output), the
+ * plan grows as the planner streams it.
+ */
+export type ReplyProgress = {
+  intent: ReplyResult['intent'];
+  reason: string;
+  plan?: PartialPlan;
+};
+
+/** Receives reply snapshots as the workflow streams them. Must not throw. */
+export type ReplyProgressSink = (progress: ReplyProgress) => void;
+
+/**
+ * RequestContext key under which a caller may pass a `ReplyProgressSink` to
+ * `run.start`. The context is Mastra's per-run dependency channel, so the
+ * sink reaches the steps without widening the input schema.
+ */
+export const replyProgressKey = 'onReplyProgress';
+
+function progressSink(requestContext: RequestContext): ReplyProgressSink | undefined {
+  return requestContext.get(replyProgressKey) as ReplyProgressSink | undefined;
+}
+
+/**
  * The agent's orchestration as a Mastra workflow:
  *
  *   triage ──▶ branch ──▶ draft-plan       (intent === "planning")
@@ -61,21 +87,30 @@ export function createDevTeamWorkflow(
     id: stepIds.plan,
     inputSchema: TriagedSchema,
     outputSchema: ReplySchema,
-    execute: async ({ inputData }) => ({
-      intent: inputData.intent,
-      reason: inputData.reason,
-      plan: await planner.plan(inputData.prompt),
-    }),
+    execute: async ({ inputData, requestContext }) => {
+      const { intent, reason } = inputData;
+      const sink = progressSink(requestContext);
+      // Surface the triage decision right away, then forward every plan
+      // snapshot the planner streams, so the UI can render tokens as they
+      // arrive instead of waiting for the whole plan.
+      sink?.({ intent, reason });
+      const plan = await planner.plan(
+        inputData.prompt,
+        sink && ((partial) => sink({ intent, reason, plan: partial }))
+      );
+      return { intent, reason, plan };
+    },
   });
 
   const answerDirectly = createStep({
     id: stepIds.answer,
     inputSchema: TriagedSchema,
     outputSchema: ReplySchema,
-    execute: async ({ inputData }) => ({
-      intent: inputData.intent,
-      reason: inputData.reason,
-    }),
+    execute: async ({ inputData, requestContext }) => {
+      const { intent, reason } = inputData;
+      progressSink(requestContext)?.({ intent, reason });
+      return { intent, reason };
+    },
   });
 
   // The generics are explicit because TS cannot infer them from the zod

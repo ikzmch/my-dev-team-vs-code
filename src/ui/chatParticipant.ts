@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
+import { RequestContext } from '@mastra/core/request-context';
 import { Approver } from '../core/types';
 import {
   DevTeamWorkflow,
+  ReplyProgress,
   ReplyResult,
+  replyProgressKey,
   stepIds,
 } from '../core/workflow';
-import { PlanResult } from '../core/planner';
+import { PartialPlan } from '../core/planner';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 
@@ -103,22 +106,104 @@ const progressByStep: Record<string, string> = {
   [stepIds.plan]: messages.progress.drafting,
 };
 
-/** Render a structured plan as a readable markdown checklist. */
-function formatPlan(plan: PlanResult): string {
-  const steps = plan.steps
-    .map((step, i) => {
-      const tool = step.tool === 'none' ? '' : ` _(${step.tool})_`;
-      return `${i + 1}. **${step.title}**${tool} — ${step.detail}`;
-    })
-    .join('\n');
-  return messages.plan.header(plan.summary) + `${steps}\n\n` + messages.plan.nextStep;
+/**
+ * Render a (possibly still streaming) plan as a markdown checklist.
+ *
+ * With `done` false this is a conservative render of a partial snapshot: it
+ * stops at the first field the model is still writing, and it withholds any
+ * punctuation that follows a field until that field is provably complete (the
+ * model has moved on to the next one). That makes successive renders of
+ * growing snapshots prefix-extensions of each other - exactly what the
+ * append-only chat stream needs. With `done` true it renders the full
+ * checklist plus the next-step footer.
+ */
+function formatPlan(plan: PartialPlan, done: boolean): string {
+  if (plan.summary === undefined) {
+    return '';
+  }
+  let text = messages.plan.header + plan.summary;
+  // The summary is complete once the model has started on the steps.
+  if (plan.steps === undefined && !done) {
+    return text;
+  }
+  text += '\n\n';
+  const steps = plan.steps ?? [];
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    if (step?.title === undefined) {
+      return text;
+    }
+    text += `${i + 1}. **${step.title}`;
+    // The title is complete once the tool field has started.
+    if (step.tool === undefined && !done) {
+      return text;
+    }
+    text += '**';
+    // The tool enum value is complete once the detail field has started.
+    if (step.detail === undefined && !done) {
+      return text;
+    }
+    if (step.tool && step.tool !== 'none') {
+      text += ` _(${step.tool})_`;
+    }
+    text += ` - ${step.detail ?? ''}`;
+    // The detail keeps streaming until the next step begins.
+    if (steps[i + 1] === undefined && !done) {
+      return text;
+    }
+    if (i < steps.length - 1) {
+      text += '\n';
+    }
+  }
+  return done ? text + '\n\n' + messages.plan.nextStep : text;
 }
 
-/** Render the workflow's structured reply as chat markdown. */
-function renderReply(reply: ReplyResult): string {
+/**
+ * Render the reply as chat markdown. Used both for in-flight snapshots
+ * (`done` false) and for the final result (`done` true), so the streamed
+ * prefix and the finished reply can never drift apart. Exported for tests.
+ */
+export function renderReply(reply: ReplyProgress | ReplyResult, done: boolean): string {
   let text = messages.triage.block(reply.intent, reply.reason);
-  text += reply.plan ? formatPlan(reply.plan) : messages.triage.oneshotNextStep;
+  if (reply.plan) {
+    text += formatPlan(reply.plan, done);
+  } else if (done) {
+    text += messages.triage.oneshotNextStep;
+  }
   return text;
+}
+
+/**
+ * Bridges full-document renders onto the append-only chat stream by emitting
+ * only the newly appended suffix of each successive render. If a snapshot
+ * ever fails to extend what was already emitted (the partial-JSON stream
+ * should be monotonic, so this is a guard, not an expectation), it is
+ * skipped; `finish` then falls back to appending the complete reply so the
+ * user never ends up with a truncated answer.
+ */
+class ReplyStreamer {
+  private emitted = '';
+
+  constructor(private readonly stream: vscode.ChatResponseStream) {}
+
+  get hasEmitted(): boolean {
+    return this.emitted.length > 0;
+  }
+
+  update(full: string): void {
+    if (full.length > this.emitted.length && full.startsWith(this.emitted)) {
+      this.stream.markdown(full.slice(this.emitted.length));
+      this.emitted = full;
+    }
+  }
+
+  finish(full: string): void {
+    if (full.startsWith(this.emitted)) {
+      this.update(full);
+    } else {
+      this.stream.markdown('\n\n' + full);
+    }
+  }
 }
 
 /** Render a failed run, attributing the error to the step that failed. */
@@ -140,7 +225,9 @@ function renderFailure(
 /**
  * Builds the chat handler. The handler is thin: it folds attachments into the
  * prompt, starts a run of the dev-team workflow, bridges the run's step
- * events onto the chat stream as progress, and renders the structured result.
+ * events onto the chat stream as progress, streams reply snapshots onto the
+ * chat as the planner writes them, and completes the render from the
+ * structured result.
  */
 export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHandler {
   return async (request, _context, stream, token) => {
@@ -166,9 +253,26 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
       }
     });
 
+    // Stream the reply as the workflow produces it: the steps push reply
+    // snapshots through the request context, and the streamer appends each
+    // render's new suffix to the chat. The sink must never throw into the
+    // run, so stream errors (e.g. a closed stream) are swallowed here.
+    const streamer = new ReplyStreamer(stream);
+    const requestContext = new RequestContext();
+    requestContext.set(replyProgressKey, (progress: ReplyProgress) => {
+      if (token.isCancellationRequested) {
+        return;
+      }
+      try {
+        streamer.update(renderReply(progress, false));
+      } catch {
+        // The stream is closed; the run's result handling below still runs.
+      }
+    });
+
     let result;
     try {
-      result = await run.start({ inputData: { prompt } });
+      result = await run.start({ inputData: { prompt }, requestContext });
     } catch (err) {
       if (token.isCancellationRequested) {
         return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
@@ -186,9 +290,12 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
     }
 
     if (result.status === 'success') {
-      stream.markdown(renderReply(result.result));
+      // Emits whatever the streaming path has not already rendered (for a
+      // oneshot reply, that is the whole thing).
+      streamer.finish(renderReply(result.result, true));
     } else if (result.status === 'failed') {
-      stream.markdown(renderFailure(result.error, result.steps));
+      const separator = streamer.hasEmitted ? '\n\n' : '';
+      stream.markdown(separator + renderFailure(result.error, result.steps));
     } else {
       stream.markdown(messages.run.unexpectedStatus(result.status));
     }

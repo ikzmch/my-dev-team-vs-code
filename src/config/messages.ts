@@ -50,7 +50,9 @@ export const messages = {
     error: (detail: string) => `**Planner error:** ${detail}\n\n` + ollamaHint('planner'),
     nextStep:
       '**Next step (not yet implemented):** execute these steps with tools.\n\n',
-    header: (summary: string) => `**Plan:** ${summary}\n\n`,
+    // A prefix rather than a template: the renderer streams the summary in
+    // behind it while the planner is still writing it.
+    header: '**Plan:** ',
   },
 
   run: {
