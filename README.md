@@ -353,7 +353,11 @@ Out of the box, `@devteam <prompt>`:
 3. Triages the prompt as `oneshot` or `planning` via the capability-routed
    local Ollama model (currently `qwen3:8b`) - this stays a buffered
    structured-output call, since its whole product is a small validated
-   object. Triage sees only the attachment labels (e.g. `File: src/a.ts`),
+   object. The boundary is the deliverable, not the difficulty: requests
+   whose product is text in the chat are `oneshot`; anything that should
+   create or modify workspace files - even one small new file that needs no
+   exploration - is `planning`, so it reaches the executor and its `write`
+   tool. Triage sees only the attachment labels (e.g. `File: src/a.ts`),
    not their contents: the routing decision does not need file text, and on a
    small local model a large attachment would crowd out the question. The
    planner and answerer get the full attachment text inlined.
@@ -362,7 +366,10 @@ Out of the box, `@devteam <prompt>`:
 5. For `oneshot` requests, streams "Answering…" and then **streams a real
    answer** - the answerer's routed model (currently `qwen3:8b`) replies in a
    single call with no tools, and the markdown answer appears incrementally
-   behind an "**Answer:**" header as the model writes it.
+   behind an "**Answer:**" header as the model writes it. If a file-creating
+   request slips through triage as `oneshot`, the answerer states it cannot
+   write files and suggests rephrasing (e.g. "create the file X that ..."),
+   while still showing the would-be content in a fenced block.
 6. For `planning` requests, streams "Drafting a plan…" and then **streams the
    plan itself** - an ordered, tool-aware checklist (`summary` + at most 8
    numbered steps, each hinting which workspace tool it would use) appears

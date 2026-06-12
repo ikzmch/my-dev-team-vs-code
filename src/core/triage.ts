@@ -12,7 +12,7 @@ export const TriageSchema = z.object({
   intent: z
     .enum(['oneshot', 'planning'])
     .describe(
-      '"oneshot" for direct answers; "planning" for multi-step / file-touching work.'
+      '"oneshot" when the deliverable is text in the chat; "planning" when the workspace should change - any file to create or modify, even one small file.'
     ),
   reason: z.string().describe('One short sentence explaining the choice.'),
 });

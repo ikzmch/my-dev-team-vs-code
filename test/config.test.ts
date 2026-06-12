@@ -430,6 +430,11 @@ describe('agent configs', () => {
     const p = agents.answerer.instructions;
     expect(p).toContain('"oneshot"');
     expect(p).not.toContain('tools available');
+    // The escape hatch for residual misroutes: the answerer must state it
+    // cannot write files and point the user at rephrasing, not silently
+    // pretend fenced code in chat fulfilled a file-creation request.
+    expect(p).toContain('cannot create or modify files');
+    expect(p).toMatch(/rephras/i);
   });
 
   // The prose lives in standalone .md files, so these lock the structural
@@ -442,6 +447,17 @@ describe('agent configs', () => {
     expect(p).toContain('"planning"');
     expect(p).not.toContain('tools available');
     expect(p).toMatch(/JSON object/i);
+  });
+
+  it('keeps triage routing any file-changing request to planning, however small', () => {
+    const p = agents.triage.instructions;
+    // The boundary is the deliverable: a created/changed file means planning.
+    expect(p).toMatch(/create or change a file/);
+    expect(p).toMatch(/even if/);
+    // A trivial new-script request is an explicit planning example: without
+    // it a small model reads "needs no exploration" as oneshot and the user
+    // gets fenced code in chat instead of a written file.
+    expect(p).toContain('create a python script');
   });
 
   it('keeps the planner contract: all four tools, the step cap, and JSON output', () => {

@@ -24,6 +24,15 @@ describe('TriageSchema', () => {
   it('rejects a missing reason', () => {
     expect(TriageSchema.safeParse({ intent: 'oneshot' }).success).toBe(false);
   });
+
+  it('describes the intent boundary as the deliverable, file changes as planning', () => {
+    // The description is part of what the model sees in structured-output
+    // mode, so it must reinforce the triage prompt: any file to create or
+    // modify routes to planning, even a single small one.
+    const description = TriageSchema.shape.intent.description ?? '';
+    expect(description).toContain('create or modify');
+    expect(description).toContain('even one small file');
+  });
 });
 
 describe('PlanStepSchema', () => {
