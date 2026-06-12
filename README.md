@@ -37,15 +37,16 @@ src/
       *.md                one registered model per file: provider, model id, capability scores
     tools/
       read.md … write.md  one config per tool: frontmatter + model-facing description
-    agents.ts             loads agents/*.md, renders the tools section, exports `agents`
+    agents.ts             loads agents/*.md, renders the tools + environment sections, exports `agents`
     models.ts             discovers models/*.md, exports the registry + capability-based `selectModel`
     tools.ts              discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
+    environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
     frontmatter.ts        minimal frontmatter parser for the .md config files
     markdown.d.ts         lets TS treat `*.md` and `glob:` imports as strings / string[]
     settings.ts           operational limits; the endpoint/timeout/search caps read live from VS Code settings
-    messages.ts           user-facing chat copy (progress, errors, warnings, templates)
+    messages.ts           user-facing chat copy (errors, warnings, templates)
   core/
-    types.ts              Approver — the approval seam
+    types.ts              the UI seams: Approver (approval) + RunMirror (run-command transparency)
     workflow.ts           Mastra workflow: triage -> plan -> execute | answer; streams reply progress to a per-run sink
     models.ts             provider wiring: turns the selected registry entry into an AI SDK model
     triage.ts             Mastra agent: triage request as oneshot | planning
@@ -58,6 +59,7 @@ src/
     agentTools.ts         the same four tools as Mastra createTool()s for the executor's loop
   ui/
     chatParticipant.ts    chat handler, streaming reply renderer + Phase-1 ChatApprover
+    runTerminal.ts        Phase-1 RunMirror: a read-only "Dev Team" terminal logging every run command live
     startupCheck.ts       activation health check: ping Ollama, verify routed models are pulled
 test/                     Vitest unit tests + an in-memory `vscode` mock
 esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
@@ -70,6 +72,10 @@ Three layers, deliberately decoupled:
 - **UI layer** (`ui/`) is swappable: Chat Participant today, add a Webview later.
 - **`Approver`** is the seam. `ChatApprover` is Phase 1; a `WebviewApprover`
   implementing the same interface is Phase 2 — the tools never change.
+- **`RunMirror`** is a second seam of the same shape: the `run` tool reports
+  each executed command's lifecycle and live output to it, and the Phase-1
+  `TerminalRunMirror` (`ui/runTerminal.ts`) displays that as a read-only
+  "Dev Team" terminal. The tools never know how it is surfaced.
 
 ### Request flow
 
@@ -79,9 +85,10 @@ Three layers, deliberately decoupled:
         ▼
 ui/chatParticipant.ts          resolve attached files/selections into labelled
   createHandler                attachments passed alongside the prompt, start a
-        │                      run of the workflow, bridge its step events onto
-        │                      the chat stream as progress labels, and hand the
-        │                      run a reply-progress sink (Mastra RequestContext)
+        │                      run of the workflow, and hand the run a
+        │                      reply-progress sink (Mastra RequestContext);
+        │                      no custom progress labels - the chat shows VS
+        │                      Code's standard "Thinking" indicator
         ▼
 core/workflow.ts               Mastra workflow (createWorkflow + createStep)
   triage                       ── Triage.classify(triagePrompt)
@@ -109,8 +116,8 @@ core/workflow.ts               Mastra workflow (createWorkflow + createStep)
         │                         → { events[] } transcript (capability-routed model);
         │                         pushes every transcript snapshot to the sink
         └─▶ deliver-answer     ── pass-through for the oneshot path, so a oneshot
-        │                         run never starts (or shows progress for) an
-        ▼                         executor step
+        │                         run never starts an executor step
+        ▼
   the UI streams the reply onto the chat panel as it forms: each snapshot is
   rendered conservatively and only the newly appended markdown is emitted,
   then the validated final result completes the render.
@@ -132,13 +139,14 @@ inline.
 | ---------------------------- | ------------------------------------------------------------- |
 | `config/agents/*.md`         | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
 | `config/models/*.md`         | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
-| `config/tools/*.md`          | One tool per file: frontmatter (name, displayName, lmTool id, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript) + the model-facing description |
+| `config/tools/*.md`          | One tool per file: frontmatter (name, displayName, lmTool id, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description |
 | `config/agents.ts`           | Loads the agent files, validates the frontmatter, exports typed `agents` |
 | `config/models.ts`           | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
+| `config/environment.ts`      | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
 | `config/frontmatter.ts`      | Minimal parser for the frontmatter subset the config files use |
-| `config/settings.ts`         | Operational limits: run timeout/output buffer, read cap, search caps + excludes, truncation, and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths). The Ollama endpoint, run timeout, and search caps are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
-| `config/messages.ts`         | Progress labels, error text, startup warnings, and reply markdown templates |
+| `config/settings.ts`         | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/messages.ts`         | Progress labels, error text, startup warnings, reply markdown templates, and the run-mirror terminal's copy (tab name, command header, outcome note) |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
 text loader inlines them into the bundle at build time (see `esbuild.mjs`), so
@@ -161,6 +169,15 @@ agent is a one-line frontmatter change. The planner's `tool` enum in its output
 schema is derived from the same registry, so the prompt and the schema can
 never drift apart.
 
+Prompts never hardcode a platform either. The planner and executor prompts
+carry an `{{environment}}` placeholder, and the `run` tool's description
+carries `{{os}}`/`{{shell}}`; both are filled at load time from
+`config/environment.ts`, which derives the facts from the actual host
+(`process.platform`). The model is told it is on Windows writing PowerShell
+(or on macOS/Linux writing POSIX sh) instead of defaulting to Linux commands,
+and the same module supplies the shell the `run` tool spawns, so what the
+prompts announce is always what executes.
+
 ### User settings (`contributes.configuration`)
 
 The runtime knobs an end user may need to turn are real VS Code settings
@@ -174,6 +191,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
 | `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
+| `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file shown under a `write` call in the transcript (`0` hides the snippet) |
 
 Invalid values (wrong type, non-positive numbers, an endpoint that is not an
 http(s) URL) silently fall back to the defaults, so the tools always see sane
@@ -276,10 +294,13 @@ decisions, in the order they matter:
   file path for `write`, falling back to compact args JSON for tools without
   one; the matching `tool-result`/`tool-error` chunk - correlated by
   `toolCallId` - completes it with a result preview and a `failed` flag).
-  Order is preserved because "searched, then wrote, then reported" *is* the
-  answer. Previews are bounded (`settings.executor.*PreviewMaxChars`): the
-  model saw the full values, the transcript only shows the user what
-  happened. A run-level `error` chunk throws, failing the workflow step so
+  A tool with a configured `snippetArg` (write's `contents`) also records a
+  `snippet`: the first `myDevTeam.chat.toolSnippetLines` lines of that
+  argument (default 5, `0` turns snippets off), so the transcript can show
+  the start of the file being written. Order is preserved because "searched,
+  then wrote, then reported" *is* the answer. Previews are bounded
+  (`settings.executor.*PreviewMaxChars`): the model saw the full values, the
+  transcript only shows the user what happened. A run-level `error` chunk throws, failing the workflow step so
   the UI renders the executor error with the Ollama hint.
 - **Streaming snapshots.** Like the planner's partial plans, the executor
   forwards grow-only snapshots to an optional `onPartial` callback: events
@@ -334,7 +355,21 @@ tool-calling chat model in the editor, not just `@devteam`):
 - `run` executes with a configured timeout (`myDevTeam.run.commandTimeoutMs`;
   the whole spawned process tree is killed, also on Windows) and output
   buffer; a failed command's stdout and stderr are returned so a caller can
-  diagnose it.
+  diagnose it. Commands run in the shell `config/environment.ts` announces to
+  the model: **PowerShell on Windows** (its Unix-style aliases absorb
+  residual `ls`/`cat` habits, and models write it more reliably than cmd.exe
+  batch), the platform default `/bin/sh` elsewhere.
+- every approved `run` command is also **mirrored live into a "Dev Team"
+  terminal** (the `RunMirror` seam; `ui/runTerminal.ts`). The child process
+  stays owned by the tool - capture, timeout, and kill-tree are unchanged -
+  while the terminal shows a session log: a `$ command` header, the live
+  stdout/stderr, and a one-line outcome. The terminal is created lazily on
+  the first command and never steals focus; the user opens the "Dev Team"
+  tab in the terminal panel to see it. Output is buffered (capped at
+  `settings.runMirrorBacklogMaxChars`) and replayed when the terminal is
+  first opened - or reopened after closing it - so the full history is
+  visible whenever the user looks. Declined commands never ran, so they
+  never appear.
 
 The side-effecting `run` tool calls `approver.confirm(title, detail)`. The
 Phase-1 `ChatApprover` renders the proposed action into the chat panel
@@ -356,9 +391,10 @@ pulled.
 Out of the box, `@devteam <prompt>`:
 
 1. Resolves any attached files/selections into labelled attachments and starts
-   a run of the dev-team workflow with them alongside the prompt.
-2. Streams "Understanding your request…" when the triage step starts.
-3. Triages the prompt as `oneshot` or `planning` via the capability-routed
+   a run of the dev-team workflow with them alongside the prompt. While agents
+   work, the chat shows VS Code's standard "Thinking" indicator - no custom
+   progress labels are streamed.
+2. Triages the prompt as `oneshot` or `planning` via the capability-routed
    local Ollama model (currently `qwen3:8b`) - this stays a buffered
    structured-output call, since its whole product is a small validated
    object. The boundary is the deliverable, not the difficulty: requests
@@ -369,16 +405,16 @@ Out of the box, `@devteam <prompt>`:
    not their contents: the routing decision does not need file text, and on a
    small local model a large attachment would crowd out the question. The
    planner and answerer get the full attachment text inlined.
-4. Renders the **detected intent and reason** back to the panel as soon as
+3. Renders the **detected intent and reason** back to the panel as soon as
    triage completes, without waiting for the rest of the run.
-5. For `oneshot` requests, streams "Answering…" and then **streams a real
+4. For `oneshot` requests, **streams a real
    answer** - the answerer's routed model (currently `qwen3:8b`) replies in a
    single call with no tools, and the markdown answer appears incrementally
    behind an "**Answer:**" header as the model writes it. If a file-creating
    request slips through triage as `oneshot`, the answerer states it cannot
    write files and suggests rephrasing (e.g. "create the file X that ..."),
    while still showing the would-be content in a fenced block.
-6. For `planning` requests, streams "Drafting a plan…" and then **streams the
+5. For `planning` requests, **streams the
    plan itself** - an ordered, tool-aware checklist (`summary` + at most 8
    numbered steps, each hinting which workspace tool it would use) appears
    incrementally while the planner's routed model (currently `qwen3:14b`)
@@ -388,17 +424,23 @@ Out of the box, `@devteam <prompt>`:
    with a short fragment. The partial-JSON snapshots are rendered conservatively so the
    already-emitted markdown is never revised, and the validated final result
    completes the reply.
-7. Then streams "Executing the plan…" and **executes the plan**: the
+6. Then **executes the plan**: the
    executor's routed model (currently `qwen3-coder`) is briefed with the full
    request plus the numbered plan and runs a Mastra tool-calling loop over
    `read`/`search`/`run`/`write` (up to `settings.executor.maxSteps`
-   iterations). The transcript streams in behind an "**Execution:**" header
+   iterations). The planner and executor prompts state the host OS and shell
+   (from `config/environment.ts`), so `run` commands are written for the
+   machine they execute on - PowerShell on Windows - instead of defaulting
+   to Linux commands. The transcript streams in behind an "**Execution:**" header
    as it happens: the model's commentary, one line per tool call showing its
    key argument (`- **write** \`calculator.py\``; tools without a configured
    `previewArg` fall back to compact args JSON) completed with a flattened,
    truncated result preview (`→ \`…\``, or `→ **failed** \`…\`` when the
-   tool errored), and the executor's closing report of what changed.
-8. Shell commands still ask first: when the loop reaches a `run` call, the
+   tool errored), and the executor's closing report of what changed. A
+   completed `write` call additionally shows the first lines of the written
+   file in a fenced snippet under its line (`myDevTeam.chat.toolSnippetLines`,
+   default 5; `0` hides it).
+7. Shell commands still ask first: when the loop reaches a `run` call, the
    `ChatApprover` renders the command into the chat followed by Approve and
    Decline buttons and waits for the click. A cancelled request declines
    pending approvals automatically, and a tool invoked outside a `@devteam`
@@ -406,6 +448,11 @@ Out of the box, `@devteam <prompt>`:
    tool returns "not approved" to the model, which is instructed to skip that
    action and carry on, noting the skip in its report. `write` calls apply
    directly without an approval prompt.
+8. Every approved command's real output also streams into the **"Dev Team"
+   terminal** in the terminal panel: open the tab to watch commands run live,
+   or later to read the session log of everything the agent executed
+   (replayed in full when the terminal is opened). The chat transcript keeps
+   showing only the truncated previews.
 
 The four workspace tools also stay registered with `vscode.lm`, callable by
 any VS Code chat model that supports tool calling.

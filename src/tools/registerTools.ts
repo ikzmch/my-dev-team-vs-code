@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { Approver } from '../core/types';
+import { Approver, RunMirror } from '../core/types';
 import { toolConfigs } from '../config/tools';
 import { readFile, searchFiles, runCommand, writeFile } from './workspaceTools';
 
@@ -7,14 +7,15 @@ import { readFile, searchFiles, runCommand, writeFile } from './workspaceTools';
  * Registers the four tools so the model can invoke them via the Language Model
  * Tools API, under the ids the tool configs declare (config/tools/*.md, which
  * must match the package.json contribution). Side-effecting tools receive the
- * shared Approver.
+ * shared Approver, and `run` mirrors its commands to the shared RunMirror.
  *
  * The registrations are pushed onto context.subscriptions for cleanup on
  * deactivate.
  */
 export function registerTools(
   context: vscode.ExtensionContext,
-  approver: Approver
+  approver: Approver,
+  mirror?: RunMirror
 ): void {
   context.subscriptions.push(
     vscode.lm.registerTool(toolConfigs.read.lmTool, {
@@ -49,7 +50,7 @@ export function registerTools(
     vscode.lm.registerTool(toolConfigs.run.lmTool, {
       async invoke(options) {
         const { command } = options.input as { command: string };
-        const output = await runCommand(command, approver);
+        const output = await runCommand(command, approver, mirror);
         return new vscode.LanguageModelToolResult([
           new vscode.LanguageModelTextPart(output),
         ]);

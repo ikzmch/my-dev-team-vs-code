@@ -156,14 +156,6 @@ async function collectAttachments(
   return attachments;
 }
 
-/** Which transient progress label to show when a given workflow step starts. */
-const progressByStep: Record<string, string> = {
-  [stepIds.triage]: messages.progress.understanding,
-  [stepIds.plan]: messages.progress.drafting,
-  [stepIds.answer]: messages.progress.answering,
-  [stepIds.execute]: messages.progress.executing,
-};
-
 /**
  * Render a (possibly still streaming) plan as a markdown checklist.
  *
@@ -228,7 +220,9 @@ function inlinePreview(text: string): string {
  * tool event gains its result), and each event's render is append-only too -
  * the call line is emitted when the call starts and the result suffix when it
  * lands - so successive renders stay prefix-extensions of each other. A tool
- * call still waiting for its result ends the render unless `done`.
+ * call still waiting for its result ends the render unless `done`; its
+ * snippet (e.g. the first lines of a written file) is held back with the
+ * result so it can render beneath the completed line.
  */
 function formatExecution(execution: PartialExecution, done: boolean): string {
   let text = messages.execution.header;
@@ -241,6 +235,9 @@ function formatExecution(execution: PartialExecution, done: boolean): string {
         text += messages.execution.result(inlinePreview(event.result), !!event.failed);
       } else if (!done) {
         return text;
+      }
+      if (event.snippet !== undefined) {
+        text += messages.execution.snippet(event.snippet);
       }
     }
   }
@@ -328,9 +325,9 @@ function renderFailure(
 /**
  * Builds the chat handler. The handler is thin: it resolves attachments and
  * passes them alongside the prompt, starts a run of the dev-team workflow,
- * bridges the run's step events onto the chat stream as progress, streams
- * reply snapshots onto the chat as the planner writes them, and completes the
- * render from the structured result.
+ * streams reply snapshots onto the chat as the planner writes them, and
+ * completes the render from the structured result. No custom progress label
+ * is emitted while agents run; the chat shows VS Code's standard indicator.
  */
 export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHandler {
   return async (request, _context, stream, token) => {
@@ -343,14 +340,6 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
     // of leaving it to finish in the background.
     const cancellation = token.onCancellationRequested(() => {
       void run.cancel();
-    });
-    const unwatch = run.watch((event) => {
-      if (event.type === 'workflow-step-start') {
-        const label = progressByStep[event.payload.id];
-        if (label) {
-          stream.progress(label);
-        }
-      }
     });
 
     // Stream the reply as the workflow produces it: the steps push reply
@@ -382,7 +371,6 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
       }
       throw err;
     } finally {
-      unwatch();
       cancellation.dispose();
     }
 

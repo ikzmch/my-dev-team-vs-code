@@ -249,8 +249,8 @@ describe('createHandler', () => {
     expect(text).toContain('**Detected intent:** `oneshot`');
     expect(text).toContain('**Reason:** simple question');
     expect(text).toContain('**Answer:**\n\nIt is **4**.');
-    expect(stream.progress).toHaveBeenCalledWith('Understanding your request…');
-    expect(stream.progress).toHaveBeenCalledWith('Answering…');
+    // No custom progress label: the chat shows the standard indicator.
+    expect(stream.progress).not.toHaveBeenCalled();
   });
 
   it('renders a planning request as a checklist plus the execution transcript', async () => {
@@ -278,22 +278,20 @@ describe('createHandler', () => {
     expect(text).toContain('**Execution:**');
     expect(text).toContain('- **search** `{"query":"*"}` → `src/a.ts`');
     expect(text).toContain('All steps are done.');
-    expect(stream.progress).toHaveBeenCalledWith('Drafting a plan…');
-    expect(stream.progress).toHaveBeenCalledWith('Executing the plan…');
+    // No custom progress label: the chat shows the standard indicator.
+    expect(stream.progress).not.toHaveBeenCalled();
   });
 
-  it('does not show the executing progress label on a oneshot request', async () => {
+  it('does not run the executor on a oneshot request', async () => {
     const { workflow, seen } = makeWorkflow();
-    const stream = fakeStream();
 
     await createHandler(workflow)(
       { prompt: 'what is 2+2', references: [] } as any,
       { history: [] } as any,
-      stream as any,
+      fakeStream() as any,
       fakeToken() as any
     );
 
-    expect(stream.progress).not.toHaveBeenCalledWith('Executing the plan…');
     expect(seen.executor).toBeUndefined();
   });
 
@@ -996,6 +994,68 @@ describe('renderReply', () => {
       true
     );
     expect(text).toContain("→ `line 'one' line two`");
+  });
+
+  it('renders a write snippet as an indented fenced block under the completed line', () => {
+    const text = renderReply(
+      withExecution({
+        events: [
+          {
+            kind: 'tool',
+            tool: 'write',
+            input: 'a.py',
+            snippet: 'line one\nline two',
+            result: 'Wrote a.py (17 bytes).',
+          },
+        ],
+      }),
+      true
+    );
+    expect(text).toContain('- **write** `a.py` → `Wrote a.py (17 bytes).`');
+    expect(text).toContain('\n\n  ````\n  line one\n  line two\n  ````');
+  });
+
+  it('holds a snippet back until the call has its result', () => {
+    // The snippet renders after the result suffix, so a pending call must not
+    // emit it yet or successive renders would stop being prefix-extensions.
+    const pending = renderReply(
+      withExecution({
+        events: [
+          { kind: 'tool', tool: 'write', input: 'a.py', snippet: 'line one' },
+        ],
+      }),
+      false
+    );
+    expect(pending.endsWith('- **write** `a.py`')).toBe(true);
+
+    const settled = renderReply(
+      withExecution({
+        events: [
+          {
+            kind: 'tool',
+            tool: 'write',
+            input: 'a.py',
+            snippet: 'line one',
+            result: 'ok',
+          },
+        ],
+      }),
+      false
+    );
+    expect(settled.startsWith(pending)).toBe(true);
+    expect(settled).toContain('  ````\n  line one\n  ````');
+  });
+
+  it('still renders the snippet when the run finished without a result', () => {
+    const text = renderReply(
+      withExecution({
+        events: [
+          { kind: 'tool', tool: 'write', input: 'a.py', snippet: 'line one' },
+        ],
+      }),
+      true
+    );
+    expect(text).toContain('- **write** `a.py`\n\n  ````\n  line one\n  ````');
   });
 
   it('labels an empty tool result instead of rendering empty backticks', () => {

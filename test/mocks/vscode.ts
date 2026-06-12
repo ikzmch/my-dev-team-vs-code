@@ -72,6 +72,38 @@ export enum ChatResultFeedbackKind {
   Helpful = 1,
 }
 
+export class EventEmitter<T> {
+  private listeners: Array<(e: T) => void> = [];
+
+  event = (listener: (e: T) => void) => {
+    this.listeners.push(listener);
+    return {
+      dispose: () => {
+        this.listeners = this.listeners.filter((l) => l !== listener);
+      },
+    };
+  };
+
+  fire(e: T): void {
+    for (const listener of [...this.listeners]) {
+      listener(e);
+    }
+  }
+
+  dispose(): void {
+    this.listeners = [];
+  }
+}
+
+/** Fake of a terminal created via window.createTerminal. */
+export interface FakeTerminal {
+  name: string;
+  /** The options the terminal was created with (pty access for tests). */
+  creationOptions: { name: string; pty?: any };
+  dispose: ReturnType<typeof vi.fn>;
+  show: ReturnType<typeof vi.fn>;
+}
+
 // --- Mutable test state ---
 
 interface MockState {
@@ -83,6 +115,9 @@ interface MockState {
   registeredCommands: Map<string, (...args: unknown[]) => unknown>;
   /** User settings by `<section>.<key>` (e.g. "myDevTeam.ollama.endpoint"). */
   configuration: Map<string, unknown>;
+  /** Terminals created via window.createTerminal, in creation order. */
+  terminals: FakeTerminal[];
+  terminalCloseListeners: Array<(t: FakeTerminal) => void>;
 }
 
 export const __state: MockState = {
@@ -93,6 +128,8 @@ export const __state: MockState = {
   registeredTools: new Map(),
   registeredCommands: new Map(),
   configuration: new Map(),
+  terminals: [],
+  terminalCloseListeners: [],
 };
 
 export function __reset(): void {
@@ -103,6 +140,15 @@ export function __reset(): void {
   __state.registeredTools = new Map();
   __state.registeredCommands = new Map();
   __state.configuration = new Map();
+  __state.terminals = [];
+  __state.terminalCloseListeners = [];
+}
+
+/** Simulate the user closing a terminal tab. */
+export function __closeTerminal(terminal: FakeTerminal): void {
+  for (const listener of [...__state.terminalCloseListeners]) {
+    listener(terminal);
+  }
 }
 
 /** Seed a user setting, e.g. __setConfig('myDevTeam.ollama.endpoint', url). */
@@ -178,6 +224,28 @@ export const window = {
     async (..._args: unknown[]): Promise<string | undefined> =>
       __state.warningResponse
   ),
+
+  createTerminal: vi.fn((options: { name: string; pty?: unknown }): FakeTerminal => {
+    const terminal: FakeTerminal = {
+      name: options.name,
+      creationOptions: options as FakeTerminal['creationOptions'],
+      dispose: vi.fn(),
+      show: vi.fn(),
+    };
+    __state.terminals.push(terminal);
+    return terminal;
+  }),
+
+  onDidCloseTerminal: vi.fn((listener: (t: FakeTerminal) => void) => {
+    __state.terminalCloseListeners.push(listener);
+    return {
+      dispose: () => {
+        __state.terminalCloseListeners = __state.terminalCloseListeners.filter(
+          (l) => l !== listener
+        );
+      },
+    };
+  }),
 };
 
 export const commands = {

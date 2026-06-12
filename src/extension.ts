@@ -10,6 +10,7 @@ import {
   ChatApprover,
   createHandler,
 } from './ui/chatParticipant';
+import { TerminalRunMirror } from './ui/runTerminal';
 import { checkOllamaAtStartup } from './ui/startupCheck';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -25,6 +26,12 @@ export function activate(context: vscode.ExtensionContext) {
   const approver = new ChatApprover();
   approver.register(context);
 
+  // --- Run-transparency seam: mirror executed commands into a terminal ---
+  // Every approved `run` command's live output lands in a read-only
+  // "Dev Team" terminal tab the user can open; never revealed automatically.
+  const runMirror = new TerminalRunMirror();
+  context.subscriptions.push(runMirror);
+
   // --- Agent core (UI-agnostic) ---
   // Each agent declares weighted capability requirements and the router
   // (`config/models.ts` + `core/models.ts`) wires the best registered model;
@@ -34,11 +41,11 @@ export function activate(context: vscode.ExtensionContext) {
     new Triage(),
     new Planner(),
     new Answerer(),
-    new Executor(approver)
+    new Executor(approver, runMirror)
   );
 
   // --- Tools: model can call read/search/run/write ---
-  registerTools(context, approver);
+  registerTools(context, approver, runMirror);
 
   // --- UI layer: the chat participant ---
   const handler = createHandler(workflow);

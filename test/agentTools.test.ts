@@ -91,6 +91,21 @@ describe('buildAgentTools', () => {
     expect(approver.calls[0]).toEqual({ title: 'Run command', detail: '$ echo hi' });
   });
 
+  it('run forwards the shared mirror to runCommand', async () => {
+    execMock.mockImplementation((_cmd, _opts, cb) =>
+      cb(null, { stdout: 'hi', stderr: '' })
+    );
+    const entries: string[] = [];
+    const mirror = {
+      begin: (command: string) => entries.push(`begin:${command}`),
+      output: () => {},
+      end: (note: string) => entries.push(`end:${note}`),
+    };
+    const tools = buildAgentTools(makeApprover(true), mirror);
+    await invoke(tools.run, { command: 'echo hi' });
+    expect(entries).toEqual(['begin:echo hi', 'end:(command completed)']);
+  });
+
   it('run does not execute when the approver declines', async () => {
     const tools = buildAgentTools(makeApprover(false));
     await expect(invoke(tools.run, { command: 'rm -rf /' })).resolves.toBe(

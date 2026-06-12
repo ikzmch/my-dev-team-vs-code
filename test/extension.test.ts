@@ -43,9 +43,9 @@ describe('activate', () => {
       'myDevTeam.agent',
       expect.any(Function)
     );
-    // The approval command + four tools + the participant get pushed for
-    // disposal.
-    expect(context.subscriptions).toHaveLength(6);
+    // The approval command + the run-mirror terminal + four tools + the
+    // participant get pushed for disposal.
+    expect(context.subscriptions).toHaveLength(7);
     expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
   });
 

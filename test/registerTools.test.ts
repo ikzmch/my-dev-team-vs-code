@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+
+// Only the mirror-forwarding test actually executes a command; give it a
+// harmless fake exec instead of a real shell.
+const execMock = vi.fn();
+vi.mock('child_process', () => ({
+  exec: (cmd: string, opts: unknown, cb: Function) => execMock(cmd, opts, cb),
+}));
+
 import { registerTools } from '../src/tools/registerTools';
 import { Approver } from '../src/core/types';
 import { __reset, __state, __setFile } from './mocks/vscode';
@@ -22,6 +30,7 @@ async function invokeTool(name: string, input: unknown): Promise<string> {
 
 beforeEach(() => {
   __reset();
+  execMock.mockReset();
 });
 
 describe('registerTools', () => {
@@ -73,6 +82,21 @@ describe('registerTools', () => {
     registerTools(fakeContext() as any, makeApprover(false));
     const out = await invokeTool('devteam__run', { command: 'echo hi' });
     expect(out).toBe('Command was not approved by the user.');
+  });
+
+  it('run tool forwards the shared mirror to runCommand', async () => {
+    execMock.mockImplementation((_cmd, _opts, cb) =>
+      cb(null, { stdout: 'hi', stderr: '' })
+    );
+    const entries: string[] = [];
+    const mirror = {
+      begin: (command: string) => entries.push(`begin:${command}`),
+      output: () => {},
+      end: (note: string) => entries.push(`end:${note}`),
+    };
+    registerTools(fakeContext() as any, makeApprover(true), mirror);
+    await invokeTool('devteam__run', { command: 'echo hi' });
+    expect(entries).toEqual(['begin:echo hi', 'end:(command completed)']);
   });
 
   it('write tool persists the file without asking for approval', async () => {

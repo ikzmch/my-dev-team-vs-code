@@ -48,6 +48,12 @@
           "default": 50,
           "minimum": 1,
           "description": "Maximum number of matches a content search collects before stopping early."
+        },
+        "myDevTeam.chat.toolSnippetLines": {
+          "type": "number",
+          "default": 5,
+          "minimum": 0,
+          "description": "Number of leading lines of a written file's contents shown as a snippet under the write call in the execution transcript. 0 hides the snippet."
         }
       }
     },

@@ -15,6 +15,8 @@ tools:
 
 You are the executor for a coding assistant inside VS Code.
 
+{{environment}}
+
 A step-by-step plan has already been drafted for the user's request. Carry it
 out by calling the available tools, then report what you did.
 

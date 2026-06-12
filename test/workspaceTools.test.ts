@@ -1,11 +1,34 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // child_process.exec is invoked through util.promisify inside runCommand.
-// We replace it with a controllable fake before importing the module under test.
-const execMock = vi.fn();
-vi.mock('child_process', () => ({
-  exec: (cmd: string, opts: unknown, cb: Function) => execMock(cmd, opts, cb),
+// We replace it with a controllable fake before importing the module under
+// test. The fake carries promisify's custom symbol so the promisified call
+// exposes a `.child` with live stdout/stderr emitters, like the real exec -
+// that is the surface the run mirror taps. `childRef.current` is the child
+// of the most recent call, for tests that emit stream data.
+const { execMock, childRef } = vi.hoisted(() => ({
+  execMock: vi.fn(),
+  childRef: { current: undefined as any },
 }));
+vi.mock('child_process', async () => {
+  const { EventEmitter } = await import('events');
+  const exec = (cmd: string, opts: unknown, cb: Function) => execMock(cmd, opts, cb);
+  (exec as any)[Symbol.for('nodejs.util.promisify.custom')] = (
+    cmd: string,
+    opts: unknown
+  ) => {
+    const child = { stdout: new EventEmitter(), stderr: new EventEmitter() };
+    childRef.current = child;
+    let settle!: (err: unknown, value?: unknown) => void;
+    const promise = new Promise((resolve, reject) => {
+      settle = (err, value) => (err ? reject(err) : resolve(value));
+    }) as Promise<unknown> & { child: unknown };
+    promise.child = child;
+    execMock(cmd, opts, settle);
+    return promise;
+  };
+  return { exec };
+});
 
 import {
   readFile,
@@ -13,8 +36,9 @@ import {
   runCommand,
   writeFile,
 } from '../src/tools/workspaceTools';
-import { Approver } from '../src/core/types';
+import { Approver, RunMirror } from '../src/core/types';
 import { settings } from '../src/config/settings';
+import { environment } from '../src/config/environment';
 import { __reset, __state, __setFile, Uri, workspace } from './mocks/vscode';
 
 /** Approver test double recording calls and returning a fixed verdict. */
@@ -202,6 +226,70 @@ describe('runCommand', () => {
     const opts = execMock.mock.calls[0][1] as { cwd: string; maxBuffer: number };
     expect(opts.cwd).toBe('/ws');
     expect(opts.maxBuffer).toBe(settings.runCommandMaxBufferBytes);
+  });
+
+  it('spawns the shell the environment config announces to the model', async () => {
+    // The prompts tell the model its commands run in environment.shell
+    // (PowerShell on Windows); the exec call must honour that, not the
+    // platform default cmd.exe.
+    execMock.mockImplementation((_cmd, _opts, cb) =>
+      cb(null, { stdout: '', stderr: '' })
+    );
+    await runCommand('echo hi', makeApprover(true));
+    const opts = execMock.mock.calls[0][1] as { shell?: string };
+    expect(opts.shell).toBe(environment.execShell);
+  });
+});
+
+describe('runCommand mirroring', () => {
+  /** RunMirror test double recording the lifecycle as ordered entries. */
+  function makeMirror(): RunMirror & { entries: string[] } {
+    const entries: string[] = [];
+    return {
+      entries,
+      begin: (command) => entries.push(`begin:${command}`),
+      output: (chunk) => entries.push(`output:${chunk}`),
+      end: (note) => entries.push(`end:${note}`),
+    };
+  }
+
+  it('streams the lifecycle and live output of a successful command', async () => {
+    execMock.mockImplementation((_cmd, _opts, cb) => {
+      // Emit asynchronously, as a real process would: runCommand must have
+      // attached its stream taps by then.
+      queueMicrotask(() => {
+        childRef.current.stdout.emit('data', 'building...\n');
+        childRef.current.stderr.emit('data', 'warn: legacy');
+        cb(null, { stdout: 'building...\n', stderr: 'warn: legacy' });
+      });
+    });
+    const mirror = makeMirror();
+    const out = await runCommand('npm run build', makeApprover(true), mirror);
+
+    expect(mirror.entries).toEqual([
+      'begin:npm run build',
+      'output:building...\n',
+      'output:warn: legacy',
+      'end:(command completed)',
+    ]);
+    // The buffered result for the model is unchanged by the mirroring.
+    expect(out).toBe('building...\n\n[stderr]\nwarn: legacy');
+  });
+
+  it('ends the mirror with the failure reason when the command fails', async () => {
+    execMock.mockImplementation((_cmd, _opts, cb) => {
+      queueMicrotask(() => cb(new Error('boom')));
+    });
+    const mirror = makeMirror();
+    await runCommand('false', makeApprover(true), mirror);
+    expect(mirror.entries).toEqual(['begin:false', 'end:Command failed: boom']);
+  });
+
+  it('never reaches the mirror when the user declines', async () => {
+    const mirror = makeMirror();
+    await runCommand('echo hi', makeApprover(false), mirror);
+    expect(mirror.entries).toEqual([]);
+    expect(execMock).not.toHaveBeenCalled();
   });
 });
 

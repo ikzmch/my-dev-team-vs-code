@@ -7,9 +7,8 @@ import { Answerer } from './answerer';
 import { Executor, ExecutionSchema, PartialExecution } from './executor';
 
 /**
- * Step ids of the dev-team workflow. Exported so the UI layer can map the
- * run's step events onto progress labels (and failures onto error copy)
- * without magic strings.
+ * Step ids of the dev-team workflow. Exported so the UI layer can map
+ * step failures onto error copy without magic strings.
  */
 export const stepIds = {
   triage: 'triage',
@@ -151,7 +150,7 @@ function progressSink(requestContext: RequestContext): ReplyProgressSink | undef
  * "answer-directly" streams a real answer from the Answerer agent;
  * "execute-plan" walks the drafted plan with the Executor's tool-calling
  * loop. The second branch is a branch rather than a plain step so a oneshot
- * run never starts (or reports progress for) an executor step.
+ * run never starts an executor step.
  */
 export function createDevTeamWorkflow(
   triage: Triage,

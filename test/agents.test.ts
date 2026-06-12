@@ -24,6 +24,7 @@ import { Answerer } from '../src/core/answerer';
 import { Executor, PartialExecution } from '../src/core/executor';
 import { Approver } from '../src/core/types';
 import { settings } from '../src/config/settings';
+import { __state } from './mocks/vscode';
 
 beforeEach(() => {
   generateMock.mockReset();
@@ -290,8 +291,8 @@ describe('Executor', () => {
   });
 
   it('previews a call by the tool\'s configured key argument, not the args JSON', async () => {
-    // The write tool's previewArg is "path": the transcript shows the file
-    // name, never the file contents the model passed alongside it.
+    // The write tool's previewArg is "path": the transcript headline shows
+    // the file name; the contents surface only as the bounded snippet.
     streamMock.mockResolvedValue(
       fakeChunkOutput([
         {
@@ -309,7 +310,87 @@ describe('Executor', () => {
       kind: 'tool',
       tool: 'write',
       input: 'calculator.py',
+      snippet: 'print(1 + 1)',
     });
+  });
+
+  const writeCall = (contents: string) => [
+    {
+      type: 'tool-call',
+      payload: {
+        toolCallId: 'c1',
+        toolName: 'write',
+        args: { path: 'a.py', contents },
+      },
+    },
+  ];
+
+  it('caps the write snippet at the configured line count with an elision marker', async () => {
+    const lines = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
+    streamMock.mockResolvedValue(fakeChunkOutput(writeCall(lines.join('\n'))));
+    const result = await new Executor(approverStub).execute('go');
+    expect((result.events[0] as { snippet?: string }).snippet).toBe(
+      'l1\nl2\nl3\nl4\nl5\n…'
+    );
+  });
+
+  it('shows a short file whole, without an elision marker', async () => {
+    streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2\n')));
+    const result = await new Executor(approverStub).execute('go');
+    expect((result.events[0] as { snippet?: string }).snippet).toBe('l1\nl2');
+  });
+
+  it('honours the user-configured snippet line count', async () => {
+    __state.configuration.set('myDevTeam.chat.toolSnippetLines', 2);
+    try {
+      streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2\nl3')));
+      const result = await new Executor(approverStub).execute('go');
+      expect((result.events[0] as { snippet?: string }).snippet).toBe('l1\nl2\n…');
+    } finally {
+      __state.configuration.delete('myDevTeam.chat.toolSnippetLines');
+    }
+  });
+
+  it('omits the snippet entirely when the line count is set to 0', async () => {
+    __state.configuration.set('myDevTeam.chat.toolSnippetLines', 0);
+    try {
+      streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2')));
+      const result = await new Executor(approverStub).execute('go');
+      expect(result.events[0]).not.toHaveProperty('snippet');
+    } finally {
+      __state.configuration.delete('myDevTeam.chat.toolSnippetLines');
+    }
+  });
+
+  it('bounds each snippet line like the input preview', async () => {
+    const long = 'x'.repeat(settings.executor.inputPreviewMaxChars + 50);
+    streamMock.mockResolvedValue(fakeChunkOutput(writeCall(long)));
+    const result = await new Executor(approverStub).execute('go');
+    const snippet = (result.events[0] as { snippet?: string }).snippet!;
+    expect(snippet).toHaveLength(settings.executor.inputPreviewMaxChars + 1);
+    expect(snippet.endsWith('…')).toBe(true);
+  });
+
+  it('omits the snippet for tools without a snippetArg and for blank contents', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: { toolCallId: 'c1', toolName: 'read', args: { path: 'a.ts' } },
+        },
+        {
+          type: 'tool-call',
+          payload: {
+            toolCallId: 'c2',
+            toolName: 'write',
+            args: { path: 'a.ts', contents: '  \n' },
+          },
+        },
+      ])
+    );
+    const result = await new Executor(approverStub).execute('go');
+    expect(result.events[0]).not.toHaveProperty('snippet');
+    expect(result.events[1]).not.toHaveProperty('snippet');
   });
 
   it('falls back to compact JSON without Mastra metadata for unknown tools', async () => {

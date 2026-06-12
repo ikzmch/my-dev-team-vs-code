@@ -1,7 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
 import { resolveModel } from './models';
-import { Approver } from './types';
+import { Approver, RunMirror } from './types';
 import { agents } from '../config/agents';
 import { settings } from '../config/settings';
 import { toolConfigs } from '../config/tools';
@@ -33,6 +33,12 @@ export const ToolEventSchema = z.object({
    * preview argument (e.g. the path for write) or compact JSON of all args.
    */
   input: z.string(),
+  /**
+   * Leading lines of the tool's snippet argument (config `snippetArg`, e.g.
+   * the file contents for write), shown beneath the call line. Absent for
+   * tools without one or when the user set the line count to 0.
+   */
+  snippet: z.string().optional(),
   /** Preview of the tool's result, truncated; absent while the call runs. */
   result: z.string().optional(),
   /** True when the tool threw instead of returning. */
@@ -86,6 +92,33 @@ function inputPreview(tool: string, args: unknown): string {
   return truncate(JSON.stringify(rest), max);
 }
 
+/**
+ * Multi-line snippet of a tool call's snippet argument: its first
+ * `settings.executor.snippetLines` lines (each bounded like the input
+ * preview), with an elision marker when more follow. Undefined when the tool
+ * has no `snippetArg`, the argument is missing or empty, or snippets are
+ * turned off (line count 0).
+ */
+function inputSnippet(tool: string, args: unknown): string | undefined {
+  const snippetArg = toolConfigs[tool]?.snippetArg;
+  if (snippetArg === undefined || typeof args !== 'object' || args === null) {
+    return undefined;
+  }
+  const value = (args as Record<string, unknown>)[snippetArg];
+  const maxLines = settings.executor.snippetLines;
+  if (typeof value !== 'string' || !value.trim() || maxLines <= 0) {
+    return undefined;
+  }
+  const lines = value.trimEnd().split('\n');
+  const head = lines
+    .slice(0, maxLines)
+    .map((line) => truncate(line, settings.executor.inputPreviewMaxChars));
+  if (lines.length > maxLines) {
+    head.push('…');
+  }
+  return head.join('\n');
+}
+
 /** Bounded preview of a tool result (ours return strings; be safe anyway). */
 function resultPreview(result: unknown): string {
   const text = typeof result === 'string' ? result : JSON.stringify(result) ?? '';
@@ -103,14 +136,14 @@ function resultPreview(result: unknown): string {
 export class Executor {
   private readonly agent: Agent;
 
-  constructor(approver: Approver) {
+  constructor(approver: Approver, mirror?: RunMirror) {
     this.agent = new Agent({
       id: agents.executor.id,
       name: agents.executor.name,
       description: agents.executor.description,
       instructions: agents.executor.instructions,
       model: resolveModel(agents.executor.capabilities),
-      tools: buildAgentTools(approver),
+      tools: buildAgentTools(approver, mirror),
     });
   }
 
@@ -153,10 +186,12 @@ export class Executor {
         }
         case 'tool-call': {
           const tool = String(chunk.payload?.toolName ?? '');
+          const snippet = inputSnippet(tool, chunk.payload?.args);
           const event = {
             kind: 'tool' as const,
             tool,
             input: inputPreview(tool, chunk.payload?.args),
+            ...(snippet === undefined ? {} : { snippet }),
           };
           events.push(event);
           pendingCalls.set(String(chunk.payload?.toolCallId ?? ''), event);

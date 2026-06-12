@@ -4,6 +4,8 @@
  * frontmatter carries the structured fields (name,
  * displayName, the Language Model Tools API id it registers as, whether it is
  * side-effecting), and the markdown body is the model-facing description.
+ * `{{os}}`/`{{shell}}` placeholders in a description are filled from
+ * config/environment.ts, so a tool can state which OS and shell it runs in.
  *
  * Agents list the tools they may use in their own frontmatter (see agents.ts);
  * `renderToolsSection` turns that list into the "available tools" prompt
@@ -13,6 +15,7 @@
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
+import { environment } from './environment';
 import toolFiles from 'glob:./tools/*.md';
 
 const ToolFrontmatterSchema = z.object({
@@ -31,6 +34,14 @@ const ToolFrontmatterSchema = z.object({
    * transcript falls back to a compact JSON preview of all arguments.
    */
   previewArg: z.string().optional(),
+  /**
+   * Input argument whose leading lines are shown as a fenced snippet beneath
+   * the call line in the execution transcript (e.g. "contents" for write, so
+   * the user sees the start of the file being written). The line count is
+   * user-tunable (`myDevTeam.chat.toolSnippetLines`). Optional: without it
+   * the call shows only the one-line preview.
+   */
+  snippetArg: z.string().optional(),
 });
 
 export interface ToolConfig extends z.infer<typeof ToolFrontmatterSchema> {
@@ -40,7 +51,13 @@ export interface ToolConfig extends z.infer<typeof ToolFrontmatterSchema> {
 
 function loadTool(raw: string): ToolConfig {
   const { data, body } = parseFrontmatter(raw);
-  return { ...ToolFrontmatterSchema.parse(data), description: body.trim() };
+  // Descriptions may name the runtime environment via placeholders (the run
+  // tool tells the model which OS and shell its command lands in).
+  const description = body
+    .trim()
+    .replaceAll('{{os}}', environment.os)
+    .replaceAll('{{shell}}', environment.shell);
+  return { ...ToolFrontmatterSchema.parse(data), description };
 }
 
 /**

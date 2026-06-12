@@ -27,12 +27,15 @@ export const defaults = {
     contentScanLimit: 500,
     contentMaxMatches: 50,
   },
+  chat: {
+    toolSnippetLines: 5,
+  },
 } as const;
 
-/** Read a user-set positive integer, falling back when unset or invalid. */
-function userLimit(key: string, fallback: number): number {
+/** Read a user-set integer (at least `min`), falling back when unset or invalid. */
+function userLimit(key: string, fallback: number, min = 1): number {
   const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<unknown>(key);
-  return typeof value === 'number' && Number.isFinite(value) && value >= 1
+  return typeof value === 'number' && Number.isFinite(value) && value >= min
     ? Math.floor(value)
     : fallback;
 }
@@ -72,6 +75,14 @@ export const settings = {
   /** Output buffer cap for the `run` tool, in bytes. */
   runCommandMaxBufferBytes: 10 * 1024 * 1024,
 
+  /**
+   * Cap on the session log the "Dev Team" terminal mirror keeps, in
+   * characters. The backlog replays the full run history when the user first
+   * opens (or reopens) the terminal; beyond the cap the oldest output is
+   * dropped.
+   */
+  runMirrorBacklogMaxChars: 200_000,
+
   /** Max characters the `read` tool returns before truncating. */
   readMaxChars: 200_000,
 
@@ -107,6 +118,14 @@ export const settings = {
     inputPreviewMaxChars: 200,
     /** Max characters of a tool result kept in the transcript. */
     resultPreviewMaxChars: 400,
+    /**
+     * Leading lines of a snippet-bearing argument (config `snippetArg`, e.g.
+     * the file contents for write) shown beneath the call line in the
+     * transcript (`myDevTeam.chat.toolSnippetLines`; 0 hides snippets).
+     */
+    get snippetLines(): number {
+      return userLimit('chat.toolSnippetLines', defaults.chat.toolSnippetLines, 0);
+    },
   },
 
   /** Max characters of an attached file/selection inlined into the prompt. */

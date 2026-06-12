@@ -1,6 +1,6 @@
 /**
- * User-facing copy for the chat UI: progress labels, error text, and the
- * markdown templates the reply renderer uses. Kept out of the logic so the
+ * User-facing copy for the chat UI: error text and the markdown templates
+ * the reply renderer uses. Kept out of the logic so the
  * wording (and the Ollama troubleshooting hint) can be tuned without editing
  * control flow. Functions take only the dynamic bits; static prose lives here.
  */
@@ -20,13 +20,6 @@ function ollamaHint(agent: AgentName): string {
 }
 
 export const messages = {
-  progress: {
-    understanding: 'Understanding your request…',
-    drafting: 'Drafting a plan…',
-    answering: 'Answering…',
-    executing: 'Executing the plan…',
-  },
-
   /** Copy for the side-effecting tools' approval gate. */
   approval: {
     runCommandTitle: 'Run command',
@@ -41,6 +34,16 @@ export const messages = {
   /** Returned to the model when the user declines a side-effecting tool. */
   notApproved: {
     run: 'Command was not approved by the user.',
+  },
+
+  /** Copy for the terminal mirroring the run tool's commands (ui/runTerminal.ts). */
+  terminal: {
+    /** Tab name of the mirror terminal in the terminal panel. */
+    name: 'Dev Team',
+    /** Header line echoed before each command's output. */
+    prompt: (command: string) => `$ ${command}`,
+    /** Outcome note written after a command that finished cleanly. */
+    completed: '(command completed)',
   },
 
   triage: {
@@ -75,6 +78,18 @@ export const messages = {
     call: (tool: string, input: string) => `\n\n- **${tool}** \`${input}\``,
     result: (preview: string, failed: boolean) =>
       failed ? ` → **failed** \`${preview}\`` : ` → \`${preview}\``,
+    /**
+     * Fenced snippet of a call's content argument (e.g. the first lines of a
+     * written file), indented to sit under the call's list item. The fence is
+     * four backticks so snippet lines containing ``` cannot break out of it.
+     */
+    snippet: (snippet: string) =>
+      '\n\n  ````\n' +
+      snippet
+        .split('\n')
+        .map((line) => '  ' + line)
+        .join('\n') +
+      '\n  ````',
     /** Shown in a result slot when the tool produced no output at all. */
     emptyResult: '(no output)',
   },

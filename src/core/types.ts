@@ -19,3 +19,20 @@ export interface Approver {
    */
   confirm(title: string, detail: string): Promise<boolean>;
 }
+
+/**
+ * The run-transparency seam, shaped like the Approver: the `run` tool reports
+ * each executed command's lifecycle to it, and a UI implementation decides how
+ * to surface that (Phase 1 mirrors it into a "Dev Team" terminal the user can
+ * open; see ui/runTerminal.ts). The tool layer never knows which. All methods
+ * are fire-and-forget notifications and must not throw - a broken mirror must
+ * never fail the command it is only observing.
+ */
+export interface RunMirror {
+  /** A command was approved and is starting. */
+  begin(command: string): void;
+  /** A chunk of the live stdout/stderr of the running command. */
+  output(chunk: string): void;
+  /** The command finished; `note` is a one-line outcome (ok, failed, timeout). */
+  end(note: string): void;
+}

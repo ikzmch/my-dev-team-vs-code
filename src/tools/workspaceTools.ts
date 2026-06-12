@@ -2,9 +2,10 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
-import { Approver } from '../core/types';
+import { Approver, RunMirror } from '../core/types';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
+import { environment } from '../config/environment';
 
 const execAsync = promisify(exec);
 
@@ -99,23 +100,41 @@ function killProcessTree(child: ChildProcess | undefined): void {
   }
 }
 
-/** Run a shell command. SIDE-EFFECTING: gated by the Approver. */
+/**
+ * Run a shell command. SIDE-EFFECTING: gated by the Approver. The optional
+ * mirror receives the command's lifecycle and live output (Phase 1 shows it
+ * in a "Dev Team" terminal); the buffered result returned to the model is
+ * unaffected by it.
+ */
 export async function runCommand(
   command: string,
-  approver: Approver
+  approver: Approver,
+  mirror?: RunMirror
 ): Promise<string> {
   const cwd = workspaceRoot().fsPath;
   const ok = await approver.confirm(messages.approval.runCommandTitle, '$ ' + command);
   if (!ok) {
+    // Declined commands never ran, so they never reach the mirror either.
     return messages.notApproved.run;
   }
 
   let timedOut = false;
+  // The shell must match what the prompts announce (config/environment.ts):
+  // PowerShell on Windows, the platform default (/bin/sh) elsewhere.
   const pending = execAsync(command, {
     cwd,
+    shell: environment.execShell,
     maxBuffer: settings.runCommandMaxBufferBytes,
     windowsHide: true,
   });
+  if (mirror) {
+    mirror.begin(command);
+    // Tap the child's streams for the live view; exec keeps buffering the
+    // same data for the returned result, so this observes without changing
+    // anything. (The promisified child is absent only under test fakes.)
+    pending.child?.stdout?.on('data', (chunk) => mirror.output(String(chunk)));
+    pending.child?.stderr?.on('data', (chunk) => mirror.output(String(chunk)));
+  }
   const killTimer = setTimeout(() => {
     timedOut = true;
     killProcessTree(pending.child);
@@ -123,6 +142,7 @@ export async function runCommand(
 
   try {
     const { stdout, stderr } = await pending;
+    mirror?.end(messages.terminal.completed);
     return combineOutput(String(stdout), String(stderr));
   } catch (err: any) {
     // A failed command's output is what the caller needs to diagnose it, so
@@ -130,6 +150,7 @@ export async function runCommand(
     const reason = timedOut
       ? `Command timed out after ${settings.runCommandTimeoutMs} ms and was killed.`
       : `Command failed: ${err?.message ?? String(err)}`;
+    mirror?.end(reason);
     const output = combineOutput(String(err?.stdout ?? ''), String(err?.stderr ?? ''));
     return output ? `${reason}\n${output}` : reason;
   } finally {

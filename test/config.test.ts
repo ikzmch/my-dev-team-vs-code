@@ -17,6 +17,11 @@ import {
   toolNames,
   renderToolsSection,
 } from '../src/config/tools';
+import {
+  describeEnvironment,
+  environment,
+  renderEnvironmentSection,
+} from '../src/config/environment';
 import { PlanStepSchema } from '../src/core/planner';
 
 beforeEach(() => {
@@ -59,13 +64,6 @@ describe('messages templates', () => {
   it('provides the plan and answer headers as streamable prefixes', () => {
     expect(messages.plan.header).toBe('**Plan:** ');
     expect(messages.answer.header).toBe('**Answer:**\n\n');
-  });
-
-  it('labels all four progress phases', () => {
-    expect(messages.progress.understanding).toBeTruthy();
-    expect(messages.progress.drafting).toBeTruthy();
-    expect(messages.progress.answering).toBeTruthy();
-    expect(messages.progress.executing).toBeTruthy();
   });
 
   it('provides an approval title and decline reply for the run tool', () => {
@@ -151,6 +149,16 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.search.globMaxResults).toBe(defaults.search.globMaxResults);
     expect(settings.search.contentScanLimit).toBe(defaults.search.contentScanLimit);
     expect(settings.search.contentMaxMatches).toBe(defaults.search.contentMaxMatches);
+    expect(settings.executor.snippetLines).toBe(defaults.chat.toolSnippetLines);
+  });
+
+  it('reads the snippet line count live, accepting 0 to hide snippets', () => {
+    __setConfig('myDevTeam.chat.toolSnippetLines', 3);
+    expect(settings.executor.snippetLines).toBe(3);
+    __setConfig('myDevTeam.chat.toolSnippetLines', 0);
+    expect(settings.executor.snippetLines).toBe(0);
+    __setConfig('myDevTeam.chat.toolSnippetLines', -1);
+    expect(settings.executor.snippetLines).toBe(defaults.chat.toolSnippetLines);
   });
 
   it('reads user-configured values live', () => {
@@ -336,6 +344,41 @@ describe('parseFrontmatter', () => {
   });
 });
 
+describe('environment', () => {
+  it('uses PowerShell on Windows, both as exec shell and in the prompt text', () => {
+    const win = describeEnvironment('win32');
+    expect(win.os).toBe('Windows');
+    expect(win.shell).toBe('PowerShell');
+    expect(win.execShell).toBe('powershell.exe');
+  });
+
+  it('keeps the platform default shell on macOS and Linux', () => {
+    expect(describeEnvironment('darwin')).toEqual({
+      os: 'macOS',
+      shell: 'POSIX sh',
+      execShell: undefined,
+    });
+    expect(describeEnvironment('linux')).toEqual({
+      os: 'Linux',
+      shell: 'POSIX sh',
+      execShell: undefined,
+    });
+  });
+
+  it('describes the platform the extension host actually runs on', () => {
+    expect(environment).toEqual(describeEnvironment(process.platform));
+  });
+
+  it('renders a prompt section naming the OS and the shell', () => {
+    const section = renderEnvironmentSection(describeEnvironment('win32'));
+    expect(section).toContain('Windows');
+    expect(section).toContain('PowerShell syntax');
+    // Without an argument it must describe the host environment, so the
+    // prompts can never claim a platform other than the one commands run on.
+    expect(renderEnvironmentSection()).toContain(environment.os);
+  });
+});
+
 describe('tool configs', () => {
   it('discovers the four workspace tools', () => {
     // Order follows the config filenames, so compare as a sorted set.
@@ -355,6 +398,14 @@ describe('tool configs', () => {
     }
   });
 
+  it('tells the model which OS and shell run commands land in', () => {
+    // The placeholders must be substituted, not shipped verbatim, and the
+    // description must name the same environment the run tool executes in.
+    expect(toolConfigs.run.description).not.toContain('{{');
+    expect(toolConfigs.run.description).toContain(environment.os);
+    expect(toolConfigs.run.description).toContain(`${environment.shell} syntax`);
+  });
+
   it('names a preview argument matching each tool\'s input schema', () => {
     // The transcript shows this argument's value instead of the args JSON
     // (e.g. just the file name for write); the names must match the zod
@@ -364,6 +415,16 @@ describe('tool configs', () => {
     expect(toolConfigs.write.previewArg).toBe('path');
     expect(toolConfigs.search.previewArg).toBe('query');
     expect(toolConfigs.run.previewArg).toBe('command');
+  });
+
+  it('names write\'s contents as its snippet argument; the others have none', () => {
+    // The transcript shows this argument's first lines as a fenced snippet
+    // under the call line; the name must match the zod input schema in
+    // tools/agentTools.ts or the snippet silently disappears.
+    expect(toolConfigs.write.snippetArg).toBe('contents');
+    expect(toolConfigs.read.snippetArg).toBeUndefined();
+    expect(toolConfigs.search.snippetArg).toBeUndefined();
+    expect(toolConfigs.run.snippetArg).toBeUndefined();
   });
 
   it('renders a tools section with one line per tool', () => {
@@ -443,6 +504,18 @@ describe('agent configs', () => {
     expect(p).toContain('You have exactly 4 tools available:');
     expect(p).toContain('not approved');
     expect(p).toMatch(/report/i);
+  });
+
+  it('tells the run-capable agents which OS and shell they work on', () => {
+    // Both agents that plan or issue run commands carry the environment
+    // section; without it a model defaults to Linux commands on Windows.
+    for (const agent of [agents.planner, agents.executor]) {
+      expect(agent.instructions).not.toContain('{{environment}}');
+      expect(agent.instructions).toContain(renderEnvironmentSection());
+    }
+    // Agents without tools have no placeholder and gain no section.
+    expect(agents.triage.instructions).not.toContain('Environment:');
+    expect(agents.answerer.instructions).not.toContain('Environment:');
   });
 
   it('keeps the answerer contract: no tools, oneshot framing', () => {

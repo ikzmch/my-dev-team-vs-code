@@ -10,11 +10,11 @@
  */
 import { z } from 'zod';
 import { createTool } from '@mastra/core/tools';
-import { Approver } from '../core/types';
+import { Approver, RunMirror } from '../core/types';
 import { toolConfigs } from '../config/tools';
 import { readFile, searchFiles, runCommand, writeFile } from './workspaceTools';
 
-export function buildAgentTools(approver: Approver) {
+export function buildAgentTools(approver: Approver, mirror?: RunMirror) {
   return {
     read: createTool({
       id: toolConfigs.read.name,
@@ -48,7 +48,7 @@ export function buildAgentTools(approver: Approver) {
       inputSchema: z.object({
         command: z.string().describe('The shell command to execute.'),
       }),
-      execute: async ({ command }) => runCommand(command, approver),
+      execute: async ({ command }) => runCommand(command, approver, mirror),
     }),
 
     write: createTool({

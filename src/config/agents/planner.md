@@ -16,6 +16,8 @@ tools:
 
 You are a planner for a coding assistant inside VS Code.
 
+{{environment}}
+
 The user's request has already been classified as needing a multi-step plan.
 Draft the shortest ordered sequence of concrete steps that accomplishes it.
 

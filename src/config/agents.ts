@@ -12,19 +12,23 @@
  *
  * The body never hardcodes tool descriptions: a `{{tools}}` placeholder (or,
  * absent one, the end of the prompt) is filled with a section rendered from
- * the frontmatter `tools` list and the configs in ./tools. Agent classes in
+ * the frontmatter `tools` list and the configs in ./tools. An optional
+ * `{{environment}}` placeholder is filled with the runtime OS/shell facts
+ * from ./environment, so prompts never hardcode a platform. Agent classes in
  * src/core import from here, never from the `.md` files directly.
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
 import { CapabilityScoresSchema } from './models';
 import { toolNames, renderToolsSection } from './tools';
+import { renderEnvironmentSection } from './environment';
 import triage from './agents/triage.md';
 import planner from './agents/planner.md';
 import answerer from './agents/answerer.md';
 import executor from './agents/executor.md';
 
 const TOOLS_PLACEHOLDER = '{{tools}}';
+const ENVIRONMENT_PLACEHOLDER = '{{environment}}';
 
 const AgentFrontmatterSchema = z.object({
   /** Stable agent id, used as the Mastra Agent id. */
@@ -49,10 +53,14 @@ export interface AgentConfig extends z.infer<typeof AgentFrontmatterSchema> {
 }
 
 function buildInstructions(body: string, tools: readonly string[]): string {
+  const withEnvironment = body.replace(
+    ENVIRONMENT_PLACEHOLDER,
+    renderEnvironmentSection()
+  );
   const section = tools.length > 0 ? renderToolsSection(tools) : '';
-  return body.includes(TOOLS_PLACEHOLDER)
-    ? body.replace(TOOLS_PLACEHOLDER, section)
-    : [body, section].filter(Boolean).join('\n\n');
+  return withEnvironment.includes(TOOLS_PLACEHOLDER)
+    ? withEnvironment.replace(TOOLS_PLACEHOLDER, section)
+    : [withEnvironment, section].filter(Boolean).join('\n\n');
 }
 
 function loadAgent(raw: string): AgentConfig {
