@@ -16,9 +16,53 @@ export const stepIds = {
   answer: 'answer-directly',
 } as const;
 
-/** What the workflow consumes: the user's prompt (with attachments inlined). */
-export const RequestSchema = z.object({ prompt: z.string() });
+/** One attached file/selection: a short label naming it plus its (already truncated) text. */
+export const AttachmentSchema = z.object({
+  label: z.string(),
+  text: z.string(),
+});
+export type Attachment = z.infer<typeof AttachmentSchema>;
+
+/**
+ * What the workflow consumes: the user's prompt plus any attached
+ * files/selections. They stay separate so each step can decide how much of
+ * the attachment text its model actually needs to see - important with small
+ * local Ollama models, whose context windows a single attached file can
+ * easily crowd out.
+ */
+export const RequestSchema = z.object({
+  prompt: z.string(),
+  attachments: z.array(AttachmentSchema).optional(),
+});
 export type RequestInput = z.infer<typeof RequestSchema>;
+
+/**
+ * The prompt the triage agent sees: the question plus attachment names only.
+ * Triage just routes oneshot vs planning, so inlining file contents would
+ * waste tokens and, on a small local model, push the actual question out of
+ * the context window.
+ */
+export function triagePrompt(input: RequestInput): string {
+  const attachments = input.attachments ?? [];
+  if (attachments.length === 0) {
+    return input.prompt;
+  }
+  const labels = attachments.map((a) => a.label).join('; ');
+  return `${input.prompt}\n\n(The user attached context, contents omitted here: ${labels})`;
+}
+
+/**
+ * The prompt the planner and answerer see: the question plus the full
+ * attachment text, one fenced block per attachment.
+ */
+export function fullPrompt(input: RequestInput): string {
+  const attachments = input.attachments ?? [];
+  if (attachments.length === 0) {
+    return input.prompt;
+  }
+  const blocks = attachments.map((a) => `${a.label}\n\`\`\`\n${a.text}\n\`\`\``);
+  return `${input.prompt}\n\n--- Attached context ---\n${blocks.join('\n\n')}`;
+}
 
 /** Triage decision carried forward to the branch steps. */
 const TriagedSchema = RequestSchema.extend(TriageSchema.shape);
@@ -85,7 +129,8 @@ export function createDevTeamWorkflow(
     outputSchema: TriagedSchema,
     execute: async ({ inputData }) => ({
       prompt: inputData.prompt,
-      ...(await triage.classify(inputData.prompt)),
+      attachments: inputData.attachments,
+      ...(await triage.classify(triagePrompt(inputData))),
     }),
   });
 
@@ -101,7 +146,7 @@ export function createDevTeamWorkflow(
       // arrive instead of waiting for the whole plan.
       sink?.({ intent, reason });
       const plan = await planner.plan(
-        inputData.prompt,
+        fullPrompt(inputData),
         sink && ((partial) => sink({ intent, reason, plan: partial }))
       );
       return { intent, reason, plan };
@@ -119,7 +164,7 @@ export function createDevTeamWorkflow(
       // snapshot the answerer streams, mirroring the draft-plan step.
       sink?.({ intent, reason });
       const answer = await answerer.answer(
-        inputData.prompt,
+        fullPrompt(inputData),
         sink && ((text) => sink({ intent, reason, answer: text }))
       );
       return { intent, reason, answer };

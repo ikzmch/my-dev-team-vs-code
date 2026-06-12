@@ -44,8 +44,9 @@ const aPlan: PlanResult = {
 };
 
 /**
- * Build a real dev-team workflow over fake agents, and record the prompt the
- * triage agent receives so tests can assert on what the handler composed.
+ * Build a real dev-team workflow over fake agents, and record the prompt each
+ * agent receives so tests can assert on what the handler and workflow
+ * composed for it.
  */
 function makeWorkflow(
   classify: (prompt: string) => Promise<TriageResult> = async () => ({
@@ -57,16 +58,30 @@ function makeWorkflow(
   answer: (prompt: string, onPartial?: AnswerProgress) => Promise<string> = async () =>
     'It is 4.'
 ) {
-  const seen = { prompt: undefined as string | undefined };
+  const seen = {
+    triage: undefined as string | undefined,
+    planner: undefined as string | undefined,
+    answerer: undefined as string | undefined,
+  };
   const workflow = createDevTeamWorkflow(
     {
       classify: async (prompt: string) => {
-        seen.prompt = prompt;
+        seen.triage = prompt;
         return classify(prompt);
       },
     } as any,
-    { plan } as any,
-    { answer } as any
+    {
+      plan: async (prompt: string, onPartial?: PlanProgress) => {
+        seen.planner = prompt;
+        return plan(prompt, onPartial);
+      },
+    } as any,
+    {
+      answer: async (prompt: string, onPartial?: AnswerProgress) => {
+        seen.answerer = prompt;
+        return answer(prompt, onPartial);
+      },
+    } as any
   );
   return { workflow, seen };
 }
@@ -255,7 +270,7 @@ describe('createHandler', () => {
     expect((result as any).metadata.command).toBe('explain');
   });
 
-  it('inlines an attached file (Uri reference) into the prompt', async () => {
+  it('inlines an attached file (Uri reference) into the answerer prompt', async () => {
     const uri = __setFile('src/a.ts', 'file body');
     const { workflow, seen } = makeWorkflow();
 
@@ -266,10 +281,26 @@ describe('createHandler', () => {
       fakeToken() as any
     );
 
-    expect(seen.prompt).toContain('look at this');
-    expect(seen.prompt).toContain('--- Attached context ---');
-    expect(seen.prompt).toContain('File: src/a.ts');
-    expect(seen.prompt).toContain('file body');
+    expect(seen.answerer).toContain('look at this');
+    expect(seen.answerer).toContain('--- Attached context ---');
+    expect(seen.answerer).toContain('File: src/a.ts');
+    expect(seen.answerer).toContain('file body');
+  });
+
+  it('gives the triage agent attachment names but not their contents', async () => {
+    const uri = __setFile('src/a.ts', 'file body');
+    const { workflow, seen } = makeWorkflow();
+
+    await createHandler(workflow)(
+      { prompt: 'look at this', references: [{ value: uri }] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    expect(seen.triage).toContain('look at this');
+    expect(seen.triage).toContain('File: src/a.ts');
+    expect(seen.triage).not.toContain('file body');
   });
 
   it('inlines a selection (Location reference) with its line number', async () => {
@@ -284,8 +315,10 @@ describe('createHandler', () => {
       fakeToken() as any
     );
 
-    expect(seen.prompt).toContain('Selection from src/b.ts (line 2)');
-    expect(seen.prompt).toContain('line1');
+    expect(seen.answerer).toContain('Selection from src/b.ts (line 2)');
+    expect(seen.answerer).toContain('line1');
+    expect(seen.triage).toContain('Selection from src/b.ts (line 2)');
+    expect(seen.triage).not.toContain('line1');
   });
 
   it('inlines a plain string reference', async () => {
@@ -297,7 +330,9 @@ describe('createHandler', () => {
       fakeStream() as any,
       fakeToken() as any
     );
-    expect(seen.prompt).toContain('raw snippet');
+    expect(seen.answerer).toContain('raw snippet');
+    expect(seen.triage).toContain('Attached text');
+    expect(seen.triage).not.toContain('raw snippet');
   });
 
   it('reports an unreadable attachment instead of throwing', async () => {
@@ -310,7 +345,8 @@ describe('createHandler', () => {
       fakeStream() as any,
       fakeToken() as any
     );
-    expect(seen.prompt).toContain('could not read attachment');
+    expect(seen.answerer).toContain('could not read attachment');
+    expect(seen.triage).toContain('Unreadable attachment');
   });
 
   it('truncates very large attachments', async () => {
@@ -323,7 +359,7 @@ describe('createHandler', () => {
       fakeStream() as any,
       fakeToken() as any
     );
-    expect(seen.prompt).toContain('…(truncated)');
+    expect(seen.answerer).toContain('…(truncated)');
   });
 
   it('does not add an attachments block when there are no references', async () => {
@@ -335,7 +371,8 @@ describe('createHandler', () => {
       fakeStream() as any,
       fakeToken() as any
     );
-    expect(seen.prompt).toBe('plain');
+    expect(seen.triage).toBe('plain');
+    expect(seen.answerer).toBe('plain');
   });
 
   it('subscribes to cancellation and disposes the listener afterwards', async () => {

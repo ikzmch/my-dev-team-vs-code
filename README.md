@@ -73,21 +73,26 @@ Three layers, deliberately decoupled:
 @devteam <prompt>
         │
         ▼
-ui/chatParticipant.ts          fold attachments into the prompt, start a run of
-  createHandler                the workflow, bridge its step events onto the
-        │                      chat stream as progress labels, and hand the run
-        │                      a reply-progress sink (Mastra RequestContext)
+ui/chatParticipant.ts          resolve attached files/selections into labelled
+  createHandler                attachments passed alongside the prompt, start a
+        │                      run of the workflow, bridge its step events onto
+        │                      the chat stream as progress labels, and hand the
+        │                      run a reply-progress sink (Mastra RequestContext)
         ▼
 core/workflow.ts               Mastra workflow (createWorkflow + createStep)
-  triage                       ── Triage.classify(prompt)
+  triage                       ── Triage.classify(triagePrompt)
+        │                         prompt + attachment labels only (contents
+        │                         omitted: routing needs no file text, and it
+        │                         would crowd a small local model's context)
         │                         → { intent: "oneshot" | "planning", reason }
         ▼                         (model picked by the capability router)
       branch
-        ├─▶ draft-plan         ── Planner.plan(prompt, onPartial)  (intent = "planning")
+        ├─▶ draft-plan         ── Planner.plan(fullPrompt, onPartial)  (intent = "planning")
+        │                         prompt + full attachment text inlined;
         │                         → { summary, steps[] } (capability-routed model);
         │                         pushes the triage decision and every partial
         │                         plan snapshot to the sink as the model streams
-        └─▶ answer-directly    ── Answerer.answer(prompt, onPartial)  (intent = "oneshot")
+        └─▶ answer-directly    ── Answerer.answer(fullPrompt, onPartial)  (intent = "oneshot")
         │                         → markdown answer (capability-routed model);
         │                         pushes the triage decision and the growing
         │                         answer text to the sink as the model streams
@@ -266,13 +271,16 @@ pulled.
 
 Out of the box, `@devteam <prompt>`:
 
-1. Folds any attached files/selections into the prompt and starts a run of the
-   dev-team workflow.
+1. Resolves any attached files/selections into labelled attachments and starts
+   a run of the dev-team workflow with them alongside the prompt.
 2. Streams "Understanding your request…" when the triage step starts.
 3. Triages the prompt as `oneshot` or `planning` via the capability-routed
    local Ollama model (currently `qwen3:8b`) - this stays a buffered
    structured-output call, since its whole product is a small validated
-   object.
+   object. Triage sees only the attachment labels (e.g. `File: src/a.ts`),
+   not their contents: the routing decision does not need file text, and on a
+   small local model a large attachment would crowd out the question. The
+   planner and answerer get the full attachment text inlined.
 4. Renders the **detected intent and reason** back to the panel as soon as
    triage completes, without waiting for the rest of the run.
 5. For `oneshot` requests, streams "Answering…" and then **streams a real

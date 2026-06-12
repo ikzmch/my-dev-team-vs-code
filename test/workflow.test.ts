@@ -4,6 +4,9 @@ import {
   createDevTeamWorkflow,
   stepIds,
   replyProgressKey,
+  triagePrompt,
+  fullPrompt,
+  Attachment,
   DevTeamWorkflow,
   ReplyProgress,
   ReplyProgressSink,
@@ -123,6 +126,55 @@ describe('dev-team workflow routing', () => {
     expect(seen.answerer).toBe('what is a closure');
   });
 
+  it('gives triage attachment labels only and the planner the full text', async () => {
+    const attachments: Attachment[] = [
+      { label: 'File: src/a.ts', text: 'file body' },
+    ];
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async (p) => {
+        seen.triage = p;
+        return { intent: 'planning', reason: 'x' };
+      }),
+      fakePlanner(async (p) => {
+        seen.planner = p;
+        return aPlan;
+      }),
+      fakeAnswerer()
+    );
+
+    const run = await workflow.createRun();
+    await run.start({ inputData: { prompt: 'refactor this', attachments } });
+
+    expect(seen.triage).toContain('refactor this');
+    expect(seen.triage).toContain('File: src/a.ts');
+    expect(seen.triage).not.toContain('file body');
+    expect(seen.planner).toContain('--- Attached context ---');
+    expect(seen.planner).toContain('file body');
+  });
+
+  it('gives the answerer the full attachment text on the oneshot path', async () => {
+    const attachments: Attachment[] = [
+      { label: 'File: src/a.ts', text: 'file body' },
+    ];
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (p) => {
+        seen.answerer = p;
+        return 'ok';
+      })
+    );
+
+    const run = await workflow.createRun();
+    await run.start({ inputData: { prompt: 'explain this', attachments } });
+
+    expect(seen.answerer).toContain('explain this');
+    expect(seen.answerer).toContain('--- Attached context ---');
+    expect(seen.answerer).toContain('file body');
+  });
+
   it('emits a step-start event per step so the UI can show progress', async () => {
     const workflow = createDevTeamWorkflow(
       fakeTriage(async () => ({ intent: 'planning', reason: 'x' })),
@@ -142,6 +194,37 @@ describe('dev-team workflow routing', () => {
 
     expect(startedSteps).toContain(stepIds.triage);
     expect(startedSteps).toContain(stepIds.plan);
+  });
+});
+
+describe('prompt assembly', () => {
+  const attachments: Attachment[] = [
+    { label: 'File: src/a.ts', text: 'const a = 1;' },
+    { label: 'Selection from src/b.ts (line 2)', text: 'line1' },
+  ];
+
+  it('returns the bare prompt when there are no attachments', () => {
+    expect(triagePrompt({ prompt: 'hi' })).toBe('hi');
+    expect(fullPrompt({ prompt: 'hi' })).toBe('hi');
+    expect(triagePrompt({ prompt: 'hi', attachments: [] })).toBe('hi');
+    expect(fullPrompt({ prompt: 'hi', attachments: [] })).toBe('hi');
+  });
+
+  it('lists attachment labels without contents for triage', () => {
+    const prompt = triagePrompt({ prompt: 'refactor', attachments });
+    expect(prompt).toContain('refactor');
+    expect(prompt).toContain('File: src/a.ts');
+    expect(prompt).toContain('Selection from src/b.ts (line 2)');
+    expect(prompt).not.toContain('const a = 1;');
+    expect(prompt).not.toContain('line1');
+  });
+
+  it('inlines each attachment as a labelled fenced block for the full prompt', () => {
+    const prompt = fullPrompt({ prompt: 'refactor', attachments });
+    expect(prompt).toContain('refactor');
+    expect(prompt).toContain('--- Attached context ---');
+    expect(prompt).toContain('File: src/a.ts\n```\nconst a = 1;\n```');
+    expect(prompt).toContain('Selection from src/b.ts (line 2)\n```\nline1\n```');
   });
 });
 

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { RequestContext } from '@mastra/core/request-context';
 import { Approver } from '../core/types';
 import {
+  Attachment,
   DevTeamWorkflow,
   ReplyProgress,
   ReplyResult,
@@ -65,39 +66,46 @@ function truncate(text: string): string {
 }
 
 /**
- * Resolve files/selections the user attached to the chat request into text
- * blocks. VS Code delivers attachments on `request.references`, not in the
- * prompt: each `value` is a Uri (whole file), a Location (file + range, e.g. a
- * selection), or a plain string.
+ * Resolve files/selections the user attached to the chat request into
+ * workflow attachments. VS Code delivers attachments on `request.references`,
+ * not in the prompt: each `value` is a Uri (whole file), a Location (file +
+ * range, e.g. a selection), or a plain string. The workflow decides per step
+ * how much of each attachment its model sees (triage gets labels only, the
+ * planner/answerer get the full text).
  */
-async function renderReferences(
+async function collectAttachments(
   refs: readonly vscode.ChatPromptReference[]
-): Promise<string> {
-  const blocks: string[] = [];
+): Promise<Attachment[]> {
+  const attachments: Attachment[] = [];
   for (const ref of refs) {
     const v = ref.value;
     try {
       if (v instanceof vscode.Uri) {
         const bytes = await vscode.workspace.fs.readFile(v);
         const rel = vscode.workspace.asRelativePath(v);
-        blocks.push(
-          `File: ${rel}\n\`\`\`\n${truncate(Buffer.from(bytes).toString('utf8'))}\n\`\`\``
-        );
+        attachments.push({
+          label: `File: ${rel}`,
+          text: truncate(Buffer.from(bytes).toString('utf8')),
+        });
       } else if (v instanceof vscode.Location) {
         const doc = await vscode.workspace.openTextDocument(v.uri);
         const rel = vscode.workspace.asRelativePath(v.uri);
         const startLine = v.range.start.line + 1;
-        blocks.push(
-          `Selection from ${rel} (line ${startLine}):\n\`\`\`\n${truncate(doc.getText(v.range))}\n\`\`\``
-        );
+        attachments.push({
+          label: `Selection from ${rel} (line ${startLine})`,
+          text: truncate(doc.getText(v.range)),
+        });
       } else if (typeof v === 'string') {
-        blocks.push(truncate(v));
+        attachments.push({ label: 'Attached text', text: truncate(v) });
       }
     } catch (err) {
-      blocks.push(`(could not read attachment: ${String(err)})`);
+      attachments.push({
+        label: 'Unreadable attachment',
+        text: `(could not read attachment: ${String(err)})`,
+      });
     }
   }
-  return blocks.join('\n\n');
+  return attachments;
 }
 
 /** Which transient progress label to show when a given workflow step starts. */
@@ -230,20 +238,17 @@ function renderFailure(
 }
 
 /**
- * Builds the chat handler. The handler is thin: it folds attachments into the
- * prompt, starts a run of the dev-team workflow, bridges the run's step
- * events onto the chat stream as progress, streams reply snapshots onto the
- * chat as the planner writes them, and completes the render from the
- * structured result.
+ * Builds the chat handler. The handler is thin: it resolves attachments and
+ * passes them alongside the prompt, starts a run of the dev-team workflow,
+ * bridges the run's step events onto the chat stream as progress, streams
+ * reply snapshots onto the chat as the planner writes them, and completes the
+ * render from the structured result.
  */
 export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHandler {
   return async (request, _context, stream, token) => {
-    // Fold any attached files/selections into the prompt so the workflow
-    // sees them as part of the request.
-    const attachments = await renderReferences(request.references);
-    const prompt = attachments
-      ? `${request.prompt}\n\n--- Attached context ---\n${attachments}`
-      : request.prompt;
+    // Resolve attached files/selections; the workflow folds them into each
+    // step's prompt as that step's model needs them.
+    const attachments = await collectAttachments(request.references);
 
     const run = await workflow.createRun();
     // Cancelling the chat request aborts the run (and its model call) instead
@@ -279,7 +284,10 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
 
     let result;
     try {
-      result = await run.start({ inputData: { prompt }, requestContext });
+      result = await run.start({
+        inputData: { prompt: request.prompt, attachments },
+        requestContext,
+      });
     } catch (err) {
       if (token.isCancellationRequested) {
         return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
