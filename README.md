@@ -19,7 +19,9 @@ core**; file writes apply directly without asking.
 > classifies your request, answers `oneshot` questions directly, and for
 > `planning` requests drafts a step-by-step plan and then **executes it**: the
 > executor's capability-routed model drives a tool-calling loop over the four
-> workspace tools, with side effects gated by the approval seam. See
+> workspace tools, with side effects gated by the approval seam. Every turn
+> carries the **conversation history** (size-capped), so follow-ups like
+> "now rename it too" resolve against the earlier exchanges. See
 > [Current behavior](#current-behavior) and [Roadmap](#roadmap).
 
 ## Architecture
@@ -84,22 +86,27 @@ Three layers, deliberately decoupled:
         │
         ▼
 ui/chatParticipant.ts          resolve attached files/selections into labelled
-  createHandler                attachments passed alongside the prompt, start a
-        │                      run of the workflow, and hand the run a
-        │                      reply-progress sink (Mastra RequestContext);
-        │                      no custom progress labels - the chat shows VS
-        │                      Code's standard "Thinking" indicator
+  createHandler                attachments and the session's prior turns into
+        │                      capped history turns, pass both alongside the
+        │                      prompt, start a run of the workflow, and hand
+        │                      the run a reply-progress sink (Mastra
+        │                      RequestContext); no custom progress labels -
+        │                      the chat shows VS Code's standard "Thinking"
+        │                      indicator
         ▼
 core/workflow.ts               Mastra workflow (createWorkflow + createStep)
   triage                       ── Triage.classify(triagePrompt)
-        │                         prompt + attachment labels only (contents
-        │                         omitted: routing needs no file text, and it
-        │                         would crowd a small local model's context)
+        │                         conversation so far + prompt + attachment
+        │                         labels only (contents omitted: routing needs
+        │                         no file text, and it would crowd a small
+        │                         local model's context; the history stays in
+        │                         because a follow-up cannot be routed
+        │                         without the conversation it follows)
         │                         → { intent: "oneshot" | "planning", reason }
         ▼                         (model picked by the capability router)
       branch
         ├─▶ draft-plan         ── Planner.plan(fullPrompt, onPartial)  (intent = "planning")
-        │                         prompt + full attachment text inlined;
+        │                         conversation + prompt + full attachment text;
         │                         → { summary, steps[] } (capability-routed model);
         │                         pushes the triage decision and every partial
         │                         plan snapshot to the sink as the model streams
@@ -110,7 +117,8 @@ core/workflow.ts               Mastra workflow (createWorkflow + createStep)
         ▼
       branch
         ├─▶ execute-plan       ── Executor.execute(executionPrompt, onPartial)  (a plan was drafted)
-        │                         prompt + attachment text + the numbered plan;
+        │                         conversation + prompt + attachment text + the
+        │                         numbered plan;
         │                         Mastra runs the tool-calling loop over the four
         │                         workspace tools (run Approver-gated);
         │                         → { events[] } transcript (capability-routed model);
@@ -123,10 +131,22 @@ core/workflow.ts               Mastra workflow (createWorkflow + createStep)
   then the validated final result completes the render.
 ```
 
-The branch steps carry the original `prompt`/`attachments` forward (the
-`StagedReplySchema` superset of the reply), because the execute step still
-needs them to brief the executor; the final steps strip them off again so the
-workflow's output is just the reply.
+The branch steps carry the original `prompt`/`attachments`/`history` forward
+(the `StagedReplySchema` superset of the reply), because the execute step
+still needs them to brief the executor; the final steps strip them off again
+so the workflow's output is just the reply.
+
+**Conversation history.** The handler converts `ChatContext.history` into the
+workflow's `history` turns: this participant's exchanges only (a request turn
+becomes a `User:` turn, with its slash command restored; a response turn's
+markdown parts become an `Assistant:` turn), capped by `settings.history` -
+each turn truncated to `maxTurnChars` (2 000) and only the `maxTurns` (10)
+most recent kept - so a long session can never crowd a small local model's
+context window. The workflow renders the turns as a delimited
+`--- Conversation so far ---` section in front of every agent prompt, so a
+follow-up like "now rename it too" carries the turns that say what "it" is,
+and triage can route it correctly. Each agent's system prompt explains the
+section: it is context to resolve references, not work to redo.
 
 ### Configuration vs. code (`config/`)
 
@@ -145,7 +165,7 @@ inline.
 | `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
 | `config/environment.ts`      | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
 | `config/frontmatter.ts`      | Minimal parser for the frontmatter subset the config files use |
-| `config/settings.ts`         | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/settings.ts`         | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
 | `config/messages.ts`         | Progress labels, error text, startup warnings, reply markdown templates, and the run-mirror terminal's copy (tab name, command header, outcome note) |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
@@ -278,9 +298,9 @@ decisions, in the order they matter:
   Mastra handles the model→tool-calls→results→model iteration; the step cap
   bounds a runaway loop. The executor itself only *observes* the run.
 - **Briefing.** The executor's prompt (`executionPrompt` in
-  `core/workflow.ts`) is the full request - prompt plus inlined attachment
-  text, exactly what the planner saw - followed by a `--- Drafted plan ---`
-  section: the plan summary and the numbered steps with their tool hints
+  `core/workflow.ts`) is the full request - the conversation so far, the
+  prompt, and the inlined attachment text, exactly what the planner saw -
+  followed by a `--- Drafted plan ---` section: the plan summary and the numbered steps with their tool hints
   (`1. Find the file (tool: search) - locate it`; a `none` hint is a schema
   artifact and is omitted). The plan is guidance, not a script: the system
   prompt tells the model to follow it in order but skip steps already covered
@@ -390,10 +410,13 @@ pulled.
 
 Out of the box, `@devteam <prompt>`:
 
-1. Resolves any attached files/selections into labelled attachments and starts
-   a run of the dev-team workflow with them alongside the prompt. While agents
-   work, the chat shows VS Code's standard "Thinking" indicator - no custom
-   progress labels are streamed.
+1. Resolves any attached files/selections into labelled attachments and the
+   chat session's prior turns (your prompts and the participant's replies,
+   capped per `settings.history`) into conversation history, and starts a run
+   of the dev-team workflow with both alongside the prompt. Follow-ups work:
+   "now rename it too" reaches every agent with the turns that say what "it"
+   is. While agents work, the chat shows VS Code's standard "Thinking"
+   indicator - no custom progress labels are streamed.
 2. Triages the prompt as `oneshot` or `planning` via the capability-routed
    local Ollama model (currently `qwen3:8b`) - this stays a buffered
    structured-output call, since its whole product is a small validated
@@ -401,8 +424,9 @@ Out of the box, `@devteam <prompt>`:
    whose product is text in the chat are `oneshot`; anything that should
    create or modify workspace files - even one small new file that needs no
    exploration - is `planning`, so it reaches the executor and its `write`
-   tool. Triage sees only the attachment labels (e.g. `File: src/a.ts`),
-   not their contents: the routing decision does not need file text, and on a
+   tool. Triage sees the conversation so far (a follow-up cannot be routed
+   without it) but only the attachment labels (e.g. `File: src/a.ts`), not
+   their contents: the routing decision does not need file text, and on a
    small local model a large attachment would crowd out the question. The
    planner and answerer get the full attachment text inlined.
 3. Renders the **detected intent and reason** back to the panel as soon as
@@ -432,8 +456,9 @@ Out of the box, `@devteam <prompt>`:
    (from `config/environment.ts`), so `run` commands are written for the
    machine they execute on - PowerShell on Windows - instead of defaulting
    to Linux commands. The transcript streams in behind an "**Execution:**" header
-   as it happens: the model's commentary, one line per tool call showing its
-   key argument (`- **write** \`calculator.py\``; tools without a configured
+   as it happens: the model's commentary, one line per tool call leading with
+   the tool's `displayName` from its config frontmatter (no bullet) and its
+   key argument (`**Write File** \`calculator.py\``; tools without a configured
    `previewArg` fall back to compact args JSON) completed with a flattened,
    truncated result preview (`→ \`…\``, or `→ **failed** \`…\`` when the
    tool errored), and the executor's closing report of what changed. A
@@ -500,8 +525,11 @@ For ready-made prompts to try, see [`examples/`](examples/README.md): oneshot
 questions, simple planning requests (e.g. a console calculator), and
 advanced multi-step planning requests.
 An `/explain` slash command is declared in `package.json`, but it has no
-dedicated handling yet — its prompt flows through the same
-triage → plan → execute workflow as any other message.
+dedicated handling — its prompt flows through the same
+triage → plan → execute workflow as any other message. It is still useful as
+a follow-up: the conversation history gives "/explain what you just did" a
+real referent (and prior `/explain` turns keep their slash command when they
+are folded into later prompts).
 
 Scripts:
 
@@ -537,11 +565,6 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Roadmap
 
-- **Use conversation history.** The handler ignores `ChatContext.history`, so
-  every turn starts from scratch: "now rename it too" has no idea what "it"
-  is. Fold prior turns into the workflow input (with a size cap like the
-  attachment truncation); this would also make the `/explain` command
-  meaningful.
 - **Add a Webview front end.**
   1. Add a `WebviewApprover implements Approver` with a diff/confirm UI.
   2. Pass it instead of `ChatApprover` in `extension.ts`.

@@ -15,10 +15,14 @@ import {
   ExecutionResult,
   PartialExecution,
 } from '../src/core/executor';
+import { settings } from '../src/config/settings';
 import {
   __reset,
   __state,
   __setFile,
+  ChatRequestTurn,
+  ChatResponseMarkdownPart,
+  ChatResponseTurn,
   Uri,
   Location,
   Position,
@@ -276,7 +280,7 @@ describe('createHandler', () => {
     expect(text).not.toContain('Think** _(none)_');
     // The execution transcript follows the plan: tool calls and the report.
     expect(text).toContain('**Execution:**');
-    expect(text).toContain('- **search** `{"query":"*"}` → `src/a.ts`');
+    expect(text).toContain('**Search Files** `{"query":"*"}` → `src/a.ts`');
     expect(text).toContain('All steps are done.');
     // No custom progress label: the chat shows the standard indicator.
     expect(stream.progress).not.toHaveBeenCalled();
@@ -567,6 +571,115 @@ describe('createHandler', () => {
       )
     ).resolves.toBeDefined();
     expect(stream.markdown).not.toHaveBeenCalled();
+  });
+});
+
+describe('createHandler conversation history', () => {
+  /** Run the handler with the given chat history and capture the agent prompts. */
+  async function handle(history: unknown[], prompt = 'now rename it too') {
+    const { workflow, seen } = makeWorkflow();
+    await createHandler(workflow)(
+      { prompt, references: [] } as any,
+      { history } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    return seen;
+  }
+
+  it('folds prior turns into the triage and answerer prompts', async () => {
+    const seen = await handle([
+      new ChatRequestTurn('create a calculator'),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('Created calculator.py.')]),
+    ]);
+
+    for (const prompt of [seen.triage, seen.answerer]) {
+      expect(prompt).toContain('--- Conversation so far ---');
+      expect(prompt).toContain('User: create a calculator');
+      expect(prompt).toContain('Assistant: Created calculator.py.');
+      expect(prompt).toContain('--- End of conversation ---');
+      expect(prompt).toContain('now rename it too');
+    }
+  });
+
+  it('sends the bare prompt when the session has no history', async () => {
+    const seen = await handle([], 'plain');
+    expect(seen.triage).toBe('plain');
+    expect(seen.answerer).toBe('plain');
+  });
+
+  it('ignores turns addressed to other participants', async () => {
+    const seen = await handle([
+      new ChatRequestTurn('ask the workspace agent', undefined, 'other.agent'),
+      new ChatResponseTurn(
+        [new ChatResponseMarkdownPart('workspace agent reply')],
+        'other.agent'
+      ),
+      new ChatRequestTurn('create a calculator'),
+    ]);
+
+    expect(seen.answerer).toContain('User: create a calculator');
+    expect(seen.answerer).not.toContain('ask the workspace agent');
+    expect(seen.answerer).not.toContain('workspace agent reply');
+  });
+
+  it('joins a response turn from its markdown parts and skips other parts', async () => {
+    const seen = await handle([
+      new ChatResponseTurn([
+        new ChatResponseMarkdownPart('part one. '),
+        { kind: 'button' }, // a non-markdown part carries no reusable text
+        new ChatResponseMarkdownPart('part two.'),
+      ]),
+    ]);
+
+    expect(seen.answerer).toContain('Assistant: part one. part two.');
+  });
+
+  it('skips a response turn with no markdown text', async () => {
+    const seen = await handle([
+      new ChatResponseTurn([{ kind: 'button' }]),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('  \n ')]),
+    ]);
+
+    expect(seen.answerer).not.toContain('Assistant:');
+    expect(seen.answerer).not.toContain('--- Conversation so far ---');
+  });
+
+  it('restores the slash command of a prior request turn', async () => {
+    const seen = await handle([new ChatRequestTurn('this function', 'explain')]);
+    expect(seen.answerer).toContain('User: /explain this function');
+  });
+
+  it('keeps only the most recent turns', async () => {
+    const turns = Array.from(
+      { length: settings.history.maxTurns + 2 },
+      (_, i) => new ChatRequestTurn(`turn ${i}`)
+    );
+    const seen = await handle(turns);
+
+    expect(seen.answerer).not.toContain('User: turn 0\n');
+    expect(seen.answerer).not.toContain('User: turn 1\n');
+    expect(seen.answerer).toContain('User: turn 2');
+    expect(seen.answerer).toContain(`User: turn ${settings.history.maxTurns + 1}`);
+  });
+
+  it('truncates an oversized turn to the per-turn cap', async () => {
+    const huge = 'z'.repeat(settings.history.maxTurnChars + 100);
+    const seen = await handle([new ChatRequestTurn(huge)]);
+
+    expect(seen.answerer).toContain('…(truncated)');
+    expect(seen.answerer).not.toContain('z'.repeat(settings.history.maxTurnChars + 1));
+  });
+
+  it('gives the triage agent the same conversation as the answerer', async () => {
+    // Routing a follow-up needs the conversation it follows; triage only
+    // omits attachment contents, not the history.
+    const seen = await handle([
+      new ChatRequestTurn('create a calculator'),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('Created calculator.py.')]),
+    ]);
+
+    expect(seen.triage).toContain('Assistant: Created calculator.py.');
   });
 });
 
@@ -891,7 +1004,7 @@ describe('renderReply', () => {
     const planAt = text.indexOf('**Plan:**');
     const executionAt = text.indexOf('**Execution:**');
     expect(executionAt).toBeGreaterThan(planAt);
-    expect(text).toContain('- **search** `{"query":"*"}` → `src/a.ts`');
+    expect(text).toContain('**Search Files** `{"query":"*"}` → `src/a.ts`');
     expect(text).toContain('All steps are done.');
   });
 
@@ -958,7 +1071,28 @@ describe('renderReply', () => {
       }),
       false
     );
-    expect(text.endsWith('- **run** `{"command":"npm test"}`')).toBe(true);
+    expect(text.endsWith('**Run Command** `{"command":"npm test"}`')).toBe(true);
+  });
+
+  it('renders a tool call under its display name without a bullet', () => {
+    const text = renderReply(
+      withExecution({
+        events: [{ kind: 'tool', tool: 'read', input: 'a.md', result: 'text' }],
+      }),
+      true
+    );
+    expect(text).toContain('\n\n**Read File** `a.md`');
+    expect(text).not.toContain('- **Read File**');
+  });
+
+  it('falls back to the raw tool name when the registry does not know it', () => {
+    const text = renderReply(
+      withExecution({
+        events: [{ kind: 'tool', tool: 'mystery', input: '{}', result: 'ok' }],
+      }),
+      true
+    );
+    expect(text).toContain('**mystery** `{}` → `ok`');
   });
 
   it('marks a failed tool call in the transcript', () => {
@@ -996,7 +1130,7 @@ describe('renderReply', () => {
     expect(text).toContain("→ `line 'one' line two`");
   });
 
-  it('renders a write snippet as an indented fenced block under the completed line', () => {
+  it('renders a write snippet as a fenced block under the completed line', () => {
     const text = renderReply(
       withExecution({
         events: [
@@ -1011,8 +1145,8 @@ describe('renderReply', () => {
       }),
       true
     );
-    expect(text).toContain('- **write** `a.py` → `Wrote a.py (17 bytes).`');
-    expect(text).toContain('\n\n  ````\n  line one\n  line two\n  ````');
+    expect(text).toContain('**Write File** `a.py` → `Wrote a.py (17 bytes).`');
+    expect(text).toContain('\n\n````\nline one\nline two\n````');
   });
 
   it('holds a snippet back until the call has its result', () => {
@@ -1026,7 +1160,7 @@ describe('renderReply', () => {
       }),
       false
     );
-    expect(pending.endsWith('- **write** `a.py`')).toBe(true);
+    expect(pending.endsWith('**Write File** `a.py`')).toBe(true);
 
     const settled = renderReply(
       withExecution({
@@ -1043,7 +1177,7 @@ describe('renderReply', () => {
       false
     );
     expect(settled.startsWith(pending)).toBe(true);
-    expect(settled).toContain('  ````\n  line one\n  ````');
+    expect(settled).toContain('````\nline one\n````');
   });
 
   it('still renders the snippet when the run finished without a result', () => {
@@ -1055,7 +1189,7 @@ describe('renderReply', () => {
       }),
       true
     );
-    expect(text).toContain('- **write** `a.py`\n\n  ````\n  line one\n  ````');
+    expect(text).toContain('**Write File** `a.py`\n\n````\nline one\n````');
   });
 
   it('labels an empty tool result instead of rendering empty backticks', () => {

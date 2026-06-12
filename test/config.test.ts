@@ -89,8 +89,8 @@ describe('messages templates', () => {
   it('renders execution transcript lines as appendable fragments', () => {
     // The renderer streams the transcript append-only: each call line must be
     // self-prefixed (it follows arbitrary text) and each result a pure suffix.
-    const call = messages.execution.call('read', '{"path":"a.ts"}');
-    expect(call).toBe('\n\n- **read** `{"path":"a.ts"}`');
+    const call = messages.execution.call('Read File', '{"path":"a.ts"}');
+    expect(call).toBe('\n\n**Read File** `{"path":"a.ts"}`');
     expect(messages.execution.result('ok', false)).toBe(' → `ok`');
     expect(messages.execution.result('boom', true)).toBe(' → **failed** `boom`');
     expect(messages.execution.emptyResult).toBeTruthy();
@@ -123,6 +123,11 @@ describe('settings', () => {
 
   it('exposes a positive glob result cap', () => {
     expect(settings.search.globMaxResults).toBeGreaterThan(0);
+  });
+
+  it('exposes positive conversation-history caps', () => {
+    expect(settings.history.maxTurns).toBeGreaterThan(0);
+    expect(settings.history.maxTurnChars).toBeGreaterThan(0);
   });
 
   it('exposes positive executor loop and preview limits', () => {

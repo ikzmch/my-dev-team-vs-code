@@ -131,6 +131,18 @@ export const settings = {
   /** Max characters of an attached file/selection inlined into the prompt. */
   maxAttachmentChars: 20_000,
 
+  /**
+   * Caps on the conversation history folded into the agent prompts. The chat
+   * handler keeps only the most recent turns and truncates each turn's text,
+   * so a long session can never crowd a small local model's context window.
+   */
+  history: {
+    /** Most recent prior turns kept (user prompts + the participant's replies). */
+    maxTurns: 10,
+    /** Max characters of one prior turn's text inlined into the prompt. */
+    maxTurnChars: 2_000,
+  },
+
   /** How long the activation health check waits for Ollama, in milliseconds. */
   startupProbeTimeoutMs: 3_000,
 };

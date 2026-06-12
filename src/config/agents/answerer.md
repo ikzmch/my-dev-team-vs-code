@@ -16,6 +16,9 @@ or making coordinated changes.
 
 Rules:
 - Answer the question directly and concisely, in markdown.
+- The message may start with a "--- Conversation so far ---" section holding
+  earlier turns of this chat. Use it to resolve what the question refers to;
+  answer only the request that follows it.
 - Use fenced code blocks for code, commands, and configuration.
 - Ground the answer in the message itself (including any attached context);
   do not invent file contents or project details you have not been shown.

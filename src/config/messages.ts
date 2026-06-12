@@ -74,22 +74,19 @@ export const messages = {
     // A prefix rather than a template: the transcript streams in behind it
     // while the executor is still working.
     header: '**Execution:**',
-    /** One transcript line per tool call; the result is appended when it lands. */
-    call: (tool: string, input: string) => `\n\n- **${tool}** \`${input}\``,
+    /**
+     * One transcript line per tool call (no bullet, the bolded display name
+     * leads the line); the result is appended when it lands.
+     */
+    call: (tool: string, input: string) => `\n\n**${tool}** \`${input}\``,
     result: (preview: string, failed: boolean) =>
       failed ? ` → **failed** \`${preview}\`` : ` → \`${preview}\``,
     /**
      * Fenced snippet of a call's content argument (e.g. the first lines of a
-     * written file), indented to sit under the call's list item. The fence is
-     * four backticks so snippet lines containing ``` cannot break out of it.
+     * written file), shown under the call line. The fence is four backticks
+     * so snippet lines containing ``` cannot break out of it.
      */
-    snippet: (snippet: string) =>
-      '\n\n  ````\n' +
-      snippet
-        .split('\n')
-        .map((line) => '  ' + line)
-        .join('\n') +
-      '\n  ````',
+    snippet: (snippet: string) => '\n\n````\n' + snippet + '\n````',
     /** Shown in a result slot when the tool produced no output at all. */
     emptyResult: '(no output)',
   },

@@ -4,6 +4,7 @@ import { Approver } from '../core/types';
 import {
   Attachment,
   DevTeamWorkflow,
+  HistoryTurn,
   ReplyProgress,
   ReplyResult,
   replyProgressKey,
@@ -13,6 +14,7 @@ import { PartialPlan } from '../core/planner';
 import { PartialExecution } from '../core/executor';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
+import { toolConfigs } from '../config/tools';
 
 export const PARTICIPANT_ID = 'myDevTeam.agent';
 
@@ -106,11 +108,9 @@ export class ChatApprover implements Approver {
   }
 }
 
-function truncate(text: string): string {
-  // Cap on inlined attachment text so a huge file can't blow up the prompt.
-  return text.length > settings.maxAttachmentChars
-    ? text.slice(0, settings.maxAttachmentChars) + '\n…(truncated)'
-    : text;
+function truncate(text: string, maxChars: number): string {
+  // Cap on inlined text so a huge file or reply can't blow up the prompt.
+  return text.length > maxChars ? text.slice(0, maxChars) + '\n…(truncated)' : text;
 }
 
 /**
@@ -133,7 +133,7 @@ async function collectAttachments(
         const rel = vscode.workspace.asRelativePath(v);
         attachments.push({
           label: `File: ${rel}`,
-          text: truncate(Buffer.from(bytes).toString('utf8')),
+          text: truncate(Buffer.from(bytes).toString('utf8'), settings.maxAttachmentChars),
         });
       } else if (v instanceof vscode.Location) {
         const doc = await vscode.workspace.openTextDocument(v.uri);
@@ -141,10 +141,13 @@ async function collectAttachments(
         const startLine = v.range.start.line + 1;
         attachments.push({
           label: `Selection from ${rel} (line ${startLine})`,
-          text: truncate(doc.getText(v.range)),
+          text: truncate(doc.getText(v.range), settings.maxAttachmentChars),
         });
       } else if (typeof v === 'string') {
-        attachments.push({ label: 'Attached text', text: truncate(v) });
+        attachments.push({
+          label: 'Attached text',
+          text: truncate(v, settings.maxAttachmentChars),
+        });
       }
     } catch (err) {
       attachments.push({
@@ -154,6 +157,49 @@ async function collectAttachments(
     }
   }
   return attachments;
+}
+
+/**
+ * Convert the chat session's prior turns into workflow history turns, so a
+ * follow-up ("now rename it too") reaches the agents with the conversation
+ * that says what "it" is. Only this participant's exchanges count: a request
+ * turn becomes a user turn (with its slash command restored, since VS Code
+ * strips it from the prompt), a response turn becomes an assistant turn made
+ * of its markdown parts (buttons and other parts carry no reusable text).
+ * The settings.history caps bound what a long session can add to a prompt:
+ * each turn's text is truncated and only the most recent turns are kept.
+ */
+function collectHistory(
+  history: readonly (vscode.ChatRequestTurn | vscode.ChatResponseTurn)[]
+): HistoryTurn[] {
+  const turns: HistoryTurn[] = [];
+  for (const turn of history) {
+    if (turn.participant !== PARTICIPANT_ID) {
+      continue;
+    }
+    if (turn instanceof vscode.ChatRequestTurn) {
+      const prompt = turn.command ? `/${turn.command} ${turn.prompt}` : turn.prompt;
+      turns.push({
+        role: 'user',
+        text: truncate(prompt, settings.history.maxTurnChars),
+      });
+    } else if (turn instanceof vscode.ChatResponseTurn) {
+      const text = turn.response
+        .filter(
+          (part): part is vscode.ChatResponseMarkdownPart =>
+            part instanceof vscode.ChatResponseMarkdownPart
+        )
+        .map((part) => part.value.value)
+        .join('');
+      if (text.trim()) {
+        turns.push({
+          role: 'assistant',
+          text: truncate(text, settings.history.maxTurnChars),
+        });
+      }
+    }
+  }
+  return turns.slice(-settings.history.maxTurns);
 }
 
 /**
@@ -230,7 +276,10 @@ function formatExecution(execution: PartialExecution, done: boolean): string {
     if (event.kind === 'text') {
       text += '\n\n' + event.text;
     } else {
-      text += messages.execution.call(event.tool, inlinePreview(event.input));
+      // Transcript lines lead with the tool's human-readable display name; a
+      // name the registry can't resolve falls back to the raw one.
+      const displayName = toolConfigs[event.tool]?.displayName ?? event.tool;
+      text += messages.execution.call(displayName, inlinePreview(event.input));
       if (event.result !== undefined) {
         text += messages.execution.result(inlinePreview(event.result), !!event.failed);
       } else if (!done) {
@@ -324,16 +373,18 @@ function renderFailure(
 
 /**
  * Builds the chat handler. The handler is thin: it resolves attachments and
- * passes them alongside the prompt, starts a run of the dev-team workflow,
- * streams reply snapshots onto the chat as the planner writes them, and
- * completes the render from the structured result. No custom progress label
- * is emitted while agents run; the chat shows VS Code's standard indicator.
+ * the conversation history and passes them alongside the prompt, starts a run
+ * of the dev-team workflow, streams reply snapshots onto the chat as the
+ * planner writes them, and completes the render from the structured result.
+ * No custom progress label is emitted while agents run; the chat shows VS
+ * Code's standard indicator.
  */
 export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHandler {
-  return async (request, _context, stream, token) => {
-    // Resolve attached files/selections; the workflow folds them into each
-    // step's prompt as that step's model needs them.
+  return async (request, context, stream, token) => {
+    // Resolve attached files/selections and the prior turns; the workflow
+    // folds them into each step's prompt as that step's model needs them.
     const attachments = await collectAttachments(request.references);
+    const history = collectHistory(context.history);
 
     const run = await workflow.createRun();
     // Cancelling the chat request aborts the run (and its model call) instead
@@ -362,7 +413,7 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
     let result;
     try {
       result = await run.start({
-        inputData: { prompt: request.prompt, attachments },
+        inputData: { prompt: request.prompt, attachments, history },
         requestContext,
       });
     } catch (err) {

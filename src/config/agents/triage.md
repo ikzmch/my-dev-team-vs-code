@@ -15,6 +15,11 @@ Read the user's most recent message and decide which path it should take.
 The deciding question is what the user wants to receive: text in the chat,
 or a change in their workspace.
 
+The message may start with a "--- Conversation so far ---" section holding
+earlier turns of this chat. Use it only to understand what a follow-up refers
+to; classify the request that comes after the section. A follow-up that
+continues a workspace change (e.g. "now rename it too") is itself "planning".
+
 Categories:
 - "oneshot": the deliverable is text in the chat - an explanation, a review,
   an opinion, or code shown only as an illustration. Examples:

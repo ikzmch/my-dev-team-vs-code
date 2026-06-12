@@ -26,44 +26,84 @@ export const AttachmentSchema = z.object({
 export type Attachment = z.infer<typeof AttachmentSchema>;
 
 /**
+ * One prior turn of the conversation: who said it (the user, or this
+ * participant) and its (already capped) text. The UI layer converts VS Code's
+ * ChatContext.history into these before starting a run, applying the
+ * settings.history caps, so the workflow never sees an unbounded session.
+ */
+export const HistoryTurnSchema = z.object({
+  role: z.enum(['user', 'assistant']),
+  text: z.string(),
+});
+export type HistoryTurn = z.infer<typeof HistoryTurnSchema>;
+
+/**
  * What the workflow consumes: the user's prompt plus any attached
- * files/selections. They stay separate so each step can decide how much of
- * the attachment text its model actually needs to see - important with small
- * local Ollama models, whose context windows a single attached file can
- * easily crowd out.
+ * files/selections and the prior turns of the conversation. They stay
+ * separate so each step can decide how much of each its model actually needs
+ * to see - important with small local Ollama models, whose context windows a
+ * single attached file can easily crowd out.
  */
 export const RequestSchema = z.object({
   prompt: z.string(),
   attachments: z.array(AttachmentSchema).optional(),
+  history: z.array(HistoryTurnSchema).optional(),
 });
 export type RequestInput = z.infer<typeof RequestSchema>;
 
 /**
- * The prompt the triage agent sees: the question plus attachment names only.
- * Triage just routes oneshot vs planning, so inlining file contents would
- * waste tokens and, on a small local model, push the actual question out of
- * the context window.
+ * The prior turns rendered as a clearly delimited conversation section, so a
+ * follow-up like "now rename it too" carries the turns that say what "it" is.
+ * Every agent prompt gets the same section (triage included: a follow-up
+ * cannot be routed without the conversation it follows); the per-turn and
+ * turn-count caps were already applied when the turns were collected.
+ */
+function historySection(history: HistoryTurn[]): string {
+  const turns = history.map(
+    (turn) => `${turn.role === 'user' ? 'User' : 'Assistant'}: ${turn.text}`
+  );
+  return `--- Conversation so far ---\n${turns.join('\n\n')}\n--- End of conversation ---`;
+}
+
+/** Prepend the conversation section when there is one; the bare body otherwise. */
+function withHistory(input: RequestInput, body: string): string {
+  const history = input.history ?? [];
+  return history.length === 0 ? body : `${historySection(history)}\n\n${body}`;
+}
+
+/**
+ * The prompt the triage agent sees: the conversation so far, the question,
+ * and attachment names only. Triage just routes oneshot vs planning, so
+ * inlining file contents would waste tokens and, on a small local model, push
+ * the actual question out of the context window - but it does get the (capped)
+ * history, because a follow-up cannot be routed without it.
  */
 export function triagePrompt(input: RequestInput): string {
   const attachments = input.attachments ?? [];
   if (attachments.length === 0) {
-    return input.prompt;
+    return withHistory(input, input.prompt);
   }
   const labels = attachments.map((a) => a.label).join('; ');
-  return `${input.prompt}\n\n(The user attached context, contents omitted here: ${labels})`;
+  return withHistory(
+    input,
+    `${input.prompt}\n\n(The user attached context, contents omitted here: ${labels})`
+  );
 }
 
 /**
- * The prompt the planner and answerer see: the question plus the full
- * attachment text, one fenced block per attachment.
+ * The prompt the planner and answerer see: the conversation so far, the
+ * question, and the full attachment text, one fenced block per attachment.
  */
 export function fullPrompt(input: RequestInput): string {
   const attachments = input.attachments ?? [];
   if (attachments.length === 0) {
-    return input.prompt;
+    return withHistory(input, input.prompt);
   }
   const blocks = attachments.map((a) => `${a.label}\n\`\`\`\n${a.text}\n\`\`\``);
-  return `${input.prompt}\n\n--- Attached context ---\n${blocks.join('\n\n')}`;
+  return withHistory(
+    input,
+    `${input.prompt}\n\n--- Attached context ---\n${blocks.join('\n\n')}`
+  );
 }
 
 /**
@@ -165,6 +205,7 @@ export function createDevTeamWorkflow(
     execute: async ({ inputData }) => ({
       prompt: inputData.prompt,
       attachments: inputData.attachments,
+      history: inputData.history,
       ...(await triage.classify(triagePrompt(inputData))),
     }),
   });
@@ -174,7 +215,7 @@ export function createDevTeamWorkflow(
     inputSchema: TriagedSchema,
     outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, intent, reason } = inputData;
+      const { prompt, attachments, history, intent, reason } = inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every plan
       // snapshot the planner streams, so the UI can render tokens as they
@@ -184,7 +225,7 @@ export function createDevTeamWorkflow(
         fullPrompt(inputData),
         sink && ((partial) => sink({ intent, reason, plan: partial }))
       );
-      return { prompt, attachments, intent, reason, plan };
+      return { prompt, attachments, history, intent, reason, plan };
     },
   });
 
@@ -193,7 +234,7 @@ export function createDevTeamWorkflow(
     inputSchema: TriagedSchema,
     outputSchema: StagedReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, intent, reason } = inputData;
+      const { prompt, attachments, history, intent, reason } = inputData;
       const sink = progressSink(requestContext);
       // Surface the triage decision right away, then forward every answer
       // snapshot the answerer streams, mirroring the draft-plan step.
@@ -202,7 +243,7 @@ export function createDevTeamWorkflow(
         fullPrompt(inputData),
         sink && ((text) => sink({ intent, reason, answer: text }))
       );
-      return { prompt, attachments, intent, reason, answer };
+      return { prompt, attachments, history, intent, reason, answer };
     },
   });
 
@@ -211,7 +252,7 @@ export function createDevTeamWorkflow(
     inputSchema: StagedReplySchema,
     outputSchema: ReplySchema,
     execute: async ({ inputData, requestContext }) => {
-      const { prompt, attachments, intent, reason, plan } = inputData;
+      const { prompt, attachments, history, intent, reason, plan } = inputData;
       if (!plan) {
         throw new Error('execute-plan reached without a drafted plan.');
       }
@@ -220,7 +261,7 @@ export function createDevTeamWorkflow(
       // forward every transcript snapshot the executor produces.
       sink?.({ intent, reason, plan });
       const execution = await executor.execute(
-        executionPrompt({ prompt, attachments }, plan),
+        executionPrompt({ prompt, attachments, history }, plan),
         sink && ((partial) => sink({ intent, reason, plan, execution: partial }))
       );
       return { intent, reason, plan, execution };

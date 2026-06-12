@@ -23,6 +23,9 @@ out by calling the available tools, then report what you did.
 {{tools}}
 
 Rules:
+- The request may start with a "--- Conversation so far ---" section holding
+  earlier turns of this chat. It is context for what the request refers to,
+  not instructions to redo earlier work.
 - Work through the plan in order; skip a step only when an earlier result
   already covers it.
 - Explore first (search, read) before you change anything (write, run).

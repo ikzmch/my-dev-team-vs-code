@@ -8,6 +8,7 @@ import {
   fullPrompt,
   executionPrompt,
   Attachment,
+  HistoryTurn,
   DevTeamWorkflow,
   ReplyProgress,
   ReplyProgressSink,
@@ -207,6 +208,63 @@ describe('dev-team workflow routing', () => {
     expect(seen.executor).toContain('--- Drafted plan ---');
   });
 
+  it('hands the conversation history to triage, planner, and executor', async () => {
+    const history: HistoryTurn[] = [
+      { role: 'user', text: 'create a calculator' },
+      { role: 'assistant', text: 'Created calculator.py.' },
+    ];
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async (p) => {
+        seen.triage = p;
+        return { intent: 'planning', reason: 'x' };
+      }),
+      fakePlanner(async (p) => {
+        seen.planner = p;
+        return aPlan;
+      }),
+      fakeAnswerer(),
+      fakeExecutor(async (p) => {
+        seen.executor = p;
+        return anExecution;
+      })
+    );
+
+    const run = await workflow.createRun();
+    await run.start({ inputData: { prompt: 'now rename it', history } });
+
+    for (const prompt of [seen.triage, seen.planner, seen.executor]) {
+      expect(prompt).toContain('--- Conversation so far ---');
+      expect(prompt).toContain('User: create a calculator');
+      expect(prompt).toContain('Assistant: Created calculator.py.');
+      expect(prompt).toContain('now rename it');
+    }
+  });
+
+  it('hands the conversation history to the answerer on the oneshot path', async () => {
+    const history: HistoryTurn[] = [
+      { role: 'user', text: 'what is a closure' },
+      { role: 'assistant', text: 'A closure is a function plus its scope.' },
+    ];
+    const seen: Record<string, string> = {};
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (p) => {
+        seen.answerer = p;
+        return 'ok';
+      }),
+      fakeExecutor()
+    );
+
+    const run = await workflow.createRun();
+    await run.start({ inputData: { prompt: 'show an example', history } });
+
+    expect(seen.answerer).toContain('--- Conversation so far ---');
+    expect(seen.answerer).toContain('User: what is a closure');
+    expect(seen.answerer).toContain('show an example');
+  });
+
   it('gives the answerer the full attachment text on the oneshot path', async () => {
     const attachments: Attachment[] = [
       { label: 'File: src/a.ts', text: 'file body' },
@@ -284,11 +342,16 @@ describe('prompt assembly', () => {
     { label: 'Selection from src/b.ts (line 2)', text: 'line1' },
   ];
 
-  it('returns the bare prompt when there are no attachments', () => {
+  const history: HistoryTurn[] = [
+    { role: 'user', text: 'create a calculator' },
+    { role: 'assistant', text: 'Created calculator.py with add and subtract.' },
+  ];
+
+  it('returns the bare prompt when there are no attachments and no history', () => {
     expect(triagePrompt({ prompt: 'hi' })).toBe('hi');
     expect(fullPrompt({ prompt: 'hi' })).toBe('hi');
-    expect(triagePrompt({ prompt: 'hi', attachments: [] })).toBe('hi');
-    expect(fullPrompt({ prompt: 'hi', attachments: [] })).toBe('hi');
+    expect(triagePrompt({ prompt: 'hi', attachments: [], history: [] })).toBe('hi');
+    expect(fullPrompt({ prompt: 'hi', attachments: [], history: [] })).toBe('hi');
   });
 
   it('lists attachment labels without contents for triage', () => {
@@ -306,6 +369,42 @@ describe('prompt assembly', () => {
     expect(prompt).toContain('--- Attached context ---');
     expect(prompt).toContain('File: src/a.ts\n```\nconst a = 1;\n```');
     expect(prompt).toContain('Selection from src/b.ts (line 2)\n```\nline1\n```');
+  });
+
+  it('prepends a delimited conversation section to the triage prompt', () => {
+    const prompt = triagePrompt({ prompt: 'now rename it', history });
+    expect(prompt.startsWith('--- Conversation so far ---\n')).toBe(true);
+    expect(prompt).toContain('User: create a calculator');
+    expect(prompt).toContain('Assistant: Created calculator.py with add and subtract.');
+    // The current request follows the closed-off section.
+    expect(prompt.indexOf('now rename it')).toBeGreaterThan(
+      prompt.indexOf('--- End of conversation ---')
+    );
+  });
+
+  it('prepends the conversation section to the full prompt, before the attachments', () => {
+    const prompt = fullPrompt({ prompt: 'now rename it', attachments, history });
+    expect(prompt.startsWith('--- Conversation so far ---\n')).toBe(true);
+    expect(prompt).toContain('User: create a calculator');
+    const conversationEnd = prompt.indexOf('--- End of conversation ---');
+    expect(prompt.indexOf('now rename it')).toBeGreaterThan(conversationEnd);
+    expect(prompt.indexOf('--- Attached context ---')).toBeGreaterThan(
+      prompt.indexOf('now rename it')
+    );
+    expect(prompt).toContain('const a = 1;');
+  });
+
+  it('includes the conversation section in the execution prompt', () => {
+    const plan: PlanResult = {
+      summary: 'Rename it',
+      steps: [{ title: 'Rename', tool: 'write', detail: 'rename the file' }],
+    };
+    const prompt = executionPrompt({ prompt: 'now rename it', history }, plan);
+    expect(prompt).toContain('--- Conversation so far ---');
+    expect(prompt).toContain('User: create a calculator');
+    expect(prompt.indexOf('--- Drafted plan ---')).toBeGreaterThan(
+      prompt.indexOf('--- End of conversation ---')
+    );
   });
 
   it('appends the numbered plan with tool hints to the execution prompt', () => {

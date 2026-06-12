@@ -52,7 +52,11 @@ export class LanguageModelToolResult {
 }
 
 export class ChatRequestTurn {
-  constructor(public readonly prompt: string, public readonly command?: string) {}
+  constructor(
+    public readonly prompt: string,
+    public readonly command?: string,
+    public readonly participant: string = 'myDevTeam.agent'
+  ) {}
 }
 
 export class ChatResponseMarkdownPart {
@@ -64,7 +68,10 @@ export class ChatResponseMarkdownPart {
 }
 
 export class ChatResponseTurn {
-  constructor(public readonly response: unknown[]) {}
+  constructor(
+    public readonly response: unknown[],
+    public readonly participant: string = 'myDevTeam.agent'
+  ) {}
 }
 
 export enum ChatResultFeedbackKind {
