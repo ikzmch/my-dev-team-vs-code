@@ -27,7 +27,7 @@ export const PlanStepSchema = z.object({
   detail: z
     .string()
     .describe(
-      'One sentence on what this step does and why it is needed - a concise instruction, never full file contents.'
+      'One sentence of plain prose on what this step does and why it is needed. Never any code: no file contents, no snippets - the executor writes the code.'
     ),
 });
 

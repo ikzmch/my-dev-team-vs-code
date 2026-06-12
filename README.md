@@ -418,10 +418,10 @@ Out of the box, `@devteam <prompt>`:
    plan itself** - an ordered, tool-aware checklist (`summary` + at most 8
    numbered steps, each hinting which workspace tool it would use) appears
    incrementally while the planner's routed model (currently `qwen3:14b`)
-   writes it. Plan steps describe the work and its requirements; they never
-   carry full file contents - authoring the code is the executor's job (it is
-   the routed coding specialist), though a step may pin down an interface
-   with a short fragment. The partial-JSON snapshots are rendered conservatively so the
+   writes it. Plan steps describe the work and its requirements in plain
+   prose; they never carry code of any kind (no file contents, no snippets) -
+   authoring the code is the executor's job (it is the routed coding
+   specialist). The partial-JSON snapshots are rendered conservatively so the
    already-emitted markdown is never revised, and the validated final result
    completes the reply.
 6. Then **executes the plan**: the
@@ -496,6 +496,9 @@ npm run build      # esbuild bundle -> dist/extension.js
 ```
 
 In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
+For ready-made prompts to try, see [`examples/`](examples/README.md): oneshot
+questions, simple planning requests (e.g. a console calculator), and
+advanced multi-step planning requests.
 An `/explain` slash command is declared in `package.json`, but it has no
 dedicated handling yet — its prompt flows through the same
 triage → plan → execute workflow as any other message.

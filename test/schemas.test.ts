@@ -45,11 +45,12 @@ describe('PlanStepSchema', () => {
     }
   );
 
-  it('describes detail as an instruction, never full file contents', () => {
+  it('describes detail as plain prose, never code', () => {
     // The description is part of what the model sees in structured-output
-    // mode, so it must reinforce the planner prompt's no-full-code rule.
+    // mode, so it must reinforce the planner prompt's no-code rule.
     const description = PlanStepSchema.shape.detail.description ?? '';
-    expect(description).toContain('never full file contents');
+    expect(description).toContain('Never any code');
+    expect(description).toContain('executor writes the code');
   });
 
   it('rejects an unknown tool', () => {

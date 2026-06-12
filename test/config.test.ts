@@ -560,15 +560,16 @@ describe('agent configs', () => {
     expect(p).toMatch(/JSON object/i);
   });
 
-  it('keeps the planner describing steps, not authoring file contents', () => {
+  it('keeps the planner describing steps, not authoring code', () => {
     // Code generation belongs to the executor (the routed coding specialist);
-    // a plan step that inlines a whole file wastes the routing, bloats the
-    // structured output, and crowds the executor's context. Snippets that pin
-    // down an interface stay allowed.
+    // a plan step that inlines code wastes the routing, bloats the structured
+    // output, and crowds the executor's context. The ban is total: the old
+    // "short fragment" allowance was stretched into whole programs.
     const p = agents.planner.instructions;
-    expect(p).toMatch(/Never include full file contents/);
+    expect(p).toMatch(/Never write code in\s+the plan/);
     expect(p).toMatch(/executor writes the code/);
-    expect(p).toMatch(/fragment of a few lines/);
+    expect(p).toMatch(/no snippets of\s+any length/);
+    expect(p).not.toMatch(/fragment of a few lines/);
   });
 
   it('renders the tools section into the planner prompt at the placeholder', () => {
