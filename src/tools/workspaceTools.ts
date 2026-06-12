@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { exec, ChildProcess } from 'child_process';
+import { exec, ChildProcess, ExecOptions } from 'child_process';
 import { promisify } from 'util';
 import { Approver, RunMirror } from './types';
 import { settings } from '../config/settings';
@@ -24,11 +24,12 @@ function workspaceRoot(): vscode.Uri {
  * so the path is untrusted.
  *
  * The lexical check alone is not enough: a symlink that lives inside the
- * workspace can still point outside it, so a resolved path that exists and is
- * a symbolic link is rejected too - otherwise `read` could follow it to
- * exfiltrate a file and `write` could clobber one through it. A path that does
- * not exist yet (a new `write` target) has nothing to follow, so a stat that
- * fails is not an error here.
+ * workspace can still point outside it, so every component of the resolved
+ * path - ancestors included, since a symlinked *directory* escapes just as a
+ * symlinked file does - is stat'ed and rejected when it is a symbolic link.
+ * Otherwise `read` could follow a link to exfiltrate a file and `write` could
+ * clobber one through it. A component that does not exist yet (a new `write`
+ * target) has nothing to follow, so a stat that fails is not an error here.
  */
 async function resolveWorkspaceUri(relPath: string): Promise<vscode.Uri> {
   const root = workspaceRoot();
@@ -38,17 +39,21 @@ async function resolveWorkspaceUri(relPath: string): Promise<vscode.Uri> {
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`Path is outside the workspace: ${relPath}`);
   }
-  const uri = vscode.Uri.joinPath(root, ...rel.split(/[\\/]/));
-  let stat: vscode.FileStat | undefined;
-  try {
-    stat = await vscode.workspace.fs.stat(uri);
-  } catch {
-    stat = undefined;
+  const segments = rel.split(/[\\/]/);
+  let prefix = root;
+  for (const segment of segments) {
+    prefix = vscode.Uri.joinPath(prefix, segment);
+    let stat: vscode.FileStat | undefined;
+    try {
+      stat = await vscode.workspace.fs.stat(prefix);
+    } catch {
+      continue;
+    }
+    if ((stat.type & vscode.FileType.SymbolicLink) !== 0) {
+      throw new Error(`Path is a symbolic link, which is not allowed: ${relPath}`);
+    }
   }
-  if (stat && (stat.type & vscode.FileType.SymbolicLink) !== 0) {
-    throw new Error(`Path is a symbolic link, which is not allowed: ${relPath}`);
-  }
-  return uri;
+  return vscode.Uri.joinPath(root, ...segments);
 }
 
 /** Backstop on the read tool's output, so a few enormous lines cannot flood the context. */
@@ -154,8 +159,11 @@ export async function searchFiles(
 
 /**
  * Kill a spawned command and everything it started. exec's own `timeout`
- * only signals the shell, which on Windows leaves grandchild processes
- * running, so the tree is taken down explicitly.
+ * only signals the shell, leaving grandchild processes running, so the tree
+ * is taken down explicitly: `taskkill /t` on Windows, and elsewhere a signal
+ * to the negative pid - the whole process group, which the child leads
+ * because `runCommand` spawns it `detached` off Windows. Signalling only the
+ * child (the shell) would orphan whatever it started.
  */
 function killProcessTree(child: ChildProcess | undefined): void {
   if (!child || child.pid === undefined) {
@@ -164,8 +172,32 @@ function killProcessTree(child: ChildProcess | undefined): void {
   if (process.platform === 'win32') {
     exec(`taskkill /pid ${child.pid} /t /f`);
   } else {
-    child.kill('SIGKILL');
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch {
+      // The group is already gone (or the child never detached under a test
+      // fake); fall back to signalling the child itself.
+      child.kill('SIGKILL');
+    }
   }
+}
+
+/**
+ * Backstop on the run tool's model-facing result. The exec buffer
+ * (settings.runCommandMaxBufferBytes) bounds what is captured; this bounds
+ * what is handed back to the model, so one chatty command cannot flood a
+ * small model's context window. Head and tail are both kept - build and test
+ * failures usually print the interesting part last.
+ */
+function capRunOutput(text: string): string {
+  const max = settings.runResultMaxChars;
+  if (text.length <= max) {
+    return text;
+  }
+  const half = Math.floor(max / 2);
+  return (
+    text.slice(0, half) + '\n…(output truncated)…\n' + text.slice(text.length - half)
+  );
 }
 
 /**
@@ -199,12 +231,17 @@ export async function runCommand(
   let aborted = false;
   // The shell must match what the prompts announce (config/environment.ts):
   // PowerShell on Windows, the platform default (/bin/sh) elsewhere.
+  // Off Windows the child leads its own process group, so killProcessTree can
+  // take the whole group down (taskkill /t covers this on Windows). exec
+  // forwards its options to spawn, which honours `detached` - the ExecOptions
+  // type just does not declare it, hence the cast.
   const pending = execAsync(command, {
     cwd,
     shell: environment.execShell,
     maxBuffer: settings.runCommandMaxBufferBytes,
     windowsHide: true,
-  });
+    detached: process.platform !== 'win32',
+  } as ExecOptions & { detached: boolean });
   if (mirror) {
     mirror.begin(command);
     // Tap the child's streams for the live view; exec keeps buffering the
@@ -228,7 +265,7 @@ export async function runCommand(
   try {
     const { stdout, stderr } = await pending;
     mirror?.end(messages.terminal.completed);
-    return combineOutput(String(stdout), String(stderr));
+    return capRunOutput(combineOutput(String(stdout), String(stderr)));
   } catch (err: any) {
     // A failed command's output is what the caller needs to diagnose it, so
     // include the stdout/stderr exec attaches to the error.
@@ -238,7 +275,9 @@ export async function runCommand(
       ? `Command timed out after ${settings.runCommandTimeoutMs} ms and was killed.`
       : `Command failed: ${err?.message ?? String(err)}`;
     mirror?.end(reason);
-    const output = combineOutput(String(err?.stdout ?? ''), String(err?.stderr ?? ''));
+    const output = capRunOutput(
+      combineOutput(String(err?.stdout ?? ''), String(err?.stderr ?? ''))
+    );
     return output ? `${reason}\n${output}` : reason;
   } finally {
     clearTimeout(killTimer);
@@ -312,12 +351,47 @@ function editPreview(text: string): string {
 }
 
 /**
+ * Locate the snippet to replace in the file text: an exact match first; on a
+ * miss, a retry with the snippets' line endings adapted to the file's (the
+ * replacement must be adapted alongside, or an LF snippet pasted into a CRLF
+ * file would mix endings). Returns the adapted needle/replacement pair on a
+ * unique match, or the recovery message the model should see.
+ */
+function locateEdit(
+  text: string,
+  relPath: string,
+  oldText: string,
+  newText: string
+): { needle: string; replacement: string } | { failure: string } {
+  let needle = oldText;
+  let replacement = newText;
+  if (!text.includes(needle)) {
+    needle = matchLineEndings(text, oldText);
+    replacement = matchLineEndings(text, newText);
+  }
+  const count = countOccurrences(text, needle);
+  if (count === 0) {
+    return { failure: messages.editFailed.notFound(relPath) };
+  }
+  if (count > 1) {
+    return { failure: messages.editFailed.multipleMatches(count, relPath) };
+  }
+  return { needle, replacement };
+}
+
+/**
  * Replace text in an existing file. SIDE-EFFECTING: gated by the Approver
  * with a diff-style old/new preview. The replaced text must match exactly one
  * place in the file - zero or multiple matches return a recovery instruction
  * to the model instead of touching the file, so a misremembered snippet can
  * never corrupt it. Creating files stays the write tool's job: a missing
  * target is an error here, not an empty file to fill.
+ *
+ * The file is re-read and the match re-verified after approval: the prompt
+ * can stay open for a while, and applying a replacement computed from the
+ * pre-approval snapshot would silently revert whatever changed the file in
+ * the meantime (the user typing, a formatter, another tool call). A match
+ * that no longer holds returns the usual recovery message instead of writing.
  */
 export async function editFile(
   relPath: string,
@@ -339,22 +413,9 @@ export async function editFile(
     return messages.editFailed.missingFile(relPath);
   }
   const text = Buffer.from(bytes).toString('utf8');
-
-  // Exact match first; on a miss, retry with the snippets' line endings
-  // adapted to the file's (the replacement must be adapted alongside, or an
-  // LF snippet pasted into a CRLF file would mix endings).
-  let needle = oldText;
-  let replacement = newText;
-  if (!text.includes(needle)) {
-    needle = matchLineEndings(text, oldText);
-    replacement = matchLineEndings(text, newText);
-  }
-  const count = countOccurrences(text, needle);
-  if (count === 0) {
-    return messages.editFailed.notFound(relPath);
-  }
-  if (count > 1) {
-    return messages.editFailed.multipleMatches(count, relPath);
+  const located = locateEdit(text, relPath, oldText, newText);
+  if ('failure' in located) {
+    return located.failure;
   }
 
   // A request cancelled before (or during) the approval prompt must not land
@@ -364,7 +425,11 @@ export async function editFile(
   }
   const ok = await approver.confirm(
     messages.approval.editFileTitle,
-    messages.approval.editFileDetail(relPath, editPreview(needle), editPreview(replacement))
+    messages.approval.editFileDetail(
+      relPath,
+      editPreview(located.needle),
+      editPreview(located.replacement)
+    )
   );
   if (!ok) {
     return messages.notApproved.edit;
@@ -372,9 +437,24 @@ export async function editFile(
   if (signal?.aborted) {
     return messages.cancelled.edit;
   }
+
+  // Re-read and re-verify: the edit applies to the file as it is now, not as
+  // it was when the prompt opened, so a concurrent change elsewhere in the
+  // file survives and a vanished or ambiguous match aborts cleanly.
+  let freshBytes: Uint8Array;
+  try {
+    freshBytes = await vscode.workspace.fs.readFile(uri);
+  } catch {
+    return messages.editFailed.missingFile(relPath);
+  }
+  const fresh = Buffer.from(freshBytes).toString('utf8');
+  const verified = locateEdit(fresh, relPath, oldText, newText);
+  if ('failure' in verified) {
+    return verified.failure;
+  }
   // The replacement goes through a function so replace() cannot interpret
   // `$&`-style patterns inside model-written code as substitutions.
-  const updated = text.replace(needle, () => replacement);
+  const updated = fresh.replace(verified.needle, () => verified.replacement);
   await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
   return `Edited ${relPath} (1 replacement).`;
 }

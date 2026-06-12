@@ -46,6 +46,7 @@ import {
   __setConfig,
   __setFile,
   __setSymlink,
+  __setSymlinkDir,
   Uri,
   workspace,
 } from './mocks/vscode';
@@ -105,6 +106,23 @@ describe('readFile', () => {
     // it would let read exfiltrate the target.
     __setSymlink('link.ts', 'contents of the link target');
     await expect(readFile('link.ts')).rejects.toThrow(/symbolic link/);
+  });
+
+  it('rejects a path inside a symlinked directory', async () => {
+    // A symlinked *directory* inside the workspace escapes it just like a
+    // symlinked file: the final component stats as a plain file, so every
+    // ancestor must be checked too.
+    __setSymlinkDir('linkdir');
+    __setFile('linkdir/secret.txt', 'outside contents');
+    await expect(readFile('linkdir/secret.txt')).rejects.toThrow(/symbolic link/);
+  });
+
+  it('rejects a deeper path whose middle component is a symlinked directory', async () => {
+    __setSymlinkDir('src/linkdir');
+    __setFile('src/linkdir/deep/secret.txt', 'outside contents');
+    await expect(readFile('src/linkdir/deep/secret.txt')).rejects.toThrow(
+      /symbolic link/
+    );
   });
 
   it('truncates contents beyond the character backstop', async () => {
@@ -395,6 +413,77 @@ describe('runCommand', () => {
     const opts = execMock.mock.calls[0][1] as { shell?: string };
     expect(opts.shell).toBe(environment.execShell);
   });
+
+  it('detaches the child off Windows so the whole process group can be killed', async () => {
+    execMock.mockImplementation((_cmd, _opts, cb) =>
+      cb(null, { stdout: '', stderr: '' })
+    );
+    await runCommand('echo hi', makeApprover(true));
+    const opts = execMock.mock.calls[0][1] as { detached?: boolean };
+    expect(opts.detached).toBe(process.platform !== 'win32');
+  });
+
+  it('kills the whole process group on POSIX platforms when aborted', async () => {
+    // Signalling only the shell child would orphan its grandchildren; the
+    // negative pid takes down the group the detached child leads.
+    const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', {
+      value: 'linux',
+      configurable: true,
+    });
+    const killSpy = vi
+      .spyOn(process, 'kill')
+      .mockImplementation(() => true as unknown as true);
+    const controller = new AbortController();
+    execMock.mockImplementation((_cmd, _opts, cb) => {
+      childRef.current.pid = 4242;
+      queueMicrotask(() => {
+        controller.abort();
+        cb(new Error('killed'));
+      });
+    });
+    try {
+      const out = await runCommand(
+        'sleep 100',
+        makeApprover(true),
+        undefined,
+        controller.signal
+      );
+      expect(out).toBe('Command was cancelled and the process was killed.');
+      expect(killSpy).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    } finally {
+      Object.defineProperty(process, 'platform', originalPlatform);
+      killSpy.mockRestore();
+    }
+  });
+
+  it('caps the model-facing output of a chatty command, keeping head and tail', async () => {
+    const cap = settings.runResultMaxChars;
+    const big = 'HEAD' + 'x'.repeat(cap) + 'TAIL';
+    execMock.mockImplementation((_cmd, _opts, cb) =>
+      cb(null, { stdout: big, stderr: '' })
+    );
+    const out = await runCommand('npm test', makeApprover(true));
+    expect(out.length).toBeLessThan(cap + 100);
+    expect(out).toContain('…(output truncated)…');
+    expect(out.startsWith('HEAD')).toBe(true);
+    expect(out.endsWith('TAIL')).toBe(true);
+  });
+
+  it('caps the output attached to a failed command too', async () => {
+    const cap = settings.runResultMaxChars;
+    const err = Object.assign(new Error('Command failed: npm test'), {
+      stdout: 'x'.repeat(cap + 1_000),
+      stderr: 'the final assertion',
+    });
+    execMock.mockImplementation((_cmd, _opts, cb) => cb(err, undefined));
+    const out = await runCommand('npm test', makeApprover(true));
+    expect(out.length).toBeLessThan(cap + 200);
+    expect(out).toContain('Command failed: npm test');
+    expect(out).toContain('…(output truncated)…');
+    // The tail (where the failure usually prints) survives the cap.
+    expect(out).toContain('the final assertion');
+  });
 });
 
 describe('runCommand mirroring', () => {
@@ -527,6 +616,18 @@ describe('writeFile', () => {
       /symbolic link/
     );
     expect(__state.files.get('/ws/link.ts')).toBe('old');
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('rejects writing into a symlinked directory before consulting the approver', async () => {
+    // The write target itself does not exist yet, but its parent is a link
+    // pointing who-knows-where; the ancestor check must catch it.
+    __setSymlinkDir('linkdir');
+    const approver = makeApprover(true);
+    await expect(writeFile('linkdir/new.ts', 'x', approver)).rejects.toThrow(
+      /symbolic link/
+    );
+    expect(__state.files.has('/ws/linkdir/new.ts')).toBe(false);
     expect(approver.calls).toHaveLength(0);
   });
 
@@ -693,5 +794,58 @@ describe('editFile', () => {
     const out = await editFile('a.ts', '1', '2', approver, controller.signal);
     expect(out).toBe('Edit was cancelled; the file was not changed.');
     expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
+  });
+
+  it('does not clobber a file whose match vanished while the prompt was open', async () => {
+    // The approval prompt can stay open for a while; applying the snapshot
+    // taken before it would silently revert whatever changed the file since.
+    __setFile('a.ts', 'const a = 1;');
+    const approver: Approver = {
+      async confirm() {
+        __setFile('a.ts', 'const b = 2;'); // changed while the buttons showed
+        return true;
+      },
+    };
+    const out = await editFile('a.ts', 'const a = 1;', 'const a = 42;', approver);
+    expect(out).toMatch(/not found in a\.ts/);
+    expect(__state.files.get('/ws/a.ts')).toBe('const b = 2;');
+  });
+
+  it('applies the edit to the fresh contents when the match survives a concurrent change', async () => {
+    __setFile('a.ts', 'header\nconst a = 1;\n');
+    const approver: Approver = {
+      async confirm() {
+        __setFile('a.ts', 'edited header\nconst a = 1;\n');
+        return true;
+      },
+    };
+    const out = await editFile('a.ts', 'const a = 1;', 'const a = 42;', approver);
+    expect(out).toBe('Edited a.ts (1 replacement).');
+    // Both the concurrent change and the approved edit land.
+    expect(__state.files.get('/ws/a.ts')).toBe('edited header\nconst a = 42;\n');
+  });
+
+  it('reports a file deleted while the prompt was open instead of recreating it', async () => {
+    __setFile('a.ts', 'const a = 1;');
+    const approver: Approver = {
+      async confirm() {
+        __state.files.delete('/ws/a.ts');
+        return true;
+      },
+    };
+    const out = await editFile('a.ts', 'const a = 1;', 'const a = 2;', approver);
+    expect(out).toMatch(/does not exist/);
+    expect(__state.files.has('/ws/a.ts')).toBe(false);
+  });
+
+  it('rejects editing through a symlinked directory before consulting the approver', async () => {
+    __setSymlinkDir('linkdir');
+    __setFile('linkdir/a.ts', 'const a = 1;');
+    const approver = makeApprover(true);
+    await expect(editFile('linkdir/a.ts', '1', '2', approver)).rejects.toThrow(
+      /symbolic link/
+    );
+    expect(__state.files.get('/ws/linkdir/a.ts')).toBe('const a = 1;');
+    expect(approver.calls).toHaveLength(0);
   });
 });

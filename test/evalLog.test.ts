@@ -98,6 +98,25 @@ describe('EvalLog', () => {
     expect(lines[lines.length - 1]).toMatchObject({ record: 'run', runId: 'newest' });
   });
 
+  it('keeps a record larger than the whole cap instead of dropping everything', async () => {
+    // The trim must never empty the file: a single oversized record is kept
+    // alone (truncating it would corrupt the JSONL), not dropped along with
+    // the history it displaced.
+    const cap = settings.telemetry.evalLogMaxChars;
+    __state.files.set(FILE, JSON.stringify({ record: 'run', runId: 'old' }) + '\n');
+
+    await makeLog().recordRun({
+      runId: 'giant',
+      outcome: 'ok',
+      usage: [],
+      command: 'x'.repeat(cap),
+    });
+
+    const lines = storedLines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ record: 'run', runId: 'giant' });
+  });
+
   it('swallows a write failure and keeps recording afterwards', async () => {
     vi.mocked(workspace.fs.writeFile).mockRejectedValueOnce(new Error('disk full'));
     const log = makeLog();

@@ -100,12 +100,18 @@ export class EvalLog {
     } catch {
       // First record: the file does not exist yet.
     }
-    let next = existing + JSON.stringify(record) + '\n';
+    const line = JSON.stringify(record) + '\n';
+    let next = existing + line;
     const cap = settings.telemetry.evalLogMaxChars;
     if (next.length > cap) {
-      // Drop whole oldest lines until the log fits the cap again.
+      // Drop whole oldest lines until the log fits the cap again. A single
+      // record larger than the whole cap is kept alone: truncating it would
+      // corrupt the JSONL, and dropping it must not take the history with it.
       const cut = next.indexOf('\n', next.length - cap);
       next = cut >= 0 ? next.slice(cut + 1) : next;
+      if (next.length === 0) {
+        next = line;
+      }
     }
     await vscode.workspace.fs.writeFile(this.file, new TextEncoder().encode(next));
   }

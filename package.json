@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.21.0",
+  "version": "0.21.1",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -207,7 +207,7 @@
       {
         "name": "devteam__write",
         "displayName": "Write File",
-        "modelDescription": "Create or overwrite a file in the workspace with the given contents.",
+        "modelDescription": "Create or overwrite a file in the workspace with the given contents. This is a side-effecting action and requires user confirmation.",
         "tags": [
           "myDevTeam"
         ],

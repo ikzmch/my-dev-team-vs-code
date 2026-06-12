@@ -96,6 +96,15 @@ export const settings = {
   runCommandMaxBufferBytes: 10 * 1024 * 1024,
 
   /**
+   * Cap on the `run` tool's model-facing result, in characters. The buffer
+   * above bounds what is captured from the process; this bounds what is
+   * handed back to the model, so one chatty command cannot flood a small
+   * model's context window. The output's head and tail are kept around a
+   * truncation marker.
+   */
+  runResultMaxChars: 200_000,
+
+  /**
    * Cap on the session log the "Dev Team" terminal mirror keeps, in
    * characters. The backlog replays the full run history when the user first
    * opens (or reopens) the terminal; beyond the cap the oldest output is
@@ -182,6 +191,14 @@ export const settings = {
 
   /** Max characters of an attached file/selection inlined into the prompt. */
   maxAttachmentChars: 20_000,
+
+  /**
+   * Max size, in bytes, of an attached file the handler will read at all.
+   * Only `maxAttachmentChars` of it survive into the prompt anyway, so a
+   * file beyond this cap is answered with a too-large notice instead of
+   * being pulled fully into memory just to be thrown away.
+   */
+  maxAttachmentReadBytes: 10_000_000,
 
   /**
    * Caps on the conversation history folded into the agent prompts. The chat

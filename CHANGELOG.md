@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.1] - 2026-06-12
+
+### Security
+
+- **Symbolic links are rejected anywhere in a tool path**. The read, write,
+  and edit tools now check every component of a path, not just its last one,
+  so a symlinked directory inside the workspace can no longer be used to
+  read or overwrite files outside it.
+- **The run tool's output to the model is capped**. A chatty command used to
+  hand the model up to the full 10 MiB capture; the result is now truncated
+  (head and tail kept) so one command cannot flood the model's context.
+
+### Fixed
+
+- **Concurrent chat turns no longer disturb each other's approvals**. Each
+  request now opens its own approval session, so a turn that finishes or is
+  cancelled declines only its own pending Approve/Decline questions instead
+  of everyone's.
+- **Edits are re-verified after approval**. If a file changed while the
+  approval prompt was open, the edit now applies to the current contents (or
+  reports the match gone) instead of silently writing back the pre-approval
+  snapshot and reverting the concurrent change.
+- **Cancelling an editor-wide tool call now works**. Tool invocations from
+  other chat models forward their cancellation to the tools, so a cancelled
+  command is killed instead of running to its timeout.
+- **Cancelled or timed-out commands are fully killed on macOS/Linux**. The
+  whole process group is signalled, so grandchild processes no longer
+  survive; previously only Windows took down the full tree.
+- **Oversized attachments no longer spike memory**. A file beyond the read
+  cap is answered with a short too-large notice instead of being read whole
+  just to keep its first lines.
+- **The write tool now announces its approval requirement** to other chat
+  models in its editor-wide description, matching run and edit.
+- **One giant eval-log record can no longer wipe the log**. The size-cap
+  trim keeps such a record alone instead of emptying the file.
+
 ## [0.21.0] - 2026-06-12
 
 ### Added

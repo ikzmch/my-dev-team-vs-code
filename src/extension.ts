@@ -54,15 +54,17 @@ export function activate(context: vscode.ExtensionContext) {
   const participant = vscode.chat.createChatParticipant(
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {
-      approver.setStream(stream); // wire approver to this request's stream
-      // A cancelled request leaves an approval waiting for a click that can
-      // never come; clearing the stream declines it so the run unblocks.
-      const cancellation = token.onCancellationRequested(() => approver.clearStream());
+      // Each request opens its own approval session: when it ends (or is
+      // cancelled, where a pending approval could otherwise block the run
+      // forever), disposing declines only this request's approvals - a
+      // concurrent turn's pending approval and stream are untouched.
+      const session = approver.openSession(stream);
+      const cancellation = token.onCancellationRequested(() => session.dispose());
       try {
         return await handler(request, ctx, stream, token);
       } finally {
         cancellation.dispose();
-        approver.clearStream(); // never leave a finished request's stream behind
+        session.dispose(); // idempotent: a cancelled request already closed it
       }
     }
   );

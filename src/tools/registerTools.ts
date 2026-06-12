@@ -16,11 +16,24 @@ export function registerTools(context: vscode.ExtensionContext, host: ToolHost):
   for (const name of clientToolNames) {
     context.subscriptions.push(
       vscode.lm.registerTool(clientTools[name].lmToolId, {
-        async invoke(options) {
-          const text = await host.execute(name, options.input);
-          return new vscode.LanguageModelToolResult([
-            new vscode.LanguageModelTextPart(text),
-          ]);
+        async invoke(options, token) {
+          // Bridge the editor's cancellation token onto the host's abort
+          // signal, so an invocation cancelled by the calling chat model
+          // stops an in-flight command or pending approval instead of
+          // running to its timeout.
+          const controller = new AbortController();
+          if (token?.isCancellationRequested) {
+            controller.abort();
+          }
+          const cancellation = token?.onCancellationRequested(() => controller.abort());
+          try {
+            const text = await host.execute(name, options.input, controller.signal);
+            return new vscode.LanguageModelToolResult([
+              new vscode.LanguageModelTextPart(text),
+            ]);
+          } finally {
+            cancellation?.dispose();
+          }
         },
       })
     );

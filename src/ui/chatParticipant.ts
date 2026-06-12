@@ -33,15 +33,30 @@ export const APPROVAL_COMMAND_ID = 'myDevTeam.approval';
  * the tools are invoked outside a @devteam turn (they are registered
  * editor-wide) there is no stream to ask in, so the approver falls back to a
  * modal dialog. When you add a Webview later, write a WebviewApprover that
- * implements the same `Approver` interface with a rich diff dialog — the
+ * implements the same `Approver` interface with a rich diff dialog - the
  * tools won't change.
  *
- * The chat stream is per-request, so we set it on each turn.
+ * The chat stream is per-request, so each request opens its own session
+ * (`openSession`) for its duration. Sessions keep concurrent requests apart:
+ * an approval is owned by the session whose stream rendered it, so a request
+ * ending (or being cancelled) declines only its own pending approvals and
+ * cannot touch another request's stream or block its tool calls. A confirm
+ * arriving while several sessions are open renders into the most recent one -
+ * a shared ToolHost cannot attribute a call to a request, so this stays a
+ * best-effort display choice; the gate itself works regardless.
  */
 export class ChatApprover implements Approver {
-  private stream: vscode.ChatResponseStream | undefined;
-  private readonly pending = new Map<string, (approved: boolean) => void>();
+  /** Active request sessions, in open order; confirm uses the most recent. */
+  private readonly sessions: Array<{
+    id: number;
+    stream: vscode.ChatResponseStream;
+  }> = [];
+  private readonly pending = new Map<
+    string,
+    { sessionId: number; resolve: (approved: boolean) => void }
+  >();
   private nextApprovalId = 0;
+  private nextSessionId = 0;
 
   /** Register the command the approval buttons invoke. Call once on activation. */
   register(context: vscode.ExtensionContext): void {
@@ -53,42 +68,52 @@ export class ChatApprover implements Approver {
     );
   }
 
-  setStream(stream: vscode.ChatResponseStream) {
-    this.stream = stream;
+  /**
+   * Attach a request's stream for the request's duration. Disposing (do it
+   * when the request ends or is cancelled; it is idempotent) detaches the
+   * stream and declines the approvals rendered into it - once the request is
+   * over nobody can answer them anymore, and a hanging confirm would block
+   * its tool call (and with it a cancelled run) forever.
+   */
+  openSession(stream: vscode.ChatResponseStream): vscode.Disposable {
+    const id = this.nextSessionId++;
+    this.sessions.push({ id, stream });
+    return { dispose: () => this.closeSession(id) };
   }
 
-  /**
-   * Detach the stream when its request ends (or is cancelled), declining
-   * whatever is still waiting for a click: once the request is over nobody
-   * can answer anymore, and a hanging confirm would block its tool call (and
-   * with it a cancelled run) forever. The tools are registered editor-wide
-   * and can be invoked outside a @devteam turn; without the detach, an
-   * approval arriving later would write into a finished request's stream.
-   */
-  clearStream() {
-    this.stream = undefined;
-    for (const id of [...this.pending.keys()]) {
-      this.settle(id, false);
+  private closeSession(id: number): void {
+    const index = this.sessions.findIndex((session) => session.id === id);
+    if (index !== -1) {
+      this.sessions.splice(index, 1);
+    }
+    // Decline only this session's approvals: a concurrent request's pending
+    // approval stays live and answerable.
+    for (const [approvalId, entry] of [...this.pending]) {
+      if (entry.sessionId === id) {
+        this.settle(approvalId, false);
+      }
     }
   }
 
   async confirm(title: string, detail: string): Promise<boolean> {
-    const stream = this.stream;
-    if (stream) {
+    const session = this.sessions[this.sessions.length - 1];
+    if (session) {
       try {
         const id = String(this.nextApprovalId++);
-        stream.markdown(messages.approval.block(title, detail));
-        stream.button({
+        session.stream.markdown(messages.approval.block(title, detail));
+        session.stream.button({
           command: APPROVAL_COMMAND_ID,
           title: messages.approval.approve,
           arguments: [id, true],
         });
-        stream.button({
+        session.stream.button({
           command: APPROVAL_COMMAND_ID,
           title: messages.approval.decline,
           arguments: [id, false],
         });
-        return await new Promise<boolean>((resolve) => this.pending.set(id, resolve));
+        return await new Promise<boolean>((resolve) =>
+          this.pending.set(id, { sessionId: session.id, resolve })
+        );
       } catch {
         // The stream's request has ended mid-render; the modal below keeps
         // the approval gate working.
@@ -104,10 +129,10 @@ export class ChatApprover implements Approver {
 
   /** Resolve one pending approval; a stale button click is a no-op. */
   private settle(id: string, approved: boolean): void {
-    const resolve = this.pending.get(id);
-    if (resolve) {
+    const entry = this.pending.get(id);
+    if (entry) {
       this.pending.delete(id);
-      resolve(approved);
+      entry.resolve(approved);
     }
   }
 }
@@ -133,8 +158,19 @@ async function collectAttachments(
     const v = ref.value;
     try {
       if (v instanceof vscode.Uri) {
-        const bytes = await vscode.workspace.fs.readFile(v);
         const rel = vscode.workspace.asRelativePath(v);
+        // Check the size via stat before reading: only maxAttachmentChars of
+        // the text survive into the prompt anyway, so an enormous file is
+        // answered with a notice instead of being pulled fully into memory.
+        const stat = await vscode.workspace.fs.stat(v);
+        if (stat.size > settings.maxAttachmentReadBytes) {
+          attachments.push({
+            label: `File: ${rel}`,
+            text: messages.attachments.tooLarge(stat.size),
+          });
+          continue;
+        }
+        const bytes = await vscode.workspace.fs.readFile(v);
         attachments.push({
           label: `File: ${rel}`,
           text: truncate(Buffer.from(bytes).toString('utf8'), settings.maxAttachmentChars),

@@ -173,4 +173,59 @@ describe('registerTools', () => {
     expect(out).toBe('Write was not approved by the user; the file was not changed.');
     expect(__state.files.has('/ws/out.ts')).toBe(false);
   });
+
+  it('bridges the invocation cancellation token onto the host abort signal', async () => {
+    // The editor passes a CancellationToken per invocation; the registration
+    // must turn it into the AbortSignal the host's tools observe, or a
+    // cancelled call would run to its timeout.
+    let seenSignal: AbortSignal | undefined;
+    const host: ToolHost = {
+      tools: ['read', 'search', 'run', 'write', 'edit'],
+      execute: async (_tool, _args, signal) => {
+        seenSignal = signal;
+        return 'ok';
+      },
+    };
+    registerTools(fakeContext() as any, host);
+
+    const impl = __state.registeredTools.get('devteam__run') as {
+      invoke(opts: { input: unknown }, token?: unknown): Promise<unknown>;
+    };
+    let fireCancellation: (() => void) | undefined;
+    const token = {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener: () => void) => {
+        fireCancellation = listener;
+        return { dispose: () => {} };
+      },
+    };
+    await impl.invoke({ input: { command: 'echo hi' } }, token);
+
+    expect(seenSignal).toBeDefined();
+    expect(seenSignal!.aborted).toBe(false);
+    fireCancellation!();
+    expect(seenSignal!.aborted).toBe(true);
+  });
+
+  it('passes an already-aborted signal for an already-cancelled token', async () => {
+    let seenSignal: AbortSignal | undefined;
+    const host: ToolHost = {
+      tools: ['read', 'search', 'run', 'write', 'edit'],
+      execute: async (_tool, _args, signal) => {
+        seenSignal = signal;
+        return 'ok';
+      },
+    };
+    registerTools(fakeContext() as any, host);
+
+    const impl = __state.registeredTools.get('devteam__run') as {
+      invoke(opts: { input: unknown }, token?: unknown): Promise<unknown>;
+    };
+    const token = {
+      isCancellationRequested: true,
+      onCancellationRequested: () => ({ dispose: () => {} }),
+    };
+    await impl.invoke({ input: { command: 'echo hi' } }, token);
+    expect(seenSignal!.aborted).toBe(true);
+  });
 });

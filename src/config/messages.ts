@@ -135,6 +135,14 @@ export const messages = {
     completed: '(command completed)',
   },
 
+  /** Copy for the chat handler's attachment resolution. */
+  attachments: {
+    /** Stands in for an attached file too large to inline (or even read). */
+    tooLarge: (bytes: number) =>
+      `(attachment skipped: the file is ${bytes} bytes, too large to inline; ` +
+      'attach a selection from it instead)',
+  },
+
   /** Copy for the client-side /clear command (it never starts a run). */
   clear: {
     /** The whole reply to a /clear turn. */

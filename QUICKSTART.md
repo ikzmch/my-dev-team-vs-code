@@ -66,7 +66,9 @@ Then try a real request:
   ```
 
 - **Attach context** - use the paperclip (or `#`-references) to attach files
-  or a selection; the agent receives their full text.
+  or a selection; the agent receives their full text. A really huge file
+  (tens of megabytes) is skipped with a note - attach a selection from it
+  instead.
 
 - **Follow up** - the conversation carries over, so "now rename it too" or
   "add a test for that" resolves against what was just done.
@@ -117,7 +119,9 @@ Click **Approve** to let it happen or **Decline** to skip it. Declining does
 not abort the run: the agent is told the action was not approved, carries on
 with the rest of the plan, and notes the skip in its report. Cancelling the
 chat request (the stop button) cancels everything, including a command
-already running.
+already running. And if a file changed while an edit's approval was waiting
+(you kept typing, say), the edit is re-checked against the current file
+before it applies - your newer changes are never silently overwritten.
 
 Every approved command's full live output also appears in a read-only
 **"Dev Team" terminal** in the terminal panel - open that tab to watch

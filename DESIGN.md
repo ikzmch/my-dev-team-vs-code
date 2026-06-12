@@ -549,8 +549,9 @@ The tools treat their inputs as untrusted (they are callable by any
 tool-calling chat model in the editor, not just `@devteam`):
 
 - `read`/`write`/`edit` resolve paths against the workspace root and **reject
-  anything that escapes it** (absolute paths, `..` traversal, and a path that
-  resolves to a **symbolic link**, which could point outside the workspace).
+  anything that escapes it** (absolute paths, `..` traversal, and **symbolic
+  links anywhere in the resolved path** - the target itself or any ancestor
+  directory - since a link inside the workspace can point outside it).
 - `read` returns at most **`myDevTeam.read.maxLines` lines per call** (plus a
   character backstop against enormous lines), so one read of a large file
   cannot flood a small model's context. An optional `startLine`/`endLine`
@@ -565,18 +566,25 @@ tool-calling chat model in the editor, not just `@devteam`):
   LF/CRLF mismatch between the model's snippet and the file is bridged by
   adapting the snippet, never by rewriting the file's line endings. The
   replacement is literal: `$&`-style substitution patterns in code are not
-  interpreted.
+  interpreted. After approval the file is **re-read and the match
+  re-verified**, so an edit applies to the file as it is then - a change made
+  while the prompt was open survives, and a vanished or no-longer-unique
+  match returns the recovery message instead of writing a stale snapshot.
 - `search` never scans `node_modules`, `.git`, `dist`, `out`, or `coverage`,
   and content mode skips binary and oversized files (see
   `config/settings.ts` for the limits; the result/scan caps are user-tunable
   via the `myDevTeam.search.*` settings).
-- `run` executes with a configured timeout (`myDevTeam.run.commandTimeoutMs`;
-  the whole spawned process tree is killed, also on Windows) and output
-  buffer; a failed command's stdout and stderr are returned so a caller can
-  diagnose it. Commands run in the shell `config/environment.ts` announces to
-  the model: **PowerShell on Windows** (its Unix-style aliases absorb
-  residual `ls`/`cat` habits, and models write it more reliably than cmd.exe
-  batch), the platform default `/bin/sh` elsewhere.
+- `run` executes with a configured timeout (`myDevTeam.run.commandTimeoutMs`)
+  and output buffer; on expiry or cancellation the **whole spawned process
+  tree** is killed (`taskkill /t` on Windows, a process-group signal to the
+  detached child elsewhere), so grandchild processes never linger. A failed
+  command's stdout and stderr are returned so a caller can diagnose it, and
+  the model-facing result is capped (`settings.runResultMaxChars`, head and
+  tail kept) so one chatty command cannot flood a small model's context.
+  Commands run in the shell `config/environment.ts` announces to the model:
+  **PowerShell on Windows** (its Unix-style aliases absorb residual
+  `ls`/`cat` habits, and models write it more reliably than cmd.exe batch),
+  the platform default `/bin/sh` elsewhere.
 - every approved `run` command is also **mirrored live into a "Dev Team"
   terminal** (the `RunMirror` seam; `ui/runTerminal.ts`). The child process
   stays owned by the tool - capture, timeout, and kill-tree are unchanged -
@@ -597,13 +605,16 @@ replacement prefixed `+`, each side capped), so an in-workspace
 change - itself destructive, with no undo - never lands silently. The
 Phase-1 `ChatApprover` renders the proposed action into the chat panel
 followed by **Approve / Decline buttons** (wired through the
-`myDevTeam.approval` command) and blocks the tool until one is clicked; a
-finished or cancelled request declines whatever is still pending so a run can
-never hang on an unanswered question. When a tool is invoked outside a
-`@devteam` turn (they are registered editor-wide, so any chat model can call
-them) there is no stream to ask in, and the approver falls back to a modal
-dialog. A declined `write` or `edit` returns "not approved" to the model and
-leaves the file untouched.
+`myDevTeam.approval` command) and blocks the tool until one is clicked. Each
+request opens its own **approval session** for its stream; a finished or
+cancelled request closes its session, declining only its own still-pending
+approvals - so a run can never hang on an unanswered question, and
+concurrent chat turns cannot settle (or write into the stream of) one
+another's approvals. When a tool is invoked outside a `@devteam` turn (they
+are registered editor-wide, so any chat model can call them) there is no
+session to ask in, and the approver falls back to a modal dialog. A declined
+`write` or `edit` returns "not approved" to the model and leaves the file
+untouched.
 
 ## Current behavior
 
@@ -613,9 +624,11 @@ non-blocking) if the server is down or a router-selected model is not pulled.
 
 Out of the box, `@devteam <prompt>`:
 
-1. Resolves any attached files/selections into labelled attachments and the
-   chat session's prior turns (your prompts and the participant's replies,
-   capped per `settings.history`) into conversation history, and starts a
+1. Resolves any attached files/selections into labelled attachments (an
+   attached file beyond `settings.maxAttachmentReadBytes` becomes a too-large
+   notice instead of being read) and the chat session's prior turns (your
+   prompts and the participant's replies, capped per `settings.history`) into
+   conversation history, and starts a
    protocol run on the selected engine (`myDevTeam.engine`, the in-process
    local engine by default) with both alongside the prompt. Follow-ups work:
    "now rename it too" reaches every agent with the turns that say what "it"

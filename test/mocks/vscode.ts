@@ -196,6 +196,17 @@ export function __setSymlink(relPath: string, contents = ''): Uri {
   return uri;
 }
 
+/**
+ * Seed a directory path that fs.stat reports as a symbolic link, standing in
+ * for a symlinked directory whose target is outside the workspace. Files
+ * "inside" it are seeded separately with __setFile.
+ */
+export function __setSymlinkDir(relPath: string): Uri {
+  const uri = Uri.joinPath(__state.workspaceFolders![0].uri, relPath);
+  __state.symlinks.add(uri.path);
+  return uri;
+}
+
 // --- API surface ---
 
 export const workspace = {
@@ -221,6 +232,10 @@ export const workspace = {
 
     stat: vi.fn(async (uri: Uri): Promise<{ type: number; size: number }> => {
       if (!__state.files.has(uri.path)) {
+        // A symlink seeded without bytes stands in for a symlinked directory.
+        if (__state.symlinks.has(uri.path)) {
+          return { type: FileType.Directory | FileType.SymbolicLink, size: 0 };
+        }
         throw new Error(`ENOENT: ${uri.path}`);
       }
       const size = new TextEncoder().encode(__state.files.get(uri.path)!).length;

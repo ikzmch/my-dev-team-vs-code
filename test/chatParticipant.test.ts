@@ -37,6 +37,7 @@ import {
   Location,
   Position,
   Range,
+  workspace,
 } from './mocks/vscode';
 
 beforeEach(() => {
@@ -140,15 +141,16 @@ function emitted(stream: ReturnType<typeof fakeStream>): string {
 describe('ChatApprover', () => {
   /**
    * Wire an approver the way activate() does: registered command plus an
-   * attached stream. Returns a click(n) helper that presses the n-th rendered
-   * button by invoking the registered command with that button's arguments.
+   * open session for a request's stream. Returns a click(n) helper that
+   * presses the n-th rendered button by invoking the registered command with
+   * that button's arguments.
    */
   function wiredApprover() {
     const approver = new ChatApprover();
     const context = { subscriptions: [] as unknown[] };
     approver.register(context as any);
     const stream = fakeStream();
-    approver.setStream(stream as any);
+    const session = approver.openSession(stream as any);
     const click = (n: number) => {
       const button = stream.button.mock.calls[n][0] as {
         command: string;
@@ -156,7 +158,7 @@ describe('ChatApprover', () => {
       };
       __state.registeredCommands.get(button.command)!(...button.arguments);
     };
-    return { approver, stream, click, context };
+    return { approver, stream, session, click, context };
   }
 
   it('renders the question with Approve/Decline buttons into the chat', async () => {
@@ -210,15 +212,15 @@ describe('ChatApprover', () => {
     expect(() => click(1)).not.toThrow(); // late Decline click is a no-op
   });
 
-  it('declines whatever is still pending when the stream is cleared', async () => {
-    const { approver } = wiredApprover();
+  it('declines whatever is still pending when its session is disposed', async () => {
+    const { approver, session } = wiredApprover();
 
     const pending = approver.confirm('Write file', 'preview');
-    approver.clearStream(); // request ended or was cancelled
+    session.dispose(); // request ended or was cancelled
     await expect(pending).resolves.toBe(false);
   });
 
-  it('falls back to the modal when no stream has been attached', async () => {
+  it('falls back to the modal when no session is open', async () => {
     const approver = new ChatApprover();
     __state.warningResponse = 'Approve';
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
@@ -227,9 +229,9 @@ describe('ChatApprover', () => {
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(false);
   });
 
-  it('asks via the modal, not the stream, after clearStream', async () => {
-    const { approver, stream } = wiredApprover();
-    approver.clearStream();
+  it('asks via the modal, not the stream, after the session is disposed', async () => {
+    const { approver, stream, session } = wiredApprover();
+    session.dispose();
     __state.warningResponse = 'Approve';
 
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
@@ -245,10 +247,46 @@ describe('ChatApprover', () => {
       }),
       button: vi.fn(),
     };
-    approver.setStream(closed as any);
+    approver.openSession(closed as any);
     __state.warningResponse = 'Approve';
 
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
+  });
+
+  it('keeps a concurrent request\'s approval pending when another request ends', async () => {
+    // Two chat turns running at once: ending one must decline only its own
+    // pending approvals, and the other's buttons must still work.
+    const approver = new ChatApprover();
+    const context = { subscriptions: [] as unknown[] };
+    approver.register(context as any);
+
+    const streamA = fakeStream();
+    const sessionA = approver.openSession(streamA as any);
+    const pendingA = approver.confirm('Write file', 'a'); // rendered into A
+
+    const streamB = fakeStream();
+    const sessionB = approver.openSession(streamB as any);
+    const pendingB = approver.confirm('Run command', 'b'); // rendered into B
+
+    sessionA.dispose(); // request A finishes (or is cancelled)
+    await expect(pendingA).resolves.toBe(false);
+
+    // B's approval survived A's teardown and its Approve click still settles.
+    const button = streamB.button.mock.calls[0][0] as {
+      command: string;
+      arguments: unknown[];
+    };
+    __state.registeredCommands.get(button.command)!(...button.arguments);
+    await expect(pendingB).resolves.toBe(true);
+    sessionB.dispose();
+  });
+
+  it('disposing a session twice is a harmless no-op', async () => {
+    const { approver, session } = wiredApprover();
+    const pending = approver.confirm('Write file', 'preview');
+    session.dispose();
+    expect(() => session.dispose()).not.toThrow();
+    await expect(pending).resolves.toBe(false);
   });
 });
 
@@ -611,6 +649,26 @@ describe('createHandler', () => {
       fakeToken() as any
     );
     expect(seen.answerer).toContain('…(truncated)');
+  });
+
+  it('replaces an oversized attached file with a notice, without reading it', async () => {
+    // Only maxAttachmentChars survive into the prompt; a file past the read
+    // cap must be answered by its stat, never pulled fully into memory.
+    const uri = __setFile('huge.bin', 'x'.repeat(settings.maxAttachmentReadBytes + 1));
+    const { engine, seen } = makeEngine();
+    workspace.fs.readFile.mockClear();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'q', references: [{ value: uri }] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    expect(seen.answerer).toContain('File: huge.bin');
+    expect(seen.answerer).toContain('attachment skipped');
+    const readPaths = workspace.fs.readFile.mock.calls.map((c) => (c[0] as Uri).path);
+    expect(readPaths).not.toContain(uri.path);
   });
 
   it('does not add an attachments block when there are no references', async () => {
