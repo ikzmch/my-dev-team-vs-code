@@ -79,6 +79,14 @@ export enum ChatResultFeedbackKind {
   Helpful = 1,
 }
 
+/** Mirrors vscode.FileType: a bitmask, with SymbolicLink OR'd onto the base type. */
+export enum FileType {
+  Unknown = 0,
+  File = 1,
+  Directory = 2,
+  SymbolicLink = 64,
+}
+
 export class EventEmitter<T> {
   private listeners: Array<(e: T) => void> = [];
 
@@ -115,6 +123,8 @@ export interface FakeTerminal {
 
 interface MockState {
   files: Map<string, string>;
+  /** Paths (by `uri.path`) that fs.stat should report as symbolic links. */
+  symlinks: Set<string>;
   workspaceFolders: Array<{ uri: Uri }> | undefined;
   findFilesResult: Uri[];
   warningResponse: string | undefined;
@@ -129,6 +139,7 @@ interface MockState {
 
 export const __state: MockState = {
   files: new Map(),
+  symlinks: new Set(),
   workspaceFolders: [{ uri: Uri.file('/ws') }],
   findFilesResult: [],
   warningResponse: undefined,
@@ -141,6 +152,7 @@ export const __state: MockState = {
 
 export function __reset(): void {
   __state.files = new Map();
+  __state.symlinks = new Set();
   __state.workspaceFolders = [{ uri: Uri.file('/ws') }];
   __state.findFilesResult = [];
   __state.warningResponse = undefined;
@@ -170,6 +182,16 @@ export function __setFile(relPath: string, contents: string): Uri {
   return uri;
 }
 
+/**
+ * Seed a path that fs.stat reports as a symbolic link (it still has readable
+ * bytes, standing in for a link whose target is outside the workspace).
+ */
+export function __setSymlink(relPath: string, contents = ''): Uri {
+  const uri = __setFile(relPath, contents);
+  __state.symlinks.add(uri.path);
+  return uri;
+}
+
 // --- API surface ---
 
 export const workspace = {
@@ -187,6 +209,17 @@ export const workspace = {
 
     writeFile: vi.fn(async (uri: Uri, bytes: Uint8Array): Promise<void> => {
       __state.files.set(uri.path, new TextDecoder().decode(bytes));
+    }),
+
+    stat: vi.fn(async (uri: Uri): Promise<{ type: number; size: number }> => {
+      if (!__state.files.has(uri.path)) {
+        throw new Error(`ENOENT: ${uri.path}`);
+      }
+      const size = new TextEncoder().encode(__state.files.get(uri.path)!).length;
+      const type = __state.symlinks.has(uri.path)
+        ? FileType.File | FileType.SymbolicLink
+        : FileType.File;
+      return { type, size };
     }),
   },
 

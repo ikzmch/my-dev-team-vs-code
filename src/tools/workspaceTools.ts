@@ -22,8 +22,15 @@ function workspaceRoot(): vscode.Uri {
  * outside the workspace (absolute paths, `..` traversal). Tool inputs come
  * from a model and the tools are callable by any chat model in the editor,
  * so the path is untrusted.
+ *
+ * The lexical check alone is not enough: a symlink that lives inside the
+ * workspace can still point outside it, so a resolved path that exists and is
+ * a symbolic link is rejected too - otherwise `read` could follow it to
+ * exfiltrate a file and `write` could clobber one through it. A path that does
+ * not exist yet (a new `write` target) has nothing to follow, so a stat that
+ * fails is not an error here.
  */
-function resolveWorkspaceUri(relPath: string): vscode.Uri {
+async function resolveWorkspaceUri(relPath: string): Promise<vscode.Uri> {
   const root = workspaceRoot();
   const rootPath = path.resolve(root.fsPath);
   const target = path.resolve(rootPath, relPath);
@@ -31,12 +38,22 @@ function resolveWorkspaceUri(relPath: string): vscode.Uri {
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`Path is outside the workspace: ${relPath}`);
   }
-  return vscode.Uri.joinPath(root, ...rel.split(/[\\/]/));
+  const uri = vscode.Uri.joinPath(root, ...rel.split(/[\\/]/));
+  let stat: vscode.FileStat | undefined;
+  try {
+    stat = await vscode.workspace.fs.stat(uri);
+  } catch {
+    stat = undefined;
+  }
+  if (stat && (stat.type & vscode.FileType.SymbolicLink) !== 0) {
+    throw new Error(`Path is a symbolic link, which is not allowed: ${relPath}`);
+  }
+  return uri;
 }
 
 /** Read a file's text contents. Read-only: no approval needed. */
 export async function readFile(relPath: string): Promise<string> {
-  const uri = resolveWorkspaceUri(relPath);
+  const uri = await resolveWorkspaceUri(relPath);
   const bytes = await vscode.workspace.fs.readFile(uri);
   const text = Buffer.from(bytes).toString('utf8');
   return text.length > settings.readMaxChars
@@ -67,10 +84,17 @@ export async function searchFiles(
   const matches: string[] = [];
   for (const uri of uris) {
     try {
+      // Check the size via stat before reading, so an oversized file is never
+      // pulled into memory just to be discarded - the cap bounds memory, not
+      // only the result set.
+      const stat = await vscode.workspace.fs.stat(uri);
+      if (stat.size > settings.search.maxFileSizeBytes) {
+        continue;
+      }
       const bytes = await vscode.workspace.fs.readFile(uri);
-      // Skip oversized files and binaries (a NUL byte marks binary content;
-      // decoding never throws, so this cannot be left to the catch below).
-      if (bytes.byteLength > settings.search.maxFileSizeBytes || bytes.includes(0)) {
+      // Skip binaries (a NUL byte marks binary content; decoding never throws,
+      // so this cannot be left to the catch below).
+      if (bytes.includes(0)) {
         continue;
       }
       if (Buffer.from(bytes).toString('utf8').includes(query)) {
@@ -109,16 +133,26 @@ function killProcessTree(child: ChildProcess | undefined): void {
 export async function runCommand(
   command: string,
   approver: Approver,
-  mirror?: RunMirror
+  mirror?: RunMirror,
+  signal?: AbortSignal
 ): Promise<string> {
   const cwd = workspaceRoot().fsPath;
+  // A request cancelled before (or during) the approval prompt must not start
+  // a process.
+  if (signal?.aborted) {
+    return messages.cancelled.run;
+  }
   const ok = await approver.confirm(messages.approval.runCommandTitle, '$ ' + command);
   if (!ok) {
     // Declined commands never ran, so they never reach the mirror either.
     return messages.notApproved.run;
   }
+  if (signal?.aborted) {
+    return messages.cancelled.run;
+  }
 
   let timedOut = false;
+  let aborted = false;
   // The shell must match what the prompts announce (config/environment.ts):
   // PowerShell on Windows, the platform default (/bin/sh) elsewhere.
   const pending = execAsync(command, {
@@ -139,6 +173,13 @@ export async function runCommand(
     timedOut = true;
     killProcessTree(pending.child);
   }, settings.runCommandTimeoutMs);
+  // Cancelling the chat request kills the in-flight process tree instead of
+  // letting it run to its timeout in the background.
+  const onAbort = () => {
+    aborted = true;
+    killProcessTree(pending.child);
+  };
+  signal?.addEventListener('abort', onAbort);
 
   try {
     const { stdout, stderr } = await pending;
@@ -147,7 +188,9 @@ export async function runCommand(
   } catch (err: any) {
     // A failed command's output is what the caller needs to diagnose it, so
     // include the stdout/stderr exec attaches to the error.
-    const reason = timedOut
+    const reason = aborted
+      ? 'Command was cancelled and the process was killed.'
+      : timedOut
       ? `Command timed out after ${settings.runCommandTimeoutMs} ms and was killed.`
       : `Command failed: ${err?.message ?? String(err)}`;
     mirror?.end(reason);
@@ -155,6 +198,7 @@ export async function runCommand(
     return output ? `${reason}\n${output}` : reason;
   } finally {
     clearTimeout(killTimer);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -163,8 +207,17 @@ function combineOutput(stdout: string, stderr: string): string {
 }
 
 /** Create or overwrite a file. Writes without asking for approval. */
-export async function writeFile(relPath: string, contents: string): Promise<string> {
-  const uri = resolveWorkspaceUri(relPath);
+export async function writeFile(
+  relPath: string,
+  contents: string,
+  signal?: AbortSignal
+): Promise<string> {
+  const uri = await resolveWorkspaceUri(relPath);
+  // A cancelled request must not land a file on disk; check after resolution
+  // so a still-pending write is dropped rather than applied.
+  if (signal?.aborted) {
+    return messages.cancelled.write;
+  }
   await vscode.workspace.fs.writeFile(uri, Buffer.from(contents, 'utf8'));
   return `Wrote ${relPath} (${Buffer.byteLength(contents, 'utf8')} bytes).`;
 }

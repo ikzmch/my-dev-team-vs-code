@@ -19,13 +19,29 @@ function ollamaHint(agent: AgentName): string {
   return `Is Ollama running on ${settings.ollamaEndpoint} with \`${model}\` pulled?\n\n`;
 }
 
+/**
+ * Wrap untrusted content (a command, a file path, a written-file snippet) in a
+ * fenced code block whose backtick run is longer than any run inside the
+ * content, so the content cannot break out of the fence and inject markdown.
+ * `min` is the baseline fence length (3 for a plain block, 4 where a snippet
+ * may itself contain a triple-backtick fence).
+ */
+function fence(content: string, min: number): string {
+  const longestRun = (content.match(/`+/g) ?? []).reduce(
+    (max, run) => Math.max(max, run.length),
+    0
+  );
+  const ticks = '`'.repeat(Math.max(min, longestRun + 1));
+  return `${ticks}\n${content}\n${ticks}`;
+}
+
 export const messages = {
   /** Copy for the side-effecting tools' approval gate. */
   approval: {
     runCommandTitle: 'Run command',
     /** The in-chat approval question: the action title plus its preview. */
     block: (title: string, detail: string) =>
-      `\n\n**${title}?**\n\n\`\`\`\n${detail}\n\`\`\`\n`,
+      `\n\n**${title}?**\n\n${fence(detail, 3)}\n`,
     /** Labels of the in-chat approval buttons. */
     approve: 'Approve',
     decline: 'Decline',
@@ -34,6 +50,15 @@ export const messages = {
   /** Returned to the model when the user declines a side-effecting tool. */
   notApproved: {
     run: 'Command was not approved by the user.',
+  },
+
+  /**
+   * Returned to the model when the request was cancelled before a
+   * side-effecting tool applied, so it can note the skip in its report.
+   */
+  cancelled: {
+    run: 'Command was cancelled before running.',
+    write: 'Write was cancelled; the file was not changed.',
   },
 
   /** Copy for the terminal mirroring the run tool's commands (ui/runTerminal.ts). */
@@ -83,10 +108,11 @@ export const messages = {
       failed ? ` → **failed** \`${preview}\`` : ` → \`${preview}\``,
     /**
      * Fenced snippet of a call's content argument (e.g. the first lines of a
-     * written file), shown under the call line. The fence is four backticks
-     * so snippet lines containing ``` cannot break out of it.
+     * written file), shown under the call line. The fence is at least four
+     * backticks, grown longer when the snippet itself contains a run that long,
+     * so snippet lines containing ``` (or more) cannot break out of it.
      */
-    snippet: (snippet: string) => '\n\n````\n' + snippet + '\n````',
+    snippet: (snippet: string) => '\n\n' + fence(snippet, 4),
     /** Shown in a result slot when the tool produced no output at all. */
     emptyResult: '(no output)',
   },

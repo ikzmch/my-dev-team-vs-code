@@ -179,6 +179,18 @@ function progressSink(requestContext: RequestContext): ReplyProgressSink | undef
 }
 
 /**
+ * RequestContext key under which a caller may pass an `AbortSignal` to
+ * `run.start`. The executor forwards it to its tool-calling loop so a
+ * cancelled chat request stops an in-flight command or write, not just the
+ * next workflow step.
+ */
+export const abortSignalKey = 'abortSignal';
+
+function abortSignal(requestContext: RequestContext): AbortSignal | undefined {
+  return requestContext.get(abortSignalKey) as AbortSignal | undefined;
+}
+
+/**
  * The agent's orchestration as a Mastra workflow:
  *
  *   triage ──▶ branch ──▶ draft-plan       (intent === "planning")
@@ -262,7 +274,8 @@ export function createDevTeamWorkflow(
       sink?.({ intent, reason, plan });
       const execution = await executor.execute(
         executionPrompt({ prompt, attachments, history }, plan),
-        sink && ((partial) => sink({ intent, reason, plan, execution: partial }))
+        sink && ((partial) => sink({ intent, reason, plan, execution: partial })),
+        abortSignal(requestContext)
       );
       return { intent, reason, plan, execution };
     },

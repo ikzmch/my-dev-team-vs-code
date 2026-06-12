@@ -7,6 +7,7 @@ import {
   HistoryTurn,
   ReplyProgress,
   ReplyResult,
+  abortSignalKey,
   replyProgressKey,
   stepIds,
 } from '../core/workflow';
@@ -388,8 +389,12 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
 
     const run = await workflow.createRun();
     // Cancelling the chat request aborts the run (and its model call) instead
-    // of leaving it to finish in the background.
+    // of leaving it to finish in the background. The AbortController reaches
+    // the executor's tool loop through the request context, so an in-flight
+    // command is killed and a pending write is dropped rather than completing.
+    const abortController = new AbortController();
     const cancellation = token.onCancellationRequested(() => {
+      abortController.abort();
       void run.cancel();
     });
 
@@ -399,6 +404,7 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
     // run, so stream errors (e.g. a closed stream) are swallowed here.
     const streamer = new ReplyStreamer(stream);
     const requestContext = new RequestContext();
+    requestContext.set(abortSignalKey, abortController.signal);
     requestContext.set(replyProgressKey, (progress: ReplyProgress) => {
       if (token.isCancellationRequested) {
         return;

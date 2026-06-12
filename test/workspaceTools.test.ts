@@ -39,7 +39,14 @@ import {
 import { Approver, RunMirror } from '../src/core/types';
 import { settings } from '../src/config/settings';
 import { environment } from '../src/config/environment';
-import { __reset, __state, __setFile, Uri, workspace } from './mocks/vscode';
+import {
+  __reset,
+  __state,
+  __setFile,
+  __setSymlink,
+  Uri,
+  workspace,
+} from './mocks/vscode';
 
 /** Approver test double recording calls and returning a fixed verdict. */
 function makeApprover(verdict: boolean): Approver & {
@@ -89,6 +96,13 @@ describe('readFile', () => {
   it('allows .. segments that stay inside the workspace', async () => {
     __setFile('a.ts', 'still inside');
     await expect(readFile('src/../a.ts')).resolves.toBe('still inside');
+  });
+
+  it('rejects a path that resolves to a symbolic link', async () => {
+    // A link living inside the workspace can still point outside it; following
+    // it would let read exfiltrate the target.
+    __setSymlink('link.ts', 'contents of the link target');
+    await expect(readFile('link.ts')).rejects.toThrow(/symbolic link/);
   });
 
   it('truncates contents beyond the read cap', async () => {
@@ -161,6 +175,24 @@ describe('searchFiles (content mode)', () => {
     await expect(searchFiles('needle', 'content')).resolves.toEqual(['small.ts']);
   });
 
+  it('checks an oversized file via stat without ever reading it', async () => {
+    // The size cap must bound memory, not only the result set: a file over the
+    // cap is rejected by its stat size and never pulled into memory.
+    const small = __setFile('small.ts', 'needle');
+    const huge = __setFile(
+      'huge.ts',
+      'needle' + 'a'.repeat(settings.search.maxFileSizeBytes)
+    );
+    __state.findFilesResult = [small, huge];
+    workspace.fs.readFile.mockClear();
+
+    await searchFiles('needle', 'content');
+
+    const readPaths = workspace.fs.readFile.mock.calls.map((c) => (c[0] as Uri).path);
+    expect(readPaths).toContain(small.path);
+    expect(readPaths).not.toContain(huge.path);
+  });
+
   it('caps content matches at 50 results', async () => {
     const uris: Uri[] = [];
     for (let i = 0; i < 60; i++) {
@@ -226,6 +258,38 @@ describe('runCommand', () => {
     const opts = execMock.mock.calls[0][1] as { cwd: string; maxBuffer: number };
     expect(opts.cwd).toBe('/ws');
     expect(opts.maxBuffer).toBe(settings.runCommandMaxBufferBytes);
+  });
+
+  it('does not start a process when the request is already cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const out = await runCommand(
+      'echo hi',
+      makeApprover(true),
+      undefined,
+      controller.signal
+    );
+    expect(out).toBe('Command was cancelled before running.');
+    expect(execMock).not.toHaveBeenCalled();
+  });
+
+  it('kills the process and reports cancellation when aborted mid-run', async () => {
+    const controller = new AbortController();
+    execMock.mockImplementation((_cmd, _opts, cb) => {
+      // Abort while the process is "running", then settle as a killed process
+      // would (the kill-tree itself is a no-op on the pid-less test child).
+      queueMicrotask(() => {
+        controller.abort();
+        cb(new Error('killed'));
+      });
+    });
+    const out = await runCommand(
+      'sleep 100',
+      makeApprover(true),
+      undefined,
+      controller.signal
+    );
+    expect(out).toBe('Command was cancelled and the process was killed.');
   });
 
   it('spawns the shell the environment config announces to the model', async () => {
@@ -317,5 +381,19 @@ describe('writeFile', () => {
       /outside the workspace/
     );
     expect([...__state.files.keys()].some((k) => k.includes('evil'))).toBe(false);
+  });
+
+  it('rejects writing through a symbolic link', async () => {
+    __setSymlink('link.ts', 'old');
+    await expect(writeFile('link.ts', 'new')).rejects.toThrow(/symbolic link/);
+    expect(__state.files.get('/ws/link.ts')).toBe('old');
+  });
+
+  it('does not write when the request was cancelled', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const out = await writeFile('new.ts', 'hello', controller.signal);
+    expect(out).toBe('Write was cancelled; the file was not changed.');
+    expect(__state.files.has('/ws/new.ts')).toBe(false);
   });
 });

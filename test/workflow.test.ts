@@ -4,6 +4,7 @@ import {
   createDevTeamWorkflow,
   stepIds,
   replyProgressKey,
+  abortSignalKey,
   triagePrompt,
   fullPrompt,
   executionPrompt,
@@ -38,7 +39,8 @@ function fakeAnswerer(
 function fakeExecutor(
   impl: (
     prompt: string,
-    onPartial?: ExecutionProgress
+    onPartial?: ExecutionProgress,
+    signal?: AbortSignal
   ) => Promise<ExecutionResult> = async () => anExecution
 ) {
   return { execute: impl } as any;
@@ -545,6 +547,31 @@ describe('dev-team workflow reply progress', () => {
     const result = await runWorkflow(workflow, 'add a feature');
     expect(result.status).toBe('success');
     expect(receivedCallback).toBeUndefined();
+  });
+
+  it('forwards the request-context abort signal to the executor', async () => {
+    let receivedSignal: AbortSignal | undefined | 'unset' = 'unset';
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async (_prompt, _onPartial, signal) => {
+        receivedSignal = signal;
+        return anExecution;
+      })
+    );
+
+    const controller = new AbortController();
+    const requestContext = new RequestContext();
+    requestContext.set(abortSignalKey, controller.signal);
+    const run = await workflow.createRun();
+    const result = await run.start({
+      inputData: { prompt: 'add a feature' },
+      requestContext,
+    });
+
+    expect(result.status).toBe('success');
+    expect(receivedSignal).toBe(controller.signal);
   });
 
   it('hands the executor no callback when no sink was provided', async () => {

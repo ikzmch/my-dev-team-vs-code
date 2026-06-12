@@ -317,7 +317,8 @@ decisions, in the order they matter:
   A tool with a configured `snippetArg` (write's `contents`) also records a
   `snippet`: the first `myDevTeam.chat.toolSnippetLines` lines of that
   argument (default 5, `0` turns snippets off), so the transcript can show
-  the start of the file being written. Order is preserved because "searched,
+  the start of the file being written; when the file has more lines, the
+  snippet ends in an `…(truncated)` line. Order is preserved because "searched,
   then wrote, then reported" *is* the answer. Previews are bounded
   (`settings.executor.*PreviewMaxChars`): the model saw the full values, the
   transcript only shows the user what happened. A run-level `error` chunk throws, failing the workflow step so
@@ -366,8 +367,9 @@ The tools treat their inputs as untrusted (they are callable by any
 tool-calling chat model in the editor, not just `@devteam`):
 
 - `read`/`write` resolve paths against the workspace root and **reject
-  anything that escapes it** (absolute paths, `..` traversal); `read` also
-  caps how much text it returns.
+  anything that escapes it** (absolute paths, `..` traversal, and a path that
+  resolves to a **symbolic link**, which could point outside the workspace);
+  `read` also caps how much text it returns.
 - `search` never scans `node_modules`, `.git`, `dist`, `out`, or `coverage`,
   and content mode skips binary and oversized files (see
   `config/settings.ts` for the limits; the result/scan caps are user-tunable
@@ -464,7 +466,7 @@ Out of the box, `@devteam <prompt>`:
    tool errored), and the executor's closing report of what changed. A
    completed `write` call additionally shows the first lines of the written
    file in a fenced snippet under its line (`myDevTeam.chat.toolSnippetLines`,
-   default 5; `0` hides it).
+   default 5; `0` hides it); a longer file ends in an `…(truncated)` line.
 7. Shell commands still ask first: when the loop reaches a `run` call, the
    `ChatApprover` renders the command into the chat followed by Approve and
    Decline buttons and waits for the click. A cancelled request declines
@@ -485,7 +487,10 @@ any VS Code chat model that supports tool calling.
 Cancelling the chat request cancels the workflow run (and with it the model
 call) instead of letting it finish in the background; a cancelled turn stops
 rendering immediately (plan content already streamed before the cancellation
-stays visible, nothing more is added).
+stays visible, nothing more is added). The cancellation also reaches the
+executor's tool loop through an `AbortSignal`: an in-flight `run` command has
+its process tree killed and a pending `write` is dropped rather than landing on
+disk, so a cancel is honoured end to end and not just at the next step.
 
 If Ollama is not reachable, the failed run is rendered with the step that
 failed and a reminder to start Ollama (on the configured endpoint) with the

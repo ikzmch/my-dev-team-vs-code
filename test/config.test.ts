@@ -79,6 +79,23 @@ describe('messages templates', () => {
     expect(messages.approval.decline).toBe('Decline');
   });
 
+  it('grows the approval fence so a backtick-laden command cannot break out', () => {
+    // A command containing a triple-backtick run must be wrapped in a longer
+    // fence, or it would close the block early and inject markdown.
+    const detail = '$ echo ```pwned```';
+    const block = messages.approval.block('Run command', detail);
+    expect(block).toContain('````\n' + detail + '\n````');
+  });
+
+  it('grows the snippet fence past any backtick run inside the snippet', () => {
+    // The snippet baseline is four backticks; a snippet that itself contains a
+    // four-backtick run needs five.
+    const snippet = 'before\n````\nafter';
+    expect(messages.execution.snippet(snippet)).toBe(
+      '\n\n`````\n' + snippet + '\n`````'
+    );
+  });
+
   it('appends the Ollama troubleshooting hint to executor errors', () => {
     const text = messages.execution.error('model missing');
     expect(text).toContain('**Executor error:** model missing');

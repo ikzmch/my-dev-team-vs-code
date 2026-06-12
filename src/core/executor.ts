@@ -95,9 +95,9 @@ function inputPreview(tool: string, args: unknown): string {
 /**
  * Multi-line snippet of a tool call's snippet argument: its first
  * `settings.executor.snippetLines` lines (each bounded like the input
- * preview), with an elision marker when more follow. Undefined when the tool
- * has no `snippetArg`, the argument is missing or empty, or snippets are
- * turned off (line count 0).
+ * preview), with a truncation message when more follow. Undefined when the
+ * tool has no `snippetArg`, the argument is missing or empty, or snippets
+ * are turned off (line count 0).
  */
 function inputSnippet(tool: string, args: unknown): string | undefined {
   const snippetArg = toolConfigs[tool]?.snippetArg;
@@ -114,7 +114,7 @@ function inputSnippet(tool: string, args: unknown): string | undefined {
     .slice(0, maxLines)
     .map((line) => truncate(line, settings.executor.inputPreviewMaxChars));
   if (lines.length > maxLines) {
-    head.push('…');
+    head.push('…(truncated)');
   }
   return head.join('\n');
 }
@@ -135,6 +135,13 @@ function resultPreview(result: unknown): string {
  */
 export class Executor {
   private readonly agent: Agent;
+  /**
+   * The current run's cancellation signal, set for the duration of `execute`.
+   * The tools read it through the getter handed to `buildAgentTools`, so a
+   * cancelled request stops an in-flight command or write even though the
+   * toolset itself is built once here.
+   */
+  private currentSignal: AbortSignal | undefined;
 
   constructor(approver: Approver, mirror?: RunMirror) {
     this.agent = new Agent({
@@ -143,14 +150,38 @@ export class Executor {
       description: agents.executor.description,
       instructions: agents.executor.instructions,
       model: resolveModel(agents.executor.capabilities),
-      tools: buildAgentTools(approver, mirror),
+      tools: buildAgentTools(approver, mirror, () => this.currentSignal),
     });
   }
 
-  async execute(prompt: string, onPartial?: ExecutionProgress): Promise<ExecutionResult> {
-    const output = await this.agent.stream([{ role: 'user', content: prompt }], {
+  async execute(
+    prompt: string,
+    onPartial?: ExecutionProgress,
+    signal?: AbortSignal
+  ): Promise<ExecutionResult> {
+    this.currentSignal = signal;
+    try {
+      return await this.run(prompt, onPartial, signal);
+    } finally {
+      this.currentSignal = undefined;
+    }
+  }
+
+  private async run(
+    prompt: string,
+    onPartial: ExecutionProgress | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<ExecutionResult> {
+    // Forward the signal so Mastra stops the tool-calling loop when the request
+    // is cancelled; only add it when present so the no-signal call still passes
+    // exactly { maxSteps } to the model.
+    const options: { maxSteps: number; abortSignal?: AbortSignal } = {
       maxSteps: settings.executor.maxSteps,
-    });
+    };
+    if (signal) {
+      options.abortSignal = signal;
+    }
+    const output = await this.agent.stream([{ role: 'user', content: prompt }], options);
 
     const events: ExecutionEvent[] = [];
     // Tool results arrive by call id, possibly after further chunks; map the

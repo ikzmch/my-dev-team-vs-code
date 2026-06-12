@@ -114,6 +114,26 @@ describe('buildAgentTools', () => {
     expect(execMock).not.toHaveBeenCalled();
   });
 
+  it('passes the current signal to run, so a cancelled request skips it', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const tools = buildAgentTools(makeApprover(true), undefined, () => controller.signal);
+    await expect(invoke(tools.run, { command: 'echo hi' })).resolves.toBe(
+      'Command was cancelled before running.'
+    );
+    expect(execMock).not.toHaveBeenCalled();
+  });
+
+  it('passes the current signal to write, so a cancelled request skips it', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const tools = buildAgentTools(makeApprover(true), undefined, () => controller.signal);
+    await expect(
+      invoke(tools.write, { path: 'src/new.ts', contents: 'x = 1' })
+    ).resolves.toBe('Write was cancelled; the file was not changed.');
+    expect(__state.files.has('/ws/src/new.ts')).toBe(false);
+  });
+
   it('write creates the file without consulting the approver', async () => {
     const approver = makeApprover(true);
     const tools = buildAgentTools(approver);

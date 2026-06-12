@@ -14,7 +14,18 @@ import { Approver, RunMirror } from '../core/types';
 import { toolConfigs } from '../config/tools';
 import { readFile, searchFiles, runCommand, writeFile } from './workspaceTools';
 
-export function buildAgentTools(approver: Approver, mirror?: RunMirror) {
+/**
+ * The side-effecting tools observe the current run's AbortSignal so a
+ * cancelled chat request stops them mid-flight (a running command is killed, a
+ * pending write is dropped). The signal is per-run while the toolset is built
+ * once per Executor, so it is read through a getter the Executor updates each
+ * run rather than captured here.
+ */
+export function buildAgentTools(
+  approver: Approver,
+  mirror?: RunMirror,
+  getSignal?: () => AbortSignal | undefined
+) {
   return {
     read: createTool({
       id: toolConfigs.read.name,
@@ -48,7 +59,8 @@ export function buildAgentTools(approver: Approver, mirror?: RunMirror) {
       inputSchema: z.object({
         command: z.string().describe('The shell command to execute.'),
       }),
-      execute: async ({ command }) => runCommand(command, approver, mirror),
+      execute: async ({ command }) =>
+        runCommand(command, approver, mirror, getSignal?.()),
     }),
 
     write: createTool({
@@ -60,7 +72,8 @@ export function buildAgentTools(approver: Approver, mirror?: RunMirror) {
           .describe('Workspace-relative path of the file to create or update.'),
         contents: z.string().describe('The full new contents of the file.'),
       }),
-      execute: async ({ path, contents }) => writeFile(path, contents),
+      execute: async ({ path, contents }) =>
+        writeFile(path, contents, getSignal?.()),
     }),
   };
 }

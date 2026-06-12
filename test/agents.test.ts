@@ -278,6 +278,18 @@ describe('Executor', () => {
     expect(options).toEqual({ maxSteps: settings.executor.maxSteps });
   });
 
+  it('forwards a cancellation signal to the model when one is given', async () => {
+    streamMock.mockResolvedValue(fakeChunkOutput([]));
+    const controller = new AbortController();
+    await new Executor(approverStub).execute('go', undefined, controller.signal);
+
+    const [, options] = streamMock.mock.calls[0];
+    expect(options).toEqual({
+      maxSteps: settings.executor.maxSteps,
+      abortSignal: controller.signal,
+    });
+  });
+
   it('is configured with executor instructions and the four workspace tools', () => {
     new Executor(approverStub);
     const config = agentCtor.mock.calls[0][0] as {
@@ -325,16 +337,16 @@ describe('Executor', () => {
     },
   ];
 
-  it('caps the write snippet at the configured line count with an elision marker', async () => {
+  it('caps the write snippet at the configured line count with a truncation message', async () => {
     const lines = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
     streamMock.mockResolvedValue(fakeChunkOutput(writeCall(lines.join('\n'))));
     const result = await new Executor(approverStub).execute('go');
     expect((result.events[0] as { snippet?: string }).snippet).toBe(
-      'l1\nl2\nl3\nl4\nl5\n…'
+      'l1\nl2\nl3\nl4\nl5\n…(truncated)'
     );
   });
 
-  it('shows a short file whole, without an elision marker', async () => {
+  it('shows a short file whole, without a truncation message', async () => {
     streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2\n')));
     const result = await new Executor(approverStub).execute('go');
     expect((result.events[0] as { snippet?: string }).snippet).toBe('l1\nl2');
@@ -345,7 +357,9 @@ describe('Executor', () => {
     try {
       streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2\nl3')));
       const result = await new Executor(approverStub).execute('go');
-      expect((result.events[0] as { snippet?: string }).snippet).toBe('l1\nl2\n…');
+      expect((result.events[0] as { snippet?: string }).snippet).toBe(
+        'l1\nl2\n…(truncated)'
+      );
     } finally {
       __state.configuration.delete('myDevTeam.chat.toolSnippetLines');
     }
