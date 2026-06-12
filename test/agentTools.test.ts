@@ -1,27 +1,20 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 
-// child_process.exec is invoked through util.promisify inside runCommand.
-// We replace it with a controllable fake before importing the module under test.
-const execMock = vi.fn();
-vi.mock('child_process', () => ({
-  exec: (cmd: string, opts: unknown, cb: Function) => execMock(cmd, opts, cb),
-}));
+import { buildAgentTools } from '../src/engine/core/agentTools';
+import { toolConfigs } from '../src/engine/config/tools';
+import { ToolHost } from '../src/protocol/toolContract';
 
-import { buildAgentTools } from '../src/tools/agentTools';
-import { toolConfigs } from '../src/config/tools';
-import { Approver } from '../src/core/types';
-import { __reset, __state, __setFile } from './mocks/vscode';
-
-/** Approver test double recording calls and returning a fixed verdict. */
-function makeApprover(verdict: boolean): Approver & {
-  calls: Array<{ title: string; detail: string }>;
+/** ToolHost test double recording calls and returning a fixed result. */
+function makeHost(result = 'ok'): ToolHost & {
+  calls: Array<{ tool: string; args: unknown; signal?: AbortSignal }>;
 } {
-  const calls: Array<{ title: string; detail: string }> = [];
+  const calls: Array<{ tool: string; args: unknown; signal?: AbortSignal }> = [];
   return {
     calls,
-    confirm: async (title: string, detail: string) => {
-      calls.push({ title, detail });
-      return verdict;
+    tools: ['read', 'search', 'run', 'write'],
+    execute: async (tool, args, signal) => {
+      calls.push({ tool, args, signal });
+      return result;
     },
   };
 }
@@ -31,14 +24,9 @@ function invoke(tool: { execute?: Function }, input: unknown): Promise<unknown> 
   return tool.execute!(input, {});
 }
 
-beforeEach(() => {
-  __reset();
-  execMock.mockReset();
-});
-
 describe('buildAgentTools', () => {
   it('exposes the four workspace tools under their config names', () => {
-    const tools = buildAgentTools(makeApprover(true));
+    const tools = buildAgentTools(makeHost());
     expect(Object.keys(tools).sort()).toEqual(['read', 'run', 'search', 'write']);
     for (const [name, tool] of Object.entries(tools)) {
       expect(tool.id).toBe(toolConfigs[name].name);
@@ -47,109 +35,57 @@ describe('buildAgentTools', () => {
     }
   });
 
-  it('read returns the file text', async () => {
-    __setFile('src/a.ts', 'const a = 1;');
-    const tools = buildAgentTools(makeApprover(true));
-    await expect(invoke(tools.read, { path: 'src/a.ts' })).resolves.toBe(
-      'const a = 1;'
-    );
-  });
+  it('delegates each call to the ToolHost with the tool name and args', async () => {
+    const host = makeHost('the result');
+    const tools = buildAgentTools(host);
 
-  it('read rejects a path outside the workspace', async () => {
-    const tools = buildAgentTools(makeApprover(true));
-    await expect(invoke(tools.read, { path: '../etc/passwd' })).rejects.toThrow(
-      /outside the workspace/
-    );
-  });
-
-  it('search joins matches with newlines', async () => {
-    const a = __setFile('src/a.ts', 'x');
-    const b = __setFile('src/b.ts', 'x');
-    __state.findFilesResult = [a, b];
-    const tools = buildAgentTools(makeApprover(true));
-    await expect(invoke(tools.search, { query: '**/*.ts', mode: 'glob' })).resolves.toBe(
-      'src/a.ts\nsrc/b.ts'
-    );
-  });
-
-  it('search reports no matches instead of returning an empty string', async () => {
-    __state.findFilesResult = [];
-    const tools = buildAgentTools(makeApprover(true));
-    await expect(invoke(tools.search, { query: '**/*.go', mode: 'glob' })).resolves.toBe(
-      '(no matches)'
-    );
-  });
-
-  it('run executes through the given approver and returns the output', async () => {
-    execMock.mockImplementation((_cmd, _opts, cb) =>
-      cb(null, { stdout: 'hi', stderr: '' })
-    );
-    const approver = makeApprover(true);
-    const tools = buildAgentTools(approver);
-
-    await expect(invoke(tools.run, { command: 'echo hi' })).resolves.toBe('hi');
-    expect(approver.calls[0]).toEqual({ title: 'Run command', detail: '$ echo hi' });
-  });
-
-  it('run forwards the shared mirror to runCommand', async () => {
-    execMock.mockImplementation((_cmd, _opts, cb) =>
-      cb(null, { stdout: 'hi', stderr: '' })
-    );
-    const entries: string[] = [];
-    const mirror = {
-      begin: (command: string) => entries.push(`begin:${command}`),
-      output: () => {},
-      end: (note: string) => entries.push(`end:${note}`),
-    };
-    const tools = buildAgentTools(makeApprover(true), mirror);
-    await invoke(tools.run, { command: 'echo hi' });
-    expect(entries).toEqual(['begin:echo hi', 'end:(command completed)']);
-  });
-
-  it('run does not execute when the approver declines', async () => {
-    const tools = buildAgentTools(makeApprover(false));
-    await expect(invoke(tools.run, { command: 'rm -rf /' })).resolves.toBe(
-      'Command was not approved by the user.'
-    );
-    expect(execMock).not.toHaveBeenCalled();
-  });
-
-  it('passes the current signal to run, so a cancelled request skips it', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const tools = buildAgentTools(makeApprover(true), undefined, () => controller.signal);
-    await expect(invoke(tools.run, { command: 'echo hi' })).resolves.toBe(
-      'Command was cancelled before running.'
-    );
-    expect(execMock).not.toHaveBeenCalled();
-  });
-
-  it('passes the current signal to write, so a cancelled request skips it', async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const tools = buildAgentTools(makeApprover(true), undefined, () => controller.signal);
+    await expect(invoke(tools.read, { path: 'src/a.ts' })).resolves.toBe('the result');
     await expect(
-      invoke(tools.write, { path: 'src/new.ts', contents: 'x = 1' })
-    ).resolves.toBe('Write was cancelled; the file was not changed.');
-    expect(__state.files.has('/ws/src/new.ts')).toBe(false);
+      invoke(tools.search, { query: '**/*.ts', mode: 'glob' })
+    ).resolves.toBe('the result');
+    await expect(invoke(tools.run, { command: 'echo hi' })).resolves.toBe('the result');
+    await expect(
+      invoke(tools.write, { path: 'a.ts', contents: 'x' })
+    ).resolves.toBe('the result');
+
+    expect(host.calls.map((c) => c.tool)).toEqual(['read', 'search', 'run', 'write']);
+    expect(host.calls[0].args).toMatchObject({ path: 'src/a.ts' });
+    expect(host.calls[2].args).toMatchObject({ command: 'echo hi' });
   });
 
-  it('write creates the file without consulting the approver', async () => {
-    const approver = makeApprover(true);
-    const tools = buildAgentTools(approver);
+  it('passes the current signal through to the host on every call', async () => {
+    const controller = new AbortController();
+    const host = makeHost();
+    const tools = buildAgentTools(host, () => controller.signal);
 
-    const result = await invoke(tools.write, { path: 'src/new.ts', contents: 'x = 1' });
-    expect(result).toContain('Wrote src/new.ts');
-    expect(__state.files.get('/ws/src/new.ts')).toBe('x = 1');
-    expect(approver.calls).toHaveLength(0);
+    await invoke(tools.run, { command: 'echo hi' });
+    await invoke(tools.write, { path: 'a.ts', contents: 'x' });
+
+    expect(host.calls.every((c) => c.signal === controller.signal)).toBe(true);
+  });
+
+  it('reads the signal getter per call, not at build time', async () => {
+    let signal: AbortSignal | undefined;
+    const host = makeHost();
+    const tools = buildAgentTools(host, () => signal);
+
+    await invoke(tools.run, { command: 'one' });
+    const controller = new AbortController();
+    signal = controller.signal;
+    await invoke(tools.run, { command: 'two' });
+
+    expect(host.calls[0].signal).toBeUndefined();
+    expect(host.calls[1].signal).toBe(controller.signal);
   });
 
   it('validates tool input against the schema instead of calling through', async () => {
-    const tools = buildAgentTools(makeApprover(true));
+    const host = makeHost();
+    const tools = buildAgentTools(host);
     // Mastra's createTool wraps execute with input validation: a call with a
-    // missing required field resolves to a ValidationError, and the
-    // underlying workspace tool (which would throw ENOENT here) never runs.
+    // missing required field resolves to a ValidationError, and the host
+    // never sees the call.
     const result = (await invoke(tools.read, {})) as { error?: boolean };
     expect(result).toMatchObject({ error: true });
+    expect(host.calls).toHaveLength(0);
   });
 });

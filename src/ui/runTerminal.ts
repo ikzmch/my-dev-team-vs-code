@@ -1,5 +1,5 @@
 /**
- * Phase-1 implementation of the RunMirror seam (core/types.ts): a read-only
+ * Phase-1 implementation of the RunMirror seam (tools/types.ts): a read-only
  * "Dev Team" terminal in the terminal panel that replays everything the `run`
  * tool executed - one `$ command` header per run, its live stdout/stderr, and
  * a one-line outcome note - as a session log the user can open at any time.
@@ -19,7 +19,7 @@
  *   endings are normalised on write.
  */
 import * as vscode from 'vscode';
-import { RunMirror } from '../core/types';
+import { RunMirror } from '../tools/types';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 

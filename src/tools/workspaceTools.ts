@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
-import { Approver, RunMirror } from '../core/types';
+import { Approver, RunMirror } from './types';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 import { environment } from '../config/environment';

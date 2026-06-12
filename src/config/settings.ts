@@ -20,6 +20,7 @@ const CONFIG_SECTION = 'myDevTeam';
  * the Settings UI shows the values actually in effect.
  */
 export const defaults = {
+  engine: 'local' as const,
   ollamaEndpoint: 'http://localhost:11434',
   runCommandTimeoutMs: 60_000,
   search: {
@@ -57,6 +58,19 @@ function userEndpoint(): string {
 }
 
 export const settings = {
+  /**
+   * Which engine handles `@devteam` runs (`myDevTeam.engine`): the
+   * in-process local engine, or (Phase B) a remote backend speaking the same
+   * protocol. Read live per request, so switching needs no reload. Anything
+   * but the literal "remote" falls back to "local" - the safe default.
+   */
+  get engine(): 'local' | 'remote' {
+    const value = vscode.workspace
+      .getConfiguration(CONFIG_SECTION)
+      .get<unknown>('engine');
+    return value === 'remote' ? 'remote' : defaults.engine;
+  },
+
   /**
    * Where the Ollama server listens (`myDevTeam.ollama.endpoint`). The
    * provider wiring (core/models.ts), the chat error hints (messages.ts), and

@@ -1,62 +1,28 @@
 /**
- * Activation-time Ollama health check. Pings the configured endpoint and
- * verifies the models the capability router actually selected are pulled,
- * surfacing a friendly warning instead of letting the first chat request be
- * the thing that fails. Lives in the UI layer because it talks to
- * vscode.window; the agent core stays UI-agnostic.
+ * Activation-time health check, surfaced per engine: whichever engine the
+ * provider selects answers `startupWarnings()` (the LocalEngine pings the
+ * configured Ollama endpoint and verifies the router-selected models are
+ * pulled; a remote engine will probe its backend), and this module only
+ * shows what comes back. Lives in the UI layer because it talks to
+ * vscode.window; what is worth warning about is the engine's knowledge.
  */
 import * as vscode from 'vscode';
-import { agents } from '../config/agents';
-import { selectModel } from '../config/models';
-import { settings } from '../config/settings';
-import { messages } from '../config/messages';
-
-/** The models the router selects for the registered agents, deduplicated. */
-export function routedModels(): string[] {
-  const names = new Set<string>();
-  for (const agent of Object.values(agents)) {
-    names.add(selectModel(agent.capabilities).model);
-  }
-  return [...names];
-}
-
-/** Shape of the `GET /api/tags` response, as far as the check reads it. */
-interface TagsResponse {
-  models?: Array<{ name?: string; model?: string }>;
-}
+import { Engine } from '../protocol/engine';
 
 /**
- * Ping `<endpoint>/api/tags` and warn if the server is unreachable or any
- * router-selected model is not pulled. Never throws and is not awaited by
- * activation: a slow or absent Ollama must not delay the extension.
+ * Surface the selected engine's startup warnings. Never throws and is not
+ * awaited by activation: a slow or absent backend must not delay the
+ * extension.
  */
-export async function checkOllamaAtStartup(): Promise<void> {
-  const endpoint = settings.ollamaEndpoint;
-
-  let installed: Set<string>;
+export async function checkEngineAtStartup(engine: Engine): Promise<void> {
+  let warnings: string[];
   try {
-    const res = await fetch(`${endpoint}/api/tags`, {
-      signal: AbortSignal.timeout(settings.startupProbeTimeoutMs),
-    });
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
-    }
-    const tags = (await res.json()) as TagsResponse;
-    installed = new Set(
-      (tags.models ?? [])
-        .flatMap((m) => [m.name, m.model])
-        .filter((n): n is string => typeof n === 'string')
-    );
+    warnings = await engine.startupWarnings();
   } catch {
-    void vscode.window.showWarningMessage(messages.startup.unreachable(endpoint));
+    // The probe itself is best-effort; the first real request will explain.
     return;
   }
-
-  // Ollama reports untagged pulls as "<model>:latest", so accept that alias.
-  const missing = routedModels().filter(
-    (model) => !installed.has(model) && !installed.has(`${model}:latest`)
-  );
-  if (missing.length > 0) {
-    void vscode.window.showWarningMessage(messages.startup.missingModels(missing));
+  for (const warning of warnings) {
+    void vscode.window.showWarningMessage(warning);
   }
 }

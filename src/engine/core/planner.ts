@@ -1,18 +1,26 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
 import { resolveModel } from './models';
+import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
+import { selectModel } from '../config/models';
 import { toolNames } from '../config/tools';
+import { PartialPlan, Plan } from '../../protocol/types';
+
+export type { PartialPlan, PartialPlanStep } from '../../protocol/types';
 
 /**
  * A step-by-step plan for a "planning" request. The classifier decides a request
  * needs planning; the Planner turns it into an ordered list of concrete steps,
  * each optionally hinting which workspace tool it will use. The Executor
- * (core/executor.ts) then walks these steps and drives the tool-calling loop.
+ * (./executor.ts) then walks these steps and drives the tool-calling loop.
  *
- * The `tool` hint enum is derived from the tool configs in config/tools (the
- * same registry the planner's prompt section is rendered from), plus "none"
- * for a step that is pure reasoning.
+ * This is the generation schema: its describe() strings steer the model and
+ * its `tool` hint enum is derived from the tool configs in ../config/tools
+ * (the same registry the planner's prompt section is rendered from), plus
+ * "none" for a step that is pure reasoning. The protocol's PlanSchema
+ * (src/protocol/types.ts) is the wire shape of the same data, without the
+ * prompt material; anything this schema accepts the protocol schema accepts.
  */
 // "none" leads so the enum stays well-formed even with an empty tool registry.
 const planTools: [string, ...string[]] = ['none', ...toolNames];
@@ -43,28 +51,13 @@ export const PlanSchema = z.object({
 });
 
 export type PlanStep = z.infer<typeof PlanStepSchema>;
-export type PlanResult = z.infer<typeof PlanSchema>;
-
-/**
- * A snapshot of the plan while the model is still writing it. Field values
- * arrive incrementally from the partial-JSON stream: strings grow over time
- * and later fields are missing until the model reaches them, so everything is
- * optional and `tool` may hold a not-yet-complete enum value.
- */
-export type PartialPlanStep = {
-  title?: string;
-  tool?: string;
-  detail?: string;
-};
-export type PartialPlan = {
-  summary?: string;
-  steps?: Array<PartialPlanStep | undefined>;
-};
+export type PlanResult = Plan;
 
 /** Receives plan snapshots as the model streams them. Must not throw. */
 export type PlanProgress = (partial: PartialPlan) => void;
 
 export class Planner {
+  private readonly modelName = selectModel(agents.planner.capabilities).model;
   private readonly agent = new Agent({
     id: agents.planner.id,
     name: agents.planner.name,
@@ -73,7 +66,11 @@ export class Planner {
     model: resolveModel(agents.planner.capabilities),
   });
 
-  async plan(prompt: string, onPartial?: PlanProgress): Promise<PlanResult> {
+  async plan(
+    prompt: string,
+    onPartial?: PlanProgress,
+    onUsage?: UsageReporter
+  ): Promise<PlanResult> {
     const output = await this.agent.stream(
       [{ role: 'user', content: prompt }],
       { structuredOutput: { schema: PlanSchema } }
@@ -90,6 +87,10 @@ export class Planner {
       if (value !== undefined) {
         onPartial?.(value as PartialPlan);
       }
+    }
+    const usage = await readUsage(output);
+    if (usage) {
+      onUsage?.({ model: this.modelName, ...usage });
     }
     // Validate rather than cast: a missing or malformed object fails here
     // with a schema error instead of rendering broken markdown later.

@@ -17,7 +17,7 @@ import {
   ProviderName,
   selectModel,
 } from '../config/models';
-import { settings } from '../config/settings';
+import { settings } from '../../config/settings';
 
 type OllamaProvider = ReturnType<typeof createOllama>;
 

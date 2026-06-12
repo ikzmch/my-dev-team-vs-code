@@ -21,7 +21,7 @@ import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
 import { CapabilityScoresSchema } from './models';
 import { toolNames, renderToolsSection } from './tools';
-import { renderEnvironmentSection } from './environment';
+import { renderEnvironmentSection } from '../../config/environment';
 import triage from './agents/triage.md';
 import planner from './agents/planner.md';
 import answerer from './agents/answerer.md';

@@ -18,11 +18,14 @@ vi.mock('@mastra/core/agent', () => ({
   },
 }));
 
-import { Triage, TriageSchema } from '../src/core/triage';
-import { Planner, PlanSchema, PartialPlan } from '../src/core/planner';
-import { Answerer } from '../src/core/answerer';
-import { Executor, PartialExecution } from '../src/core/executor';
-import { Approver } from '../src/core/types';
+import { Triage, TriageSchema } from '../src/engine/core/triage';
+import { Planner, PlanSchema, PartialPlan } from '../src/engine/core/planner';
+import { Answerer } from '../src/engine/core/answerer';
+import { Executor, PartialExecution } from '../src/engine/core/executor';
+import { AgentUsage } from '../src/engine/core/usage';
+import { agents } from '../src/engine/config/agents';
+import { selectModel } from '../src/engine/config/models';
+import { ToolHost } from '../src/protocol/toolContract';
 import { settings } from '../src/config/settings';
 import { __state } from './mocks/vscode';
 
@@ -85,7 +88,10 @@ function fakeChunkOutput(chunks: Array<{ type: string; payload?: unknown }>) {
   };
 }
 
-const approverStub: Approver = { confirm: async () => true };
+const toolHostStub: ToolHost = {
+  tools: ['read', 'search', 'run', 'write'],
+  execute: async () => 'ok',
+};
 
 describe('Triage', () => {
   it('returns the structured object from the model', async () => {
@@ -212,7 +218,7 @@ describe('Executor', () => {
 
   it('returns the transcript of text and tool calls in order', async () => {
     streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
-    await expect(new Executor(approverStub).execute('do it')).resolves.toEqual({
+    await expect(new Executor(toolHostStub).execute('do it')).resolves.toEqual({
       events: [
         { kind: 'text', text: 'Reading first.' },
         { kind: 'tool', tool: 'read', input: 'a.ts', result: 'const a = 1;' },
@@ -225,7 +231,7 @@ describe('Executor', () => {
     streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
 
     const seen: PartialExecution[] = [];
-    await new Executor(approverStub).execute('do it', (partial) => seen.push(partial));
+    await new Executor(toolHostStub).execute('do it', (partial) => seen.push(partial));
 
     expect(seen).toEqual([
       { events: [{ kind: 'text', text: 'Reading' }] },
@@ -256,7 +262,7 @@ describe('Executor', () => {
     streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
 
     const seen: PartialExecution[] = [];
-    await new Executor(approverStub).execute('do it', (partial) => seen.push(partial));
+    await new Executor(toolHostStub).execute('do it', (partial) => seen.push(partial));
 
     // The first snapshot still shows the text as it was at emission time,
     // even though the underlying event kept growing afterwards.
@@ -265,13 +271,13 @@ describe('Executor', () => {
 
   it('drains the stream even without a callback', async () => {
     streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
-    const result = await new Executor(approverStub).execute('do it');
+    const result = await new Executor(toolHostStub).execute('do it');
     expect(result.events).toHaveLength(3);
   });
 
   it('passes the prompt and the step cap to the model', async () => {
     streamMock.mockResolvedValue(fakeChunkOutput([]));
-    await new Executor(approverStub).execute('carry out the plan');
+    await new Executor(toolHostStub).execute('carry out the plan');
 
     const [messages, options] = streamMock.mock.calls[0];
     expect(messages).toEqual([{ role: 'user', content: 'carry out the plan' }]);
@@ -281,7 +287,7 @@ describe('Executor', () => {
   it('forwards a cancellation signal to the model when one is given', async () => {
     streamMock.mockResolvedValue(fakeChunkOutput([]));
     const controller = new AbortController();
-    await new Executor(approverStub).execute('go', undefined, controller.signal);
+    await new Executor(toolHostStub).execute('go', undefined, controller.signal);
 
     const [, options] = streamMock.mock.calls[0];
     expect(options).toEqual({
@@ -291,7 +297,7 @@ describe('Executor', () => {
   });
 
   it('is configured with executor instructions and the four workspace tools', () => {
-    new Executor(approverStub);
+    new Executor(toolHostStub);
     const config = agentCtor.mock.calls[0][0] as {
       id: string;
       instructions: string;
@@ -317,7 +323,7 @@ describe('Executor', () => {
         },
       ])
     );
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect(result.events[0]).toEqual({
       kind: 'tool',
       tool: 'write',
@@ -340,7 +346,7 @@ describe('Executor', () => {
   it('caps the write snippet at the configured line count with a truncation message', async () => {
     const lines = ['l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7'];
     streamMock.mockResolvedValue(fakeChunkOutput(writeCall(lines.join('\n'))));
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect((result.events[0] as { snippet?: string }).snippet).toBe(
       'l1\nl2\nl3\nl4\nl5\n…(truncated)'
     );
@@ -348,7 +354,7 @@ describe('Executor', () => {
 
   it('shows a short file whole, without a truncation message', async () => {
     streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2\n')));
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect((result.events[0] as { snippet?: string }).snippet).toBe('l1\nl2');
   });
 
@@ -356,7 +362,7 @@ describe('Executor', () => {
     __state.configuration.set('myDevTeam.chat.toolSnippetLines', 2);
     try {
       streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2\nl3')));
-      const result = await new Executor(approverStub).execute('go');
+      const result = await new Executor(toolHostStub).execute('go');
       expect((result.events[0] as { snippet?: string }).snippet).toBe(
         'l1\nl2\n…(truncated)'
       );
@@ -369,7 +375,7 @@ describe('Executor', () => {
     __state.configuration.set('myDevTeam.chat.toolSnippetLines', 0);
     try {
       streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2')));
-      const result = await new Executor(approverStub).execute('go');
+      const result = await new Executor(toolHostStub).execute('go');
       expect(result.events[0]).not.toHaveProperty('snippet');
     } finally {
       __state.configuration.delete('myDevTeam.chat.toolSnippetLines');
@@ -379,7 +385,7 @@ describe('Executor', () => {
   it('bounds each snippet line like the input preview', async () => {
     const long = 'x'.repeat(settings.executor.inputPreviewMaxChars + 50);
     streamMock.mockResolvedValue(fakeChunkOutput(writeCall(long)));
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     const snippet = (result.events[0] as { snippet?: string }).snippet!;
     expect(snippet).toHaveLength(settings.executor.inputPreviewMaxChars + 1);
     expect(snippet.endsWith('…')).toBe(true);
@@ -402,7 +408,7 @@ describe('Executor', () => {
         },
       ])
     );
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect(result.events[0]).not.toHaveProperty('snippet');
     expect(result.events[1]).not.toHaveProperty('snippet');
   });
@@ -420,7 +426,7 @@ describe('Executor', () => {
         },
       ])
     );
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect(result.events[0]).toEqual({
       kind: 'tool',
       tool: 'mystery',
@@ -443,7 +449,7 @@ describe('Executor', () => {
         },
       ])
     );
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     const event = result.events[0] as { input: string; result?: string };
     expect(event.input).toHaveLength(settings.executor.inputPreviewMaxChars + 1);
     expect(event.input.endsWith('…')).toBe(true);
@@ -464,7 +470,7 @@ describe('Executor', () => {
         },
       ])
     );
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect((result.events[0] as { result?: string }).result).toBe('{"hits":2}');
   });
 
@@ -486,7 +492,7 @@ describe('Executor', () => {
         },
       ])
     );
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect(result.events[0]).toMatchObject({
       kind: 'tool',
       failed: true,
@@ -511,7 +517,7 @@ describe('Executor', () => {
         },
       ])
     );
-    const result = await new Executor(approverStub).execute('go');
+    const result = await new Executor(toolHostStub).execute('go');
     expect(result.events[0]).toMatchObject({
       kind: 'tool',
       failed: true,
@@ -526,7 +532,7 @@ describe('Executor', () => {
         { type: 'error', payload: { error: new Error('connection refused') } },
       ])
     );
-    await expect(new Executor(approverStub).execute('go')).rejects.toThrow(
+    await expect(new Executor(toolHostStub).execute('go')).rejects.toThrow(
       'connection refused'
     );
   });
@@ -540,8 +546,98 @@ describe('Executor', () => {
         { type: 'finish', payload: {} },
       ])
     );
-    await expect(new Executor(approverStub).execute('go')).resolves.toEqual({
+    await expect(new Executor(toolHostStub).execute('go')).resolves.toEqual({
       events: [{ kind: 'text', text: 'ok' }],
     });
+  });
+});
+
+describe('usage reporting', () => {
+  const counts = { inputTokens: 11, outputTokens: 7 };
+  const plan = {
+    summary: 'do the thing',
+    steps: [{ title: 'Read it', tool: 'read', detail: 'because' }],
+  };
+
+  it('Triage reports the routed model and the generate result counts', async () => {
+    generateMock.mockResolvedValue({
+      object: { intent: 'oneshot', reason: 'x' },
+      usage: counts,
+    });
+    const seen: AgentUsage[] = [];
+    await new Triage().classify('q', (usage) => seen.push(usage));
+    expect(seen).toEqual([
+      { model: selectModel(agents.triage.capabilities).model, ...counts },
+    ]);
+  });
+
+  it('Triage stays silent when the result carries no usage', async () => {
+    generateMock.mockResolvedValue({ object: { intent: 'oneshot', reason: 'x' } });
+    const seen: AgentUsage[] = [];
+    await new Triage().classify('q', (usage) => seen.push(usage));
+    expect(seen).toEqual([]);
+  });
+
+  it('accepts the legacy prompt/completion token names', async () => {
+    generateMock.mockResolvedValue({
+      object: { intent: 'oneshot', reason: 'x' },
+      usage: { promptTokens: 3, completionTokens: 5 },
+    });
+    const seen: AgentUsage[] = [];
+    await new Triage().classify('q', (usage) => seen.push(usage));
+    expect(seen).toEqual([
+      {
+        model: selectModel(agents.triage.capabilities).model,
+        inputTokens: 3,
+        outputTokens: 5,
+      },
+    ]);
+  });
+
+  it('Planner reports usage off the drained stream', async () => {
+    streamMock.mockResolvedValue({
+      ...fakeStreamOutput([], plan),
+      usage: Promise.resolve(counts),
+    });
+    const seen: AgentUsage[] = [];
+    await new Planner().plan('p', undefined, (usage) => seen.push(usage));
+    expect(seen).toEqual([
+      { model: selectModel(agents.planner.capabilities).model, ...counts },
+    ]);
+  });
+
+  it('Answerer reports usage off the drained stream', async () => {
+    streamMock.mockResolvedValue({ ...fakeTextOutput(['ok']), usage: counts });
+    const seen: AgentUsage[] = [];
+    await new Answerer().answer('q', undefined, (usage) => seen.push(usage));
+    expect(seen).toEqual([
+      { model: selectModel(agents.answerer.capabilities).model, ...counts },
+    ]);
+  });
+
+  it('Executor reports usage off the drained stream', async () => {
+    streamMock.mockResolvedValue({
+      ...fakeChunkOutput([]),
+      usage: Promise.resolve(counts),
+    });
+    const seen: AgentUsage[] = [];
+    await new Executor(toolHostStub).execute('go', undefined, undefined, (usage) =>
+      seen.push(usage)
+    );
+    expect(seen).toEqual([
+      { model: selectModel(agents.executor.capabilities).model, ...counts },
+    ]);
+  });
+
+  it('a rejecting usage promise is swallowed, not surfaced', async () => {
+    streamMock.mockResolvedValue({
+      ...fakeTextOutput(['ok']),
+      usage: Promise.reject(new Error('no usage')),
+    });
+    const seen: AgentUsage[] = [];
+    await expect(
+      new Answerer().answer('q', undefined, (usage) => seen.push(usage))
+    ).resolves.toBe('ok');
+    expect(seen).toEqual([]);
   });
 });

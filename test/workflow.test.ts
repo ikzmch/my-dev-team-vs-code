@@ -13,25 +13,38 @@ import {
   DevTeamWorkflow,
   ReplyProgress,
   ReplyProgressSink,
-} from '../src/core/workflow';
-import { TriageResult } from '../src/core/triage';
-import { PartialPlan, PlanProgress, PlanResult } from '../src/core/planner';
-import { AnswerProgress } from '../src/core/answerer';
-import { ExecutionProgress, ExecutionResult, PartialExecution } from '../src/core/executor';
+  StepUsage,
+  UsageSink,
+  usageSinkKey,
+} from '../src/engine/core/workflow';
+import { UsageReporter } from '../src/engine/core/usage';
+import { TriageResult } from '../src/engine/core/triage';
+import { PartialPlan, PlanProgress, PlanResult } from '../src/engine/core/planner';
+import { AnswerProgress } from '../src/engine/core/answerer';
+import { ExecutionProgress, ExecutionResult, PartialExecution } from '../src/engine/core/executor';
 
-function fakeTriage(impl: (prompt: string) => Promise<TriageResult>) {
+function fakeTriage(
+  impl: (prompt: string, onUsage?: UsageReporter) => Promise<TriageResult>
+) {
   return { classify: impl } as any;
 }
 
 function fakePlanner(
-  impl: (prompt: string, onPartial?: PlanProgress) => Promise<PlanResult>
+  impl: (
+    prompt: string,
+    onPartial?: PlanProgress,
+    onUsage?: UsageReporter
+  ) => Promise<PlanResult>
 ) {
   return { plan: impl } as any;
 }
 
 function fakeAnswerer(
-  impl: (prompt: string, onPartial?: AnswerProgress) => Promise<string> = async () =>
-    'the answer'
+  impl: (
+    prompt: string,
+    onPartial?: AnswerProgress,
+    onUsage?: UsageReporter
+  ) => Promise<string> = async () => 'the answer'
 ) {
   return { answer: impl } as any;
 }
@@ -40,7 +53,8 @@ function fakeExecutor(
   impl: (
     prompt: string,
     onPartial?: ExecutionProgress,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onUsage?: UsageReporter
   ) => Promise<ExecutionResult> = async () => anExecution
 ) {
   return { execute: impl } as any;
@@ -685,5 +699,82 @@ describe('dev-team workflow failures', () => {
       expect(result.error.message).toContain('model not found');
       expect(result.steps[stepIds.answer]?.status).toBe('failed');
     }
+  });
+});
+
+describe('dev-team workflow usage reporting', () => {
+  function usageContext(sink: UsageSink) {
+    const requestContext = new RequestContext();
+    requestContext.set(usageSinkKey, sink);
+    return requestContext;
+  }
+
+  it('tags each agent usage report with its protocol step on the planning path', async () => {
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async (_p, onUsage) => {
+        onUsage?.({ model: 'm-triage', inputTokens: 1, outputTokens: 2 });
+        return { intent: 'planning', reason: 'x' };
+      }),
+      fakePlanner(async (_p, _onPartial, onUsage) => {
+        onUsage?.({ model: 'm-plan', inputTokens: 3, outputTokens: 4 });
+        return aPlan;
+      }),
+      fakeAnswerer(),
+      fakeExecutor(async (_p, _onPartial, _signal, onUsage) => {
+        onUsage?.({ model: 'm-exec', inputTokens: 5, outputTokens: 6 });
+        return anExecution;
+      })
+    );
+
+    const seen: StepUsage[] = [];
+    const run = await workflow.createRun();
+    await run.start({
+      inputData: { prompt: 'add a feature' },
+      requestContext: usageContext((usage) => seen.push(usage)),
+    });
+
+    expect(seen).toEqual([
+      { step: 'triage', model: 'm-triage', inputTokens: 1, outputTokens: 2 },
+      { step: 'plan', model: 'm-plan', inputTokens: 3, outputTokens: 4 },
+      { step: 'execute', model: 'm-exec', inputTokens: 5, outputTokens: 6 },
+    ]);
+  });
+
+  it('tags the answerer report with the answer step on the oneshot path', async () => {
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'oneshot', reason: 'x' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(async (_p, _onPartial, onUsage) => {
+        onUsage?.({ model: 'm-answer', inputTokens: 7 });
+        return 'ok';
+      }),
+      fakeExecutor()
+    );
+
+    const seen: StepUsage[] = [];
+    const run = await workflow.createRun();
+    await run.start({
+      inputData: { prompt: 'what is 2+2' },
+      requestContext: usageContext((usage) => seen.push(usage)),
+    });
+
+    expect(seen).toEqual([{ step: 'answer', model: 'm-answer', inputTokens: 7 }]);
+  });
+
+  it('hands the agents no usage reporter when no sink was provided', async () => {
+    let received: UsageReporter | undefined | 'unset' = 'unset';
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async (_p, onUsage) => {
+        received = onUsage;
+        return { intent: 'oneshot', reason: 'x' };
+      }),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor()
+    );
+
+    const result = await runWorkflow(workflow, 'hi');
+    expect(result.status).toBe('success');
+    expect(received).toBeUndefined();
   });
 });

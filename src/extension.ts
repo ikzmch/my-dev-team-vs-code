@@ -1,28 +1,20 @@
 import * as vscode from 'vscode';
-import { Triage } from './core/triage';
-import { Planner } from './core/planner';
-import { Answerer } from './core/answerer';
-import { Executor } from './core/executor';
-import { createDevTeamWorkflow } from './core/workflow';
 import { registerTools } from './tools/registerTools';
+import { WorkspaceToolHost } from './tools/toolHost';
+import { createEngineProvider } from './client/engineFactory';
 import {
   PARTICIPANT_ID,
   ChatApprover,
   createHandler,
 } from './ui/chatParticipant';
 import { TerminalRunMirror } from './ui/runTerminal';
-import { checkOllamaAtStartup } from './ui/startupCheck';
+import { checkEngineAtStartup } from './ui/startupCheck';
 
 export function activate(context: vscode.ExtensionContext) {
-  // Fire-and-forget health check: warn now if the configured Ollama endpoint
-  // is unreachable or a router-selected model is not pulled, instead of
-  // failing on the first chat request. Never blocks activation.
-  void checkOllamaAtStartup();
-
   // --- Approval seam: Phase 1 uses the chat-based approver ---
-  // Created before the agents because the Executor's side-effecting tools
-  // (run, write) are gated by it. Registering wires up the command its
-  // in-chat Approve/Decline buttons invoke.
+  // Created before the tool host because the side-effecting `run` tool is
+  // gated by it. Registering wires up the command its in-chat
+  // Approve/Decline buttons invoke.
   const approver = new ChatApprover();
   approver.register(context);
 
@@ -32,23 +24,25 @@ export function activate(context: vscode.ExtensionContext) {
   const runMirror = new TerminalRunMirror();
   context.subscriptions.push(runMirror);
 
-  // --- Agent core (UI-agnostic) ---
-  // Each agent declares weighted capability requirements and the router
-  // (`config/models.ts` + `core/models.ts`) wires the best registered model;
-  // tune capabilities and the registry there, not here. The Mastra workflow
-  // orchestrates them: triage → draft a plan and execute it / answer directly.
-  const workflow = createDevTeamWorkflow(
-    new Triage(),
-    new Planner(),
-    new Answerer(),
-    new Executor(approver, runMirror)
-  );
+  // --- The client's hands: the workspace ToolHost ---
+  // The one place tool calls are validated and dispatched, shared by the
+  // engine's executor loop and the editor-wide Language Model Tools
+  // registrations. Whichever engine runs, the implementations, the approval
+  // gate, and the mirror stay here on the user's machine.
+  const toolHost = new WorkspaceToolHost(approver, runMirror);
+  registerTools(context, toolHost);
 
-  // --- Tools: model can call read/search/run/write ---
-  registerTools(context, approver, runMirror);
+  // --- The engine, behind the protocol ---
+  // The provider reads `myDevTeam.engine` live per request: the in-process
+  // LocalEngine today, a RemoteEngine speaking the same protocol in Phase B.
+  // Fire-and-forget health check: the selected engine reports what is wrong
+  // (unreachable Ollama, missing models) instead of letting the first chat
+  // request be the thing that fails. Never blocks activation.
+  const getEngine = createEngineProvider();
+  void checkEngineAtStartup(getEngine());
 
   // --- UI layer: the chat participant ---
-  const handler = createHandler(workflow);
+  const handler = createHandler(getEngine, toolHost);
   const participant = vscode.chat.createChatParticipant(
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {

@@ -8,21 +8,22 @@ import {
   modelRegistry,
   scoreModel,
   selectModel,
-} from '../src/config/models';
-import { parseFrontmatter } from '../src/config/frontmatter';
-import { agents } from '../src/config/agents';
+} from '../src/engine/config/models';
+import { parseFrontmatter } from '../src/engine/config/frontmatter';
+import { agents } from '../src/engine/config/agents';
 import {
   loadTools,
   toolConfigs,
   toolNames,
   renderToolsSection,
-} from '../src/config/tools';
+} from '../src/engine/config/tools';
+import { clientTools, clientToolNames } from '../src/protocol/toolContract';
 import {
   describeEnvironment,
   environment,
   renderEnvironmentSection,
 } from '../src/config/environment';
-import { PlanStepSchema } from '../src/core/planner';
+import { PlanStepSchema } from '../src/engine/core/planner';
 
 beforeEach(() => {
   __reset();
@@ -35,30 +36,24 @@ describe('messages templates', () => {
     expect(block).toContain('**Reason:** because');
   });
 
-  it('appends the Ollama troubleshooting hint to triage errors', () => {
-    const text = messages.triage.error('connection refused');
-    expect(text).toContain('**Triage error:** connection refused');
-    expect(text).toContain(settings.ollamaEndpoint);
-    expect(text).toContain(selectModel(agents.triage.capabilities).model);
+  it('renders the step error templates from the protocol detail alone', () => {
+    // The Ollama hint is no longer baked in: it arrives as the protocol
+    // error's `hint`, supplied by the engine (see localEngine.test.ts).
+    expect(messages.triage.error('connection refused')).toBe(
+      '**Triage error:** connection refused\n\n'
+    );
+    expect(messages.plan.error('model missing')).toBe(
+      '**Planner error:** model missing\n\n'
+    );
+    expect(messages.answer.error('model missing')).toBe(
+      '**Answerer error:** model missing\n\n'
+    );
   });
 
-  it('appends the Ollama troubleshooting hint to planner errors', () => {
-    const text = messages.plan.error('model missing');
-    expect(text).toContain('**Planner error:** model missing');
-    expect(text).toContain(settings.ollamaEndpoint);
-  });
-
-  it('appends the Ollama troubleshooting hint to answerer errors', () => {
-    const text = messages.answer.error('model missing');
-    expect(text).toContain('**Answerer error:** model missing');
-    expect(text).toContain(settings.ollamaEndpoint);
-    expect(text).toContain(selectModel(agents.answerer.capabilities).model);
-  });
-
-  it('derives the hint endpoint from the user setting, not a constant', () => {
-    __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
-    expect(messages.triage.error('x')).toContain('http://gpu-box:11434');
-    expect(messages.plan.error('x')).toContain('http://gpu-box:11434');
+  it('renders the Ollama hint template from the given endpoint and model', () => {
+    const hint = messages.ollamaHint('http://gpu-box:11434', 'qwen3:8b');
+    expect(hint).toContain('http://gpu-box:11434');
+    expect(hint).toContain('`qwen3:8b`');
   });
 
   it('provides the plan and answer headers as streamable prefixes', () => {
@@ -96,11 +91,10 @@ describe('messages templates', () => {
     );
   });
 
-  it('appends the Ollama troubleshooting hint to executor errors', () => {
-    const text = messages.execution.error('model missing');
-    expect(text).toContain('**Executor error:** model missing');
-    expect(text).toContain(settings.ollamaEndpoint);
-    expect(text).toContain(selectModel(agents.executor.capabilities).model);
+  it('renders the executor error template from the protocol detail alone', () => {
+    expect(messages.execution.error('model missing')).toBe(
+      '**Executor error:** model missing\n\n'
+    );
   });
 
   it('renders execution transcript lines as appendable fragments', () => {
@@ -114,15 +108,9 @@ describe('messages templates', () => {
     expect(messages.execution.header).toBe('**Execution:**');
   });
 
-  it('keeps the Ollama hint sourced from the router, not a hardcoded id', () => {
-    // The hint must name whatever model the router selects for the failing
-    // agent, so the troubleshooting text can never drift from the model in use.
-    expect(messages.triage.error('x')).toContain(
-      selectModel(agents.triage.capabilities).model
-    );
-    expect(messages.plan.error('x')).toContain(
-      selectModel(agents.planner.capabilities).model
-    );
+  it('warns about the not-yet-available remote engine by name', () => {
+    expect(messages.engine.remoteUnavailable).toContain('myDevTeam.engine');
+    expect(messages.engine.remoteUnavailable).toContain('local');
   });
 });
 
@@ -166,6 +154,7 @@ describe('settings', () => {
 
 describe('user-tunable settings (VS Code configuration)', () => {
   it('falls back to the defaults when nothing is configured', () => {
+    expect(settings.engine).toBe(defaults.engine);
     expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
     expect(settings.runCommandTimeoutMs).toBe(defaults.runCommandTimeoutMs);
     expect(settings.search.globMaxResults).toBe(defaults.search.globMaxResults);
@@ -181,6 +170,15 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.executor.snippetLines).toBe(0);
     __setConfig('myDevTeam.chat.toolSnippetLines', -1);
     expect(settings.executor.snippetLines).toBe(defaults.chat.toolSnippetLines);
+  });
+
+  it('accepts only the literal "remote" for the engine and falls back otherwise', () => {
+    __setConfig('myDevTeam.engine', 'remote');
+    expect(settings.engine).toBe('remote');
+    __setConfig('myDevTeam.engine', 'cloud');
+    expect(settings.engine).toBe('local');
+    __setConfig('myDevTeam.engine', 42);
+    expect(settings.engine).toBe('local');
   });
 
   it('reads user-configured values live', () => {
@@ -414,9 +412,14 @@ describe('tool configs', () => {
     expect(toolConfigs.write.sideEffecting).toBe(false);
   });
 
-  it('maps each tool to its Language Model Tools API id', () => {
-    for (const name of toolNames) {
-      expect(toolConfigs[name].lmTool).toBe(`devteam__${name}`);
+  it('agrees with the protocol contract on the tool vocabulary', () => {
+    // The engine's tool configs (model-facing) and the protocol's client
+    // tools (ids, display names, input schemas) describe the same four
+    // tools; a tool added on one side only would silently break the other.
+    expect([...toolNames].sort()).toEqual([...clientToolNames].sort());
+    for (const name of clientToolNames) {
+      expect(clientTools[name].lmToolId).toBe(`devteam__${name}`);
+      expect(clientTools[name].displayName).toBeTruthy();
     }
   });
 
@@ -430,8 +433,8 @@ describe('tool configs', () => {
 
   it('names a preview argument matching each tool\'s input schema', () => {
     // The transcript shows this argument's value instead of the args JSON
-    // (e.g. just the file name for write); the names must match the zod
-    // input schemas in tools/agentTools.ts or the preview silently falls
+    // (e.g. just the file name for write); the names must match the input
+    // schemas in protocol/toolContract.ts or the preview silently falls
     // back to JSON.
     expect(toolConfigs.read.previewArg).toBe('path');
     expect(toolConfigs.write.previewArg).toBe('path');
@@ -441,8 +444,8 @@ describe('tool configs', () => {
 
   it('names write\'s contents as its snippet argument; the others have none', () => {
     // The transcript shows this argument's first lines as a fenced snippet
-    // under the call line; the name must match the zod input schema in
-    // tools/agentTools.ts or the snippet silently disappears.
+    // under the call line; the name must match the input schema in
+    // protocol/toolContract.ts or the snippet silently disappears.
     expect(toolConfigs.write.snippetArg).toBe('contents');
     expect(toolConfigs.read.snippetArg).toBeUndefined();
     expect(toolConfigs.search.snippetArg).toBeUndefined();
@@ -467,8 +470,7 @@ describe('tool configs', () => {
   });
 
   it('rejects two tool files sharing one name', () => {
-    const file =
-      '---\nname: twin\ndisplayName: Twin\nlmTool: devteam__twin\nsideEffecting: false\n---\ndesc';
+    const file = '---\nname: twin\nsideEffecting: false\n---\ndesc';
     expect(() => loadTools([file, file])).toThrow(/Duplicate tool name "twin"/);
   });
 });

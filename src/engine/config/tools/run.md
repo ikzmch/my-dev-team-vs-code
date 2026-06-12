@@ -1,7 +1,5 @@
 ---
 name: run
-displayName: Run Command
-lmTool: devteam__run
 sideEffecting: true
 previewArg: command
 ---

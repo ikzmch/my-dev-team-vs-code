@@ -1,31 +1,30 @@
 /**
- * Tool configuration registry. Each tool the agents can plan with is described
- * by a `.md` file in ./tools, discovered by the glob import at build time:
- * frontmatter carries the structured fields (name,
- * displayName, the Language Model Tools API id it registers as, whether it is
- * side-effecting), and the markdown body is the model-facing description.
+ * Tool configuration registry: the engine-side (model-facing) half of each
+ * tool. Each tool the agents can plan with is described by a `.md` file in
+ * ./tools, discovered by the glob import at build time: frontmatter carries
+ * the structured fields (name, whether it is side-effecting, the transcript
+ * preview hints), and the markdown body is the model-facing description.
  * `{{os}}`/`{{shell}}` placeholders in a description are filled from
  * config/environment.ts, so a tool can state which OS and shell it runs in.
  *
+ * The client-side half - input schemas, Language Model Tools ids, display
+ * names - lives in the protocol's tool contract (src/protocol/toolContract.ts)
+ * next to the implementations it describes; this registry holds only what the
+ * engine's prompts and transcripts need.
+ *
  * Agents list the tools they may use in their own frontmatter (see agents.ts);
  * `renderToolsSection` turns that list into the "available tools" prompt
- * section, so prompts never hardcode tool descriptions. The implementations
- * live in src/tools/workspaceTools.ts; the VS Code contribution (input
- * schemas) stays declarative in package.json as the API requires.
+ * section, so prompts never hardcode tool descriptions.
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
-import { environment } from './environment';
+import { environment } from '../../config/environment';
 import toolFiles from 'glob:./tools/*.md';
 
 const ToolFrontmatterSchema = z.object({
   /** Short name agents and plan steps refer to the tool by. */
   name: z.string(),
-  /** Human-readable name, matching the package.json contribution. */
-  displayName: z.string(),
-  /** Id the tool registers under in the Language Model Tools API. */
-  lmTool: z.string(),
-  /** Side-effecting tools are gated by the Approver before they act. */
+  /** Side-effecting tools are gated by the client's Approver before they act. */
   sideEffecting: z.boolean(),
   /**
    * Input argument whose value summarises a call in the execution transcript

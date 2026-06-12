@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { checkOllamaAtStartup, routedModels } from '../src/ui/startupCheck';
-import { selectModel } from '../src/config/models';
-import { agents } from '../src/config/agents';
+import { checkEngineAtStartup } from '../src/ui/startupCheck';
+import { LocalEngine, routedModels } from '../src/engine/localEngine';
+import { Engine } from '../src/protocol/engine';
+import { selectModel } from '../src/engine/config/models';
+import { agents } from '../src/engine/config/agents';
 import { defaults } from '../src/config/settings';
 import { __reset, __setConfig, window } from './mocks/vscode';
 
@@ -26,6 +28,16 @@ function tagsResponse(models: string[]) {
   };
 }
 
+/** A LocalEngine that never constructs real agents; only the probe is used. */
+function probeOnlyEngine(): LocalEngine {
+  return new LocalEngine({
+    triage: {} as any,
+    planner: {} as any,
+    answerer: {} as any,
+    createExecutor: () => ({} as any),
+  });
+}
+
 describe('routedModels', () => {
   it('returns the deduplicated models the router selects for the agents', () => {
     const expected = new Set(
@@ -36,12 +48,12 @@ describe('routedModels', () => {
   });
 });
 
-describe('checkOllamaAtStartup', () => {
+describe('LocalEngine.startupWarnings', () => {
   it('probes /api/tags on the configured endpoint', async () => {
     __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
     fetchMock.mockResolvedValue(tagsResponse(routedModels()));
 
-    await checkOllamaAtStartup();
+    await probeOnlyEngine().startupWarnings();
 
     expect(fetchMock).toHaveBeenCalledWith(
       'http://gpu-box:11434/api/tags',
@@ -49,62 +61,100 @@ describe('checkOllamaAtStartup', () => {
     );
   });
 
-  it('stays silent when the server is up and every routed model is pulled', async () => {
+  it('reports nothing when the server is up and every routed model is pulled', async () => {
     fetchMock.mockResolvedValue(tagsResponse(routedModels()));
-
-    await checkOllamaAtStartup();
-
-    expect(window.showWarningMessage).not.toHaveBeenCalled();
+    await expect(probeOnlyEngine().startupWarnings()).resolves.toEqual([]);
   });
 
   it('accepts the ":latest" alias Ollama reports for untagged pulls', async () => {
     fetchMock.mockResolvedValue(
       tagsResponse(routedModels().map((m) => `${m}:latest`))
     );
-
-    await checkOllamaAtStartup();
-
-    expect(window.showWarningMessage).not.toHaveBeenCalled();
+    await expect(probeOnlyEngine().startupWarnings()).resolves.toEqual([]);
   });
 
   it('warns with the endpoint when the server is unreachable', async () => {
     fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 
-    await checkOllamaAtStartup();
+    const warnings = await probeOnlyEngine().startupWarnings();
 
-    expect(window.showWarningMessage).toHaveBeenCalledTimes(1);
-    const warning = vi.mocked(window.showWarningMessage).mock.calls[0][0] as string;
-    expect(warning).toContain(defaults.ollamaEndpoint);
-    expect(warning).toContain('myDevTeam.ollama.endpoint');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(defaults.ollamaEndpoint);
+    expect(warnings[0]).toContain('myDevTeam.ollama.endpoint');
   });
 
   it('treats a non-OK response as unreachable', async () => {
     fetchMock.mockResolvedValue({ ok: false, status: 503 });
 
-    await checkOllamaAtStartup();
-
-    const warning = vi.mocked(window.showWarningMessage).mock.calls[0][0] as string;
-    expect(warning).toContain(defaults.ollamaEndpoint);
+    const warnings = await probeOnlyEngine().startupWarnings();
+    expect(warnings[0]).toContain(defaults.ollamaEndpoint);
   });
 
   it('warns naming exactly the models that are missing', async () => {
     const [needed, ...rest] = routedModels();
     fetchMock.mockResolvedValue(tagsResponse(rest));
 
-    await checkOllamaAtStartup();
+    const warnings = await probeOnlyEngine().startupWarnings();
 
-    expect(window.showWarningMessage).toHaveBeenCalledTimes(1);
-    const warning = vi.mocked(window.showWarningMessage).mock.calls[0][0] as string;
-    expect(warning).toContain(needed);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(needed);
     for (const present of rest) {
-      expect(warning).not.toContain(present);
+      expect(warnings[0]).not.toContain(present);
     }
-    expect(warning).toContain('ollama pull');
+    expect(warnings[0]).toContain('ollama pull');
   });
 
-  it('never throws, even on a malformed tags payload', async () => {
+  it('never throws on a malformed tags payload; it reports unreachable', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ models: 'nope' }) });
 
-    await expect(checkOllamaAtStartup()).resolves.toBeUndefined();
+    const warnings = await probeOnlyEngine().startupWarnings();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(defaults.ollamaEndpoint);
+  });
+});
+
+describe('checkEngineAtStartup', () => {
+  it('shows one warning message per reported warning', async () => {
+    const engine: Engine = {
+      kind: 'local',
+      startRun: () => {
+        throw new Error('not used');
+      },
+      startupWarnings: async () => ['warning one', 'warning two'],
+    };
+
+    await checkEngineAtStartup(engine);
+
+    expect(window.showWarningMessage).toHaveBeenCalledTimes(2);
+    expect(window.showWarningMessage).toHaveBeenCalledWith('warning one');
+    expect(window.showWarningMessage).toHaveBeenCalledWith('warning two');
+  });
+
+  it('shows nothing when the engine reports no warnings', async () => {
+    const engine: Engine = {
+      kind: 'local',
+      startRun: () => {
+        throw new Error('not used');
+      },
+      startupWarnings: async () => [],
+    };
+
+    await checkEngineAtStartup(engine);
+    expect(window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it('swallows a probe that rejects instead of failing activation', async () => {
+    const engine: Engine = {
+      kind: 'local',
+      startRun: () => {
+        throw new Error('not used');
+      },
+      startupWarnings: async () => {
+        throw new Error('probe broke');
+      },
+    };
+
+    await expect(checkEngineAtStartup(engine)).resolves.toBeUndefined();
+    expect(window.showWarningMessage).not.toHaveBeenCalled();
   });
 });

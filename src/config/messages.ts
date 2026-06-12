@@ -1,23 +1,14 @@
 /**
  * User-facing copy for the chat UI: error text and the markdown templates
- * the reply renderer uses. Kept out of the logic so the
- * wording (and the Ollama troubleshooting hint) can be tuned without editing
- * control flow. Functions take only the dynamic bits; static prose lives here.
+ * the reply renderer uses. Kept out of the logic so the wording can be tuned
+ * without editing control flow. Functions take only the dynamic bits; static
+ * prose lives here.
+ *
+ * Deliberately knows nothing about agents or models: the error templates
+ * render a detail the protocol delivered, and the Ollama troubleshooting
+ * hint is a template the LocalEngine fills in - which model is routed where
+ * is engine knowledge the client no longer has.
  */
-import { selectModel } from './models';
-import { agents, AgentName } from './agents';
-import { settings } from './settings';
-
-/**
- * Hint appended to triage/planner errors, naming the model the router
- * actually selected for that agent and the endpoint the provider wiring
- * actually uses (`settings.ollamaEndpoint`), so the troubleshooting text can
- * never drift from either.
- */
-function ollamaHint(agent: AgentName): string {
-  const { model } = selectModel(agents[agent].capabilities);
-  return `Is Ollama running on ${settings.ollamaEndpoint} with \`${model}\` pulled?\n\n`;
-}
 
 /**
  * Wrap untrusted content (a command, a file path, a written-file snippet) in a
@@ -36,6 +27,15 @@ function fence(content: string, min: number): string {
 }
 
 export const messages = {
+  /**
+   * Hint the LocalEngine appends to a step failure, naming the model the
+   * router actually selected for the failing agent and the endpoint the
+   * provider wiring actually uses, so the troubleshooting text can never
+   * drift from either. Travels to the UI as the protocol error's `hint`.
+   */
+  ollamaHint: (endpoint: string, model: string) =>
+    `Is Ollama running on ${endpoint} with \`${model}\` pulled?\n\n`,
+
   /** Copy for the side-effecting tools' approval gate. */
   approval: {
     runCommandTitle: 'Run command',
@@ -74,28 +74,25 @@ export const messages = {
   triage: {
     block: (intent: string, reason: string) =>
       `**Detected intent:** \`${intent}\`\n\n` + `**Reason:** ${reason}\n\n`,
-    error: (detail: string) =>
-      `**Triage error:** ${detail}\n\n` + ollamaHint('triage'),
+    error: (detail: string) => `**Triage error:** ${detail}\n\n`,
   },
 
   answer: {
-    error: (detail: string) =>
-      `**Answerer error:** ${detail}\n\n` + ollamaHint('answerer'),
+    error: (detail: string) => `**Answerer error:** ${detail}\n\n`,
     // A prefix rather than a template: the renderer streams the answer text
     // in behind it while the model is still writing it.
     header: '**Answer:**\n\n',
   },
 
   plan: {
-    error: (detail: string) => `**Planner error:** ${detail}\n\n` + ollamaHint('planner'),
+    error: (detail: string) => `**Planner error:** ${detail}\n\n`,
     // A prefix rather than a template: the renderer streams the summary in
     // behind it while the planner is still writing it.
     header: '**Plan:** ',
   },
 
   execution: {
-    error: (detail: string) =>
-      `**Executor error:** ${detail}\n\n` + ollamaHint('executor'),
+    error: (detail: string) => `**Executor error:** ${detail}\n\n`,
     // A prefix rather than a template: the transcript streams in behind it
     // while the executor is still working.
     header: '**Execution:**',
@@ -118,12 +115,18 @@ export const messages = {
   },
 
   run: {
-    /** Shown when the workflow run ends in a state we do not render yet. */
-    unexpectedStatus: (status: string) =>
-      `**The workflow run ended with status \`${status}\`.**\n\n`,
+    /** Shown when a run fails without a step the protocol could attribute it to. */
+    error: (detail: string) => `**The run failed:** ${detail}\n\n`,
   },
 
-  /** Warnings the activation health check may surface (ui/startupCheck.ts). */
+  /** Copy for the engine switch (client/engineFactory.ts). */
+  engine: {
+    remoteUnavailable:
+      'My Dev Team: the remote engine is not available yet; using the local engine. ' +
+      'Set "myDevTeam.engine" back to "local" to hide this warning.',
+  },
+
+  /** Warnings the engines' startup probes may surface (ui/startupCheck.ts). */
   startup: {
     unreachable: (endpoint: string) =>
       `My Dev Team: cannot reach Ollama at ${endpoint}. ` +

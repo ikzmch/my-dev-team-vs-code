@@ -1,6 +1,8 @@
 import { Agent } from '@mastra/core/agent';
 import { resolveModel } from './models';
+import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
+import { selectModel } from '../config/models';
 
 /**
  * Receives the answer-so-far as the model streams it. Each call carries the
@@ -16,6 +18,7 @@ export type AnswerProgress = (textSoFar: string) => void;
  * product is the prose itself.
  */
 export class Answerer {
+  private readonly modelName = selectModel(agents.answerer.capabilities).model;
   private readonly agent = new Agent({
     id: agents.answerer.id,
     name: agents.answerer.name,
@@ -24,7 +27,11 @@ export class Answerer {
     model: resolveModel(agents.answerer.capabilities),
   });
 
-  async answer(prompt: string, onPartial?: AnswerProgress): Promise<string> {
+  async answer(
+    prompt: string,
+    onPartial?: AnswerProgress,
+    onUsage?: UsageReporter
+  ): Promise<string> {
     const output = await this.agent.stream([{ role: 'user', content: prompt }]);
     // The text stream delivers deltas; accumulate them into snapshots for the
     // caller. Reading the stream is also what drives the generation to
@@ -40,6 +47,10 @@ export class Answerer {
         text += value;
         onPartial?.(text);
       }
+    }
+    const usage = await readUsage(output);
+    if (usage) {
+      onUsage?.({ model: this.modelName, ...usage });
     }
     return output.text;
   }

@@ -36,7 +36,7 @@ import {
   runCommand,
   writeFile,
 } from '../src/tools/workspaceTools';
-import { Approver, RunMirror } from '../src/core/types';
+import { Approver, RunMirror } from '../src/tools/types';
 import { settings } from '../src/config/settings';
 import { environment } from '../src/config/environment';
 import {

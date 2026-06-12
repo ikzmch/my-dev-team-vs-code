@@ -8,7 +8,9 @@ vi.mock('child_process', () => ({
 }));
 
 import { registerTools } from '../src/tools/registerTools';
-import { Approver } from '../src/core/types';
+import { WorkspaceToolHost } from '../src/tools/toolHost';
+import { Approver } from '../src/tools/types';
+import { ToolHost } from '../src/protocol/toolContract';
 import { __reset, __state, __setFile } from './mocks/vscode';
 
 function makeApprover(verdict: boolean): Approver {
@@ -36,7 +38,7 @@ beforeEach(() => {
 describe('registerTools', () => {
   it('registers all four workspace tools and pushes disposables', () => {
     const context = fakeContext();
-    registerTools(context as any, makeApprover(true));
+    registerTools(context as any, new WorkspaceToolHost(makeApprover(true)));
 
     expect([...__state.registeredTools.keys()]).toEqual([
       'devteam__read',
@@ -47,9 +49,32 @@ describe('registerTools', () => {
     expect(context.subscriptions).toHaveLength(4);
   });
 
+  it('delegates each registered tool to the shared host with its short name', async () => {
+    const calls: Array<{ tool: string; args: unknown }> = [];
+    const host: ToolHost = {
+      tools: ['read', 'search', 'run', 'write'],
+      execute: async (tool, args) => {
+        calls.push({ tool, args });
+        return 'host says hi';
+      },
+    };
+    registerTools(fakeContext() as any, host);
+
+    await expect(invokeTool('devteam__read', { path: 'a.ts' })).resolves.toBe(
+      'host says hi'
+    );
+    await expect(invokeTool('devteam__run', { command: 'echo hi' })).resolves.toBe(
+      'host says hi'
+    );
+    expect(calls).toEqual([
+      { tool: 'read', args: { path: 'a.ts' } },
+      { tool: 'run', args: { command: 'echo hi' } },
+    ]);
+  });
+
   it('read tool returns file contents', async () => {
     __setFile('a.ts', 'contents here');
-    registerTools(fakeContext() as any, makeApprover(true));
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(true)));
     await expect(invokeTool('devteam__read', { path: 'a.ts' })).resolves.toBe(
       'contents here'
     );
@@ -60,7 +85,7 @@ describe('registerTools', () => {
       __setFile('a.ts', 'x'),
       __setFile('b.ts', 'y'),
     ];
-    registerTools(fakeContext() as any, makeApprover(true));
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(true)));
     const out = await invokeTool('devteam__search', {
       query: '**/*.ts',
       mode: 'glob',
@@ -70,7 +95,7 @@ describe('registerTools', () => {
 
   it('search tool reports "(no matches)" when empty', async () => {
     __state.findFilesResult = [];
-    registerTools(fakeContext() as any, makeApprover(true));
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(true)));
     const out = await invokeTool('devteam__search', {
       query: '**/*.none',
       mode: 'glob',
@@ -79,7 +104,7 @@ describe('registerTools', () => {
   });
 
   it('run tool respects a declining approver', async () => {
-    registerTools(fakeContext() as any, makeApprover(false));
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(false)));
     const out = await invokeTool('devteam__run', { command: 'echo hi' });
     expect(out).toBe('Command was not approved by the user.');
   });
@@ -94,14 +119,17 @@ describe('registerTools', () => {
       output: () => {},
       end: (note: string) => entries.push(`end:${note}`),
     };
-    registerTools(fakeContext() as any, makeApprover(true), mirror);
+    registerTools(
+      fakeContext() as any,
+      new WorkspaceToolHost(makeApprover(true), mirror)
+    );
     await invokeTool('devteam__run', { command: 'echo hi' });
     expect(entries).toEqual(['begin:echo hi', 'end:(command completed)']);
   });
 
   it('write tool persists the file without asking for approval', async () => {
     // A declining approver proves the write path never consults it.
-    registerTools(fakeContext() as any, makeApprover(false));
+    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(false)));
     const out = await invokeTool('devteam__write', {
       path: 'out.ts',
       contents: 'hello',

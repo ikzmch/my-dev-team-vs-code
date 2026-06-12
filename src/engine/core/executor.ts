@@ -1,69 +1,31 @@
 import { Agent } from '@mastra/core/agent';
-import { z } from 'zod';
 import { resolveModel } from './models';
-import { Approver, RunMirror } from './types';
+import { buildAgentTools } from './agentTools';
+import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
-import { settings } from '../config/settings';
+import { selectModel } from '../config/models';
 import { toolConfigs } from '../config/tools';
-import { buildAgentTools } from '../tools/agentTools';
+import { settings } from '../../config/settings';
+import {
+  ExecutionEvent,
+  Execution,
+  ExecutionSchema,
+  PartialExecution,
+} from '../../protocol/types';
+import { ToolHost } from '../../protocol/toolContract';
+
+export { ExecutionSchema } from '../../protocol/types';
+export type { ExecutionEvent, PartialExecution } from '../../protocol/types';
 
 /**
- * The transcript of an execution run: an ordered interleaving of the model's
- * commentary and the tool calls it made while walking the plan. The order is
- * the product - "read this, then wrote that, then reported" - so the events
- * stay a single sequence instead of separate text/calls lists.
- *
- * Tool inputs and results are recorded as bounded display previews (compact
- * JSON / flattened text, truncated per config/settings.ts): the model saw the
- * full values during the run, the transcript only has to show the user what
- * happened.
+ * The execution transcript shapes live in the protocol (src/protocol/types.ts):
+ * the ordered interleaving of model commentary and tool calls *is* the
+ * user-visible product of this agent, so its schema is part of the wire
+ * contract. This file produces those events; the input/result previews are
+ * computed here, bounded by config/settings.ts, because the engine is what
+ * saw the full values.
  */
-export const TextEventSchema = z.object({
-  kind: z.literal('text'),
-  /** Markdown the model wrote between tool calls (commentary, final report). */
-  text: z.string(),
-});
-
-export const ToolEventSchema = z.object({
-  kind: z.literal('tool'),
-  /** Tool name from the config registry (read | search | run | write). */
-  tool: z.string(),
-  /**
-   * Display preview of the call arguments, truncated: the tool's configured
-   * preview argument (e.g. the path for write) or compact JSON of all args.
-   */
-  input: z.string(),
-  /**
-   * Leading lines of the tool's snippet argument (config `snippetArg`, e.g.
-   * the file contents for write), shown beneath the call line. Absent for
-   * tools without one or when the user set the line count to 0.
-   */
-  snippet: z.string().optional(),
-  /** Preview of the tool's result, truncated; absent while the call runs. */
-  result: z.string().optional(),
-  /** True when the tool threw instead of returning. */
-  failed: z.boolean().optional(),
-});
-
-export const ExecutionEventSchema = z.discriminatedUnion('kind', [
-  TextEventSchema,
-  ToolEventSchema,
-]);
-
-export const ExecutionSchema = z.object({
-  events: z.array(ExecutionEventSchema),
-});
-
-export type ExecutionEvent = z.infer<typeof ExecutionEventSchema>;
-export type ExecutionResult = z.infer<typeof ExecutionSchema>;
-
-/**
- * A snapshot of the execution while the run is still producing it. Snapshots
- * are grow-only the way the planner's partial plans are: events only get
- * appended, and only the last event still changes (a text event's text grows,
- * a tool event gains its result).
- */
-export type PartialExecution = ExecutionResult;
+export type ExecutionResult = Execution;
 
 /** Receives execution snapshots as the run produces them. Must not throw. */
 export type ExecutionProgress = (partial: PartialExecution) => void;
@@ -129,39 +91,41 @@ function resultPreview(result: unknown): string {
  * Executes the drafted plan for a "planning" request. Unlike the planner and
  * the answerer this agent carries tools: Mastra drives the tool-calling loop
  * (model call -> tool calls -> results back to the model, up to
- * `settings.executor.maxSteps` iterations) over the four workspace tools, with
- * the side-effecting ones (run, write) gated by the shared Approver exactly as
- * they are everywhere else.
+ * `settings.executor.maxSteps` iterations) over proxies that delegate every
+ * call to the client's ToolHost - the host owns the implementations and the
+ * approval gate, the engine only decides what to call.
  */
 export class Executor {
+  private readonly modelName = selectModel(agents.executor.capabilities).model;
   private readonly agent: Agent;
   /**
    * The current run's cancellation signal, set for the duration of `execute`.
-   * The tools read it through the getter handed to `buildAgentTools`, so a
-   * cancelled request stops an in-flight command or write even though the
-   * toolset itself is built once here.
+   * The tool proxies read it through the getter handed to `buildAgentTools`,
+   * so a cancelled request stops an in-flight command or write even though
+   * the toolset itself is built once here.
    */
   private currentSignal: AbortSignal | undefined;
 
-  constructor(approver: Approver, mirror?: RunMirror) {
+  constructor(toolHost: ToolHost) {
     this.agent = new Agent({
       id: agents.executor.id,
       name: agents.executor.name,
       description: agents.executor.description,
       instructions: agents.executor.instructions,
       model: resolveModel(agents.executor.capabilities),
-      tools: buildAgentTools(approver, mirror, () => this.currentSignal),
+      tools: buildAgentTools(toolHost, () => this.currentSignal),
     });
   }
 
   async execute(
     prompt: string,
     onPartial?: ExecutionProgress,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onUsage?: UsageReporter
   ): Promise<ExecutionResult> {
     this.currentSignal = signal;
     try {
-      return await this.run(prompt, onPartial, signal);
+      return await this.run(prompt, onPartial, signal, onUsage);
     } finally {
       this.currentSignal = undefined;
     }
@@ -170,7 +134,8 @@ export class Executor {
   private async run(
     prompt: string,
     onPartial: ExecutionProgress | undefined,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    onUsage: UsageReporter | undefined
   ): Promise<ExecutionResult> {
     // Forward the signal so Mastra stops the tool-calling loop when the request
     // is cancelled; only add it when present so the no-signal call still passes
@@ -260,6 +225,11 @@ export class Executor {
           throw error instanceof Error ? error : new Error(String(error));
         }
       }
+    }
+
+    const usage = await readUsage(output);
+    if (usage) {
+      onUsage?.({ model: this.modelName, ...usage });
     }
 
     // Validate rather than cast, mirroring the planner: a malformed transcript

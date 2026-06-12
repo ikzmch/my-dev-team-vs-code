@@ -1,21 +1,20 @@
 import * as vscode from 'vscode';
-import { RequestContext } from '@mastra/core/request-context';
-import { Approver } from '../core/types';
+import { Approver } from '../tools/types';
 import {
   Attachment,
-  DevTeamWorkflow,
   HistoryTurn,
+  PartialExecution,
+  PartialPlan,
+  PROTOCOL_VERSION,
+  Reply,
   ReplyProgress,
-  ReplyResult,
-  abortSignalKey,
-  replyProgressKey,
-  stepIds,
-} from '../core/workflow';
-import { PartialPlan } from '../core/planner';
-import { PartialExecution } from '../core/executor';
+} from '../protocol/types';
+import { ReplyFolder, RunEvent } from '../protocol/events';
+import { clientTools, ToolHost } from '../protocol/toolContract';
+import { Engine, RunCancelledError, RunFailedError } from '../protocol/engine';
+import { environment } from '../config/environment';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
-import { toolConfigs } from '../config/tools';
 
 export const PARTICIPANT_ID = 'myDevTeam.agent';
 
@@ -116,11 +115,11 @@ function truncate(text: string, maxChars: number): string {
 
 /**
  * Resolve files/selections the user attached to the chat request into
- * workflow attachments. VS Code delivers attachments on `request.references`,
- * not in the prompt: each `value` is a Uri (whole file), a Location (file +
- * range, e.g. a selection), or a plain string. The workflow decides per step
- * how much of each attachment its model sees (triage gets labels only, the
- * planner/answerer get the full text).
+ * run-request attachments. VS Code delivers attachments on
+ * `request.references`, not in the prompt: each `value` is a Uri (whole
+ * file), a Location (file + range, e.g. a selection), or a plain string. The
+ * engine decides per step how much of each attachment its model sees (triage
+ * gets labels only, the planner/answerer get the full text).
  */
 async function collectAttachments(
   refs: readonly vscode.ChatPromptReference[]
@@ -161,7 +160,7 @@ async function collectAttachments(
 }
 
 /**
- * Convert the chat session's prior turns into workflow history turns, so a
+ * Convert the chat session's prior turns into run-request history turns, so a
  * follow-up ("now rename it too") reaches the agents with the conversation
  * that says what "it" is. Only this participant's exchanges count: a request
  * turn becomes a user turn (with its slash command restored, since VS Code
@@ -261,6 +260,12 @@ function inlinePreview(text: string): string {
   return flat || messages.execution.emptyResult;
 }
 
+/** The display name transcripts render for a tool, from the protocol contract. */
+function toolDisplayName(tool: string): string {
+  const known = clientTools as Record<string, { displayName: string } | undefined>;
+  return known[tool]?.displayName ?? tool;
+}
+
 /**
  * Render a (possibly still streaming) execution transcript. Snapshots are
  * grow-only (events are appended; the trailing text event grows, the trailing
@@ -277,10 +282,7 @@ function formatExecution(execution: PartialExecution, done: boolean): string {
     if (event.kind === 'text') {
       text += '\n\n' + event.text;
     } else {
-      // Transcript lines lead with the tool's human-readable display name; a
-      // name the registry can't resolve falls back to the raw one.
-      const displayName = toolConfigs[event.tool]?.displayName ?? event.tool;
-      text += messages.execution.call(displayName, inlinePreview(event.input));
+      text += messages.execution.call(toolDisplayName(event.tool), inlinePreview(event.input));
       if (event.result !== undefined) {
         text += messages.execution.result(inlinePreview(event.result), !!event.failed);
       } else if (!done) {
@@ -299,7 +301,7 @@ function formatExecution(execution: PartialExecution, done: boolean): string {
  * (`done` false) and for the final result (`done` true), so the streamed
  * prefix and the finished reply can never drift apart. Exported for tests.
  */
-export function renderReply(reply: ReplyProgress | ReplyResult, done: boolean): string {
+export function renderReply(reply: ReplyProgress | Reply, done: boolean): string {
   let text = messages.triage.block(reply.intent, reply.reason);
   if (reply.plan) {
     // Once execution output exists the plan is necessarily complete, so it
@@ -319,10 +321,10 @@ export function renderReply(reply: ReplyProgress | ReplyResult, done: boolean): 
 /**
  * Bridges full-document renders onto the append-only chat stream by emitting
  * only the newly appended suffix of each successive render. If a snapshot
- * ever fails to extend what was already emitted (the partial-JSON stream
- * should be monotonic, so this is a guard, not an expectation), it is
- * skipped; `finish` then falls back to appending the complete reply so the
- * user never ends up with a truncated answer.
+ * ever fails to extend what was already emitted (the event stream should be
+ * monotonic, so this is a guard, not an expectation), it is skipped;
+ * `finish` then falls back to appending the complete reply so the user never
+ * ends up with a truncated answer.
  */
 class ReplyStreamer {
   private emitted = '';
@@ -349,81 +351,104 @@ class ReplyStreamer {
   }
 }
 
-/** Render a failed run, attributing the error to the step that failed. */
-function renderFailure(
-  error: unknown,
-  steps: Record<string, { status: string }>
-): string {
-  // Mastra serializes step errors to plain `{ message, … }` objects, so the
-  // value here may be an Error, a serialized error, or anything thrown.
-  const detail =
-    typeof error === 'object' && error !== null && 'message' in error
-      ? String((error as { message: unknown }).message)
-      : String(error);
-  if (steps[stepIds.execute]?.status === 'failed') {
-    return messages.execution.error(detail);
-  }
-  if (steps[stepIds.plan]?.status === 'failed') {
-    return messages.plan.error(detail);
-  }
-  if (steps[stepIds.answer]?.status === 'failed') {
-    return messages.answer.error(detail);
-  }
-  return messages.triage.error(detail);
+/**
+ * Render a failed run from the protocol's failure: the step's error template
+ * plus the engine-supplied troubleshooting hint when there is one (the
+ * LocalEngine points at Ollama and the routed model - knowledge the client
+ * deliberately no longer has).
+ */
+function renderFailure(error: RunFailedError): string {
+  const template =
+    error.step === 'execute'
+      ? messages.execution.error
+      : error.step === 'plan'
+      ? messages.plan.error
+      : error.step === 'answer'
+      ? messages.answer.error
+      : error.step === 'triage'
+      ? messages.triage.error
+      : messages.run.error;
+  return template(error.message) + (error.hint ?? '');
 }
 
 /**
  * Builds the chat handler. The handler is thin: it resolves attachments and
- * the conversation history and passes them alongside the prompt, starts a run
- * of the dev-team workflow, streams reply snapshots onto the chat as the
- * planner writes them, and completes the render from the structured result.
- * No custom progress label is emitted while agents run; the chat shows VS
- * Code's standard indicator.
+ * the conversation history into a protocol run request, starts a run on
+ * whichever engine the provider currently selects, folds the run's events
+ * back into reply snapshots, and streams each render's new suffix onto the
+ * chat. It neither knows nor cares whether the engine is in-process or
+ * remote - that is the point of the protocol.
  */
-export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHandler {
+export function createHandler(
+  getEngine: () => Engine,
+  toolHost: ToolHost
+): vscode.ChatRequestHandler {
   return async (request, context, stream, token) => {
-    // Resolve attached files/selections and the prior turns; the workflow
+    // Resolve attached files/selections and the prior turns; the engine
     // folds them into each step's prompt as that step's model needs them.
     const attachments = await collectAttachments(request.references);
     const history = collectHistory(context.history);
 
-    const run = await workflow.createRun();
-    // Cancelling the chat request aborts the run (and its model call) instead
-    // of leaving it to finish in the background. The AbortController reaches
-    // the executor's tool loop through the request context, so an in-flight
-    // command is killed and a pending write is dropped rather than completing.
-    const abortController = new AbortController();
-    const cancellation = token.onCancellationRequested(() => {
-      abortController.abort();
-      void run.cancel();
-    });
-
-    // Stream the reply as the workflow produces it: the steps push reply
-    // snapshots through the request context, and the streamer appends each
-    // render's new suffix to the chat. The sink must never throw into the
-    // run, so stream errors (e.g. a closed stream) are swallowed here.
+    // Stream the reply as the engine produces it: events fold back into
+    // grow-only snapshots, and the streamer appends each render's new suffix
+    // to the chat. The event sink must never throw into the engine, so
+    // stream errors (e.g. a closed stream) are swallowed here.
     const streamer = new ReplyStreamer(stream);
-    const requestContext = new RequestContext();
-    requestContext.set(abortSignalKey, abortController.signal);
-    requestContext.set(replyProgressKey, (progress: ReplyProgress) => {
+    const folder = new ReplyFolder();
+    const onEvent = (event: RunEvent) => {
       if (token.isCancellationRequested) {
+        return;
+      }
+      if (event.type === 'usage') {
+        // The billing seam, surfaced locally as a log line for now.
+        console.log(
+          `[My Dev Team] usage: ${event.step}` +
+            (event.model ? ` (${event.model})` : '') +
+            ` in=${event.inputTokens ?? '?'} out=${event.outputTokens ?? '?'}`
+        );
+        return;
+      }
+      const progress = folder.apply(event);
+      // The final render comes from the validated result below.
+      if (!progress || event.type === 'done') {
         return;
       }
       try {
         streamer.update(renderReply(progress, false));
       } catch {
-        // The stream is closed; the run's result handling below still runs.
+        // The stream is closed; the result handling below still runs.
       }
-    });
+    };
 
-    let result;
+    const handle = getEngine().startRun(
+      {
+        protocolVersion: PROTOCOL_VERSION,
+        prompt: request.prompt,
+        attachments,
+        history,
+        environment: { os: environment.os, shell: environment.shell },
+        offeredTools: [...toolHost.tools],
+      },
+      { onEvent, toolHost }
+    );
+    // Cancelling the chat request cancels the run (and its model call)
+    // instead of leaving it to finish in the background; the engine aborts
+    // in-flight tool executions too, so a running command is killed and a
+    // pending write is dropped rather than completing.
+    const cancellation = token.onCancellationRequested(() => handle.cancel());
+
+    let reply: Reply;
     try {
-      result = await run.start({
-        inputData: { prompt: request.prompt, attachments, history },
-        requestContext,
-      });
+      reply = await handle.result;
     } catch (err) {
-      if (token.isCancellationRequested) {
+      // A cancelled request renders nothing: VS Code marks the turn
+      // cancelled and the stream may already be closed.
+      if (token.isCancellationRequested || err instanceof RunCancelledError) {
+        return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
+      }
+      if (err instanceof RunFailedError) {
+        const separator = streamer.hasEmitted ? '\n\n' : '';
+        stream.markdown(separator + renderFailure(err));
         return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
       }
       throw err;
@@ -431,22 +456,10 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
       cancellation.dispose();
     }
 
-    // A cancelled request renders nothing: VS Code marks the turn cancelled
-    // and the stream may already be closed.
-    if (token.isCancellationRequested || (result.status as string) === 'canceled') {
-      return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
-    }
-
-    if (result.status === 'success') {
+    if (!token.isCancellationRequested) {
       // Emits whatever the streaming path has not already rendered.
-      streamer.finish(renderReply(result.result, true));
-    } else if (result.status === 'failed') {
-      const separator = streamer.hasEmitted ? '\n\n' : '';
-      stream.markdown(separator + renderFailure(result.error, result.steps));
-    } else {
-      stream.markdown(messages.run.unexpectedStatus(result.status));
+      streamer.finish(renderReply(reply, true));
     }
-
     return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
   };
 }

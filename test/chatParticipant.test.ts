@@ -6,15 +6,18 @@ import {
   renderReply,
   PARTICIPANT_ID,
 } from '../src/ui/chatParticipant';
-import { createDevTeamWorkflow, ReplyProgress } from '../src/core/workflow';
-import { TriageResult } from '../src/core/triage';
-import { PartialPlan, PlanProgress, PlanResult } from '../src/core/planner';
-import { AnswerProgress } from '../src/core/answerer';
+import { ReplyProgress } from '../src/protocol/types';
+import { Engine } from '../src/protocol/engine';
+import { ToolHost } from '../src/protocol/toolContract';
+import { LocalEngine } from '../src/engine/localEngine';
+import { TriageResult } from '../src/engine/core/triage';
+import { PartialPlan, PlanProgress, PlanResult } from '../src/engine/core/planner';
+import { AnswerProgress } from '../src/engine/core/answerer';
 import {
   ExecutionProgress,
   ExecutionResult,
   PartialExecution,
-} from '../src/core/executor';
+} from '../src/engine/core/executor';
 import { settings } from '../src/config/settings';
 import {
   __reset,
@@ -60,12 +63,20 @@ const anExecution: ExecutionResult = {
   ],
 };
 
+/** The client-side ToolHost stub the handler passes to the engine. */
+const hostStub: ToolHost = {
+  tools: ['read', 'search', 'run', 'write'],
+  execute: async () => 'ok',
+};
+
 /**
- * Build a real dev-team workflow over fake agents, and record the prompt each
- * agent receives so tests can assert on what the handler and workflow
- * composed for it.
+ * Build a real LocalEngine over a real workflow with fake agents, and record
+ * the prompt each agent receives so tests can assert on what the handler,
+ * engine, and workflow composed for it. Exercising the whole chain - handler
+ * -> engine -> events -> fold -> render - is the point: it proves the
+ * protocol round trip renders exactly what the old direct wiring did.
  */
-function makeWorkflow(
+function makeEngine(
   classify: (prompt: string) => Promise<TriageResult> = async () => ({
     intent: 'oneshot',
     reason: 'simple',
@@ -85,33 +96,34 @@ function makeWorkflow(
     answerer: undefined as string | undefined,
     executor: undefined as string | undefined,
   };
-  const workflow = createDevTeamWorkflow(
-    {
+  const engine = new LocalEngine({
+    triage: {
       classify: async (prompt: string) => {
         seen.triage = prompt;
         return classify(prompt);
       },
     } as any,
-    {
+    planner: {
       plan: async (prompt: string, onPartial?: PlanProgress) => {
         seen.planner = prompt;
         return plan(prompt, onPartial);
       },
     } as any,
-    {
+    answerer: {
       answer: async (prompt: string, onPartial?: AnswerProgress) => {
         seen.answerer = prompt;
         return answer(prompt, onPartial);
       },
     } as any,
-    {
-      execute: async (prompt: string, onPartial?: ExecutionProgress) => {
-        seen.executor = prompt;
-        return execute(prompt, onPartial);
-      },
-    } as any
-  );
-  return { workflow, seen };
+    createExecutor: () =>
+      ({
+        execute: async (prompt: string, onPartial?: ExecutionProgress) => {
+          seen.executor = prompt;
+          return execute(prompt, onPartial);
+        },
+      } as any),
+  });
+  return { engine, seen };
 }
 
 function emitted(stream: ReturnType<typeof fakeStream>): string {
@@ -235,14 +247,14 @@ describe('ChatApprover', () => {
 
 describe('createHandler', () => {
   it('renders the detected intent and the answer for a oneshot request', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'oneshot', reason: 'simple question' }),
       undefined,
       async () => 'It is **4**.'
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'what is 2+2', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -258,13 +270,13 @@ describe('createHandler', () => {
   });
 
   it('renders a planning request as a checklist plus the execution transcript', async () => {
-    const { workflow } = makeWorkflow(async () => ({
+    const { engine } = makeEngine(async () => ({
       intent: 'planning',
       reason: 'needs steps',
     }));
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -287,9 +299,9 @@ describe('createHandler', () => {
   });
 
   it('does not run the executor on a oneshot request', async () => {
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'what is 2+2', references: [] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -300,12 +312,12 @@ describe('createHandler', () => {
   });
 
   it('hands the executor the prompt plus the drafted plan', async () => {
-    const { workflow, seen } = makeWorkflow(async () => ({
+    const { engine, seen } = makeEngine(async () => ({
       intent: 'planning',
       reason: 'needs steps',
     }));
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -318,12 +330,12 @@ describe('createHandler', () => {
   });
 
   it('surfaces a triage failure with the Ollama hint', async () => {
-    const { workflow } = makeWorkflow(async () => {
+    const { engine } = makeEngine(async () => {
       throw new Error('connection refused');
     });
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'hi', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -337,7 +349,7 @@ describe('createHandler', () => {
   });
 
   it('surfaces a planner failure with the Ollama hint', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'planning', reason: 'x' }),
       async () => {
         throw new Error('model not found');
@@ -345,7 +357,7 @@ describe('createHandler', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'do work', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -359,7 +371,7 @@ describe('createHandler', () => {
   });
 
   it('surfaces an executor failure with the Ollama hint', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'planning', reason: 'x' }),
       undefined,
       undefined,
@@ -369,7 +381,7 @@ describe('createHandler', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'do work', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -385,7 +397,7 @@ describe('createHandler', () => {
   });
 
   it('surfaces an answerer failure with the Ollama hint', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'oneshot', reason: 'x' }),
       undefined,
       async () => {
@@ -394,7 +406,7 @@ describe('createHandler', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'what is 2+2', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -408,9 +420,9 @@ describe('createHandler', () => {
   });
 
   it('returns the command in the chat result metadata', async () => {
-    const { workflow } = makeWorkflow();
+    const { engine } = makeEngine();
 
-    const result = await createHandler(workflow)(
+    const result = await createHandler(() => engine, hostStub)(
       { prompt: 'hi', references: [], command: 'explain' } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -421,9 +433,9 @@ describe('createHandler', () => {
 
   it('inlines an attached file (Uri reference) into the answerer prompt', async () => {
     const uri = __setFile('src/a.ts', 'file body');
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'look at this', references: [{ value: uri }] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -438,9 +450,9 @@ describe('createHandler', () => {
 
   it('gives the triage agent attachment names but not their contents', async () => {
     const uri = __setFile('src/a.ts', 'file body');
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'look at this', references: [{ value: uri }] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -455,9 +467,9 @@ describe('createHandler', () => {
   it('inlines a selection (Location reference) with its line number', async () => {
     const uri = __setFile('src/b.ts', 'line0\nline1\nline2');
     const location = new Location(uri, new Range(new Position(1, 0), new Position(1, 5)));
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'explain', references: [{ value: location }] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -471,9 +483,9 @@ describe('createHandler', () => {
   });
 
   it('inlines a plain string reference', async () => {
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'q', references: [{ value: 'raw snippet' }] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -486,9 +498,9 @@ describe('createHandler', () => {
 
   it('reports an unreadable attachment instead of throwing', async () => {
     const ghost = Uri.joinPath(__state.workspaceFolders![0].uri, 'ghost.ts');
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'q', references: [{ value: ghost }] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -499,10 +511,10 @@ describe('createHandler', () => {
   });
 
   it('truncates very large attachments', async () => {
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
     const huge = 'z'.repeat(25_000);
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'q', references: [{ value: huge }] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -512,9 +524,9 @@ describe('createHandler', () => {
   });
 
   it('does not add an attachments block when there are no references', async () => {
-    const { workflow, seen } = makeWorkflow();
+    const { engine, seen } = makeEngine();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'plain', references: [] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -525,10 +537,10 @@ describe('createHandler', () => {
   });
 
   it('subscribes to cancellation and disposes the listener afterwards', async () => {
-    const { workflow } = makeWorkflow();
+    const { engine } = makeEngine();
     const token = fakeToken();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'hi', references: [] } as any,
       { history: [] } as any,
       fakeStream() as any,
@@ -542,10 +554,10 @@ describe('createHandler', () => {
   });
 
   it('renders nothing when the request was cancelled', async () => {
-    const { workflow } = makeWorkflow();
+    const { engine } = makeEngine();
     const stream = fakeStream();
 
-    const result = await createHandler(workflow)(
+    const result = await createHandler(() => engine, hostStub)(
       { prompt: 'hi', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -557,13 +569,13 @@ describe('createHandler', () => {
   });
 
   it('swallows a run failure caused by cancellation', async () => {
-    const { workflow } = makeWorkflow(async () => {
+    const { engine } = makeEngine(async () => {
       throw new Error('aborted');
     });
     const stream = fakeStream();
 
     await expect(
-      createHandler(workflow)(
+      createHandler(() => engine, hostStub)(
         { prompt: 'hi', references: [] } as any,
         { history: [] } as any,
         stream as any,
@@ -577,8 +589,8 @@ describe('createHandler', () => {
 describe('createHandler conversation history', () => {
   /** Run the handler with the given chat history and capture the agent prompts. */
   async function handle(history: unknown[], prompt = 'now rename it too') {
-    const { workflow, seen } = makeWorkflow();
-    await createHandler(workflow)(
+    const { engine, seen } = makeEngine();
+    await createHandler(() => engine, hostStub)(
       { prompt, references: [] } as any,
       { history } as any,
       fakeStream() as any,
@@ -709,7 +721,7 @@ describe('createHandler streaming', () => {
   ];
 
   it('streams the plan incrementally and never repeats content', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'planning', reason: 'needs steps' }),
       async (_prompt, onPartial) => {
         for (const partial of partials) {
@@ -720,7 +732,7 @@ describe('createHandler streaming', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -782,7 +794,7 @@ describe('createHandler streaming', () => {
       events: executionPartials[executionPartials.length - 1]
         .events as ExecutionResult['events'],
     };
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'planning', reason: 'needs steps' }),
       undefined,
       undefined,
@@ -795,7 +807,7 @@ describe('createHandler streaming', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -825,7 +837,7 @@ describe('createHandler streaming', () => {
 
   it('streams a oneshot answer incrementally and never repeats content', async () => {
     const snapshots = ['It', 'It is', 'It is 4.'];
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'oneshot', reason: 'simple' }),
       undefined,
       async (_prompt, onPartial) => {
@@ -837,7 +849,7 @@ describe('createHandler streaming', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'what is 2+2', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -862,7 +874,7 @@ describe('createHandler streaming', () => {
   });
 
   it('falls back to the complete reply when a snapshot is inconsistent', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'planning', reason: 'needs steps' }),
       async (_prompt, onPartial) => {
         onPartial?.({ summary: 'B' });
@@ -872,7 +884,7 @@ describe('createHandler streaming', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -886,7 +898,7 @@ describe('createHandler streaming', () => {
   });
 
   it('separates a planner failure from already-streamed output', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'planning', reason: 'needs steps' }),
       async (_prompt, onPartial) => {
         onPartial?.({ summary: 'Add a feature' });
@@ -895,7 +907,7 @@ describe('createHandler streaming', () => {
     );
     const stream = fakeStream();
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -908,7 +920,7 @@ describe('createHandler streaming', () => {
   });
 
   it('does not fail the run when a streamed chunk cannot be written', async () => {
-    const { workflow } = makeWorkflow(
+    const { engine } = makeEngine(
       async () => ({ intent: 'planning', reason: 'needs steps' }),
       async (_prompt, onPartial) => {
         onPartial?.({ summary: 'Add' });
@@ -921,7 +933,7 @@ describe('createHandler streaming', () => {
       throw new Error('stream not ready');
     });
 
-    await createHandler(workflow)(
+    await createHandler(() => engine, hostStub)(
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       stream as any,
@@ -1235,5 +1247,61 @@ describe('renderReply', () => {
 describe('module constants', () => {
   it('exposes the participant id', () => {
     expect(PARTICIPANT_ID).toBe('myDevTeam.agent');
+  });
+});
+
+describe('createHandler protocol envelope', () => {
+  it('sends the protocol version, environment, and offered tools to the engine', async () => {
+    let captured: unknown;
+    const engine: Engine = {
+      kind: 'local',
+      startRun: (request, client) => {
+        captured = request;
+        client.onEvent({ type: 'triaged', intent: 'oneshot', reason: 'x' });
+        const reply = { intent: 'oneshot' as const, reason: 'x', answer: 'ok' };
+        client.onEvent({ type: 'done', reply });
+        return { result: Promise.resolve(reply), cancel: () => {} };
+      },
+      startupWarnings: async () => [],
+    };
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    expect(captured).toMatchObject({
+      protocolVersion: 1,
+      prompt: 'hi',
+      offeredTools: ['read', 'search', 'run', 'write'],
+    });
+    expect((captured as { environment: object }).environment).toMatchObject({
+      os: expect.any(String),
+      shell: expect.any(String),
+    });
+  });
+
+  it('hands the engine the ToolHost it should execute tools with', async () => {
+    let receivedHost: ToolHost | undefined;
+    const engine: Engine = {
+      kind: 'local',
+      startRun: (_request, client) => {
+        receivedHost = client.toolHost;
+        const reply = { intent: 'oneshot' as const, reason: 'x', answer: 'ok' };
+        return { result: Promise.resolve(reply), cancel: () => {} };
+      },
+      startupWarnings: async () => [],
+    };
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    expect(receivedHost).toBe(hostStub);
   });
 });

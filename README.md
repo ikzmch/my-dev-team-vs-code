@@ -14,6 +14,13 @@ run-command action is gated by an **approval seam**, so the chat confirmation
 can later be swapped for a rich Webview dialog **without touching the agent
 core**; file writes apply directly without asking.
 
+The whole agent pipeline sits behind an **engine protocol**
+(`src/protocol/`): the UI starts a run, receives a stream of typed events,
+and executes the tool calls the engine asks for - today against the
+in-process **LocalEngine**, later against a remote backend speaking the same
+contract (see [The engine protocol](#the-engine-protocol-srcprotocol)). A
+`myDevTeam.engine` setting switches implementations without a reload.
+
 > **Status:** the full pipeline is live - the routing layer (triage), the
 > **planner**, the **oneshot answerer**, and the **executor**. The workflow
 > classifies your request, answers `oneshot` questions directly, and for
@@ -21,48 +28,58 @@ core**; file writes apply directly without asking.
 > executor's capability-routed model drives a tool-calling loop over the four
 > workspace tools, with side effects gated by the approval seam. Every turn
 > carries the **conversation history** (size-capped), so follow-ups like
-> "now rename it too" resolve against the earlier exchanges. See
+> "now rename it too" resolve against the earlier exchanges. The pipeline now
+> runs behind the engine protocol (Phase A of the backend split): only the
+> local engine exists, but the seam, the event stream, the tool inversion,
+> and the usage (billing) events are in place. See
 > [Current behavior](#current-behavior) and [Roadmap](#roadmap).
 
 ## Architecture
 
 ```
 src/
-  extension.ts            entry point — wires core + tools + UI together
-  config/                 configuration, kept out of the logic (see below)
-    agents/
-      triage.md           triage config: frontmatter + system prompt
-      planner.md          planner config: frontmatter + system prompt
-      answerer.md         answerer config: frontmatter + system prompt
-      executor.md         executor config: frontmatter + system prompt
-    models/
-      *.md                one registered model per file: provider, model id, capability scores
-    tools/
-      read.md … write.md  one config per tool: frontmatter + model-facing description
-    agents.ts             loads agents/*.md, renders the tools + environment sections, exports `agents`
-    models.ts             discovers models/*.md, exports the registry + capability-based `selectModel`
-    tools.ts              discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
-    environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
-    frontmatter.ts        minimal frontmatter parser for the .md config files
-    markdown.d.ts         lets TS treat `*.md` and `glob:` imports as strings / string[]
-    settings.ts           operational limits; the endpoint/timeout/search caps read live from VS Code settings
+  extension.ts            entry point - wires tools + engine + UI together
+  protocol/               the engine/client contract: wire-shaped, zod-validated, version-stamped
+    types.ts              run request + reply data shapes and their streaming snapshots
+    events.ts             the run event stream + ReplyFolder (folds events back into snapshots)
+    toolContract.ts       client tool names, input schemas, lm ids, display names + the ToolHost seam
+    engine.ts             the Engine port, RunClient/RunHandle, AuthProvider, run error types
+  engine/                 the implementation a future backend hides - nothing above may import its internals
+    localEngine.ts        in-process Engine: runs the workflow, translates progress into protocol events
+    core/
+      workflow.ts         Mastra workflow: triage -> plan -> execute | answer; per-run progress + usage sinks
+      models.ts           provider wiring: turns the selected registry entry into an AI SDK model
+      triage.ts           Mastra agent: triage request as oneshot | planning
+      planner.ts          Mastra agent: draft an ordered, tool-aware plan, streamed as partial snapshots
+      answerer.ts         Mastra agent: answer a oneshot request directly, streamed as accumulated text
+      executor.ts         Mastra agent: walk the plan in a tool-calling loop, streamed as a transcript
+      agentTools.ts       the executor's tool proxies: every call delegates to the client's ToolHost
+      usage.ts            best-effort token-count extraction feeding the usage (billing) events
+    config/
+      agents/*.md         one agent per file: frontmatter + system prompt
+      models/*.md         one registered model per file: provider, model id, capability scores
+      tools/*.md          model-facing tool descriptions + transcript preview hints
+      agents.ts           loads agents/*.md, renders the tools + environment sections, exports `agents`
+      models.ts           discovers models/*.md, exports the registry + capability-based `selectModel`
+      tools.ts            discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
+      frontmatter.ts      minimal frontmatter parser for the .md config files
+      markdown.d.ts       lets TS treat `*.md` and `glob:` imports as strings / string[]
+  client/
+    engineFactory.ts      the myDevTeam.engine switch: LocalEngine today, RemoteEngine in Phase B
+    auth.ts               AuthProvider implementations (anonymous today; real credentials in Phase B)
+  config/                 client-side configuration, kept out of the logic (see below)
+    settings.ts           operational limits; engine/endpoint/timeout/search caps read live from VS Code settings
     messages.ts           user-facing chat copy (errors, warnings, templates)
-  core/
-    types.ts              the UI seams: Approver (approval) + RunMirror (run-command transparency)
-    workflow.ts           Mastra workflow: triage -> plan -> execute | answer; streams reply progress to a per-run sink
-    models.ts             provider wiring: turns the selected registry entry into an AI SDK model
-    triage.ts             Mastra agent: triage request as oneshot | planning
-    planner.ts            Mastra agent: draft an ordered, tool-aware plan, streamed as partial snapshots
-    answerer.ts           Mastra agent: answer a oneshot request directly, streamed as accumulated text
-    executor.ts           Mastra agent: walk the plan in a tool-calling loop, streamed as a transcript
-  tools/
-    workspaceTools.ts     read / search / run / write (UI-agnostic)
-    registerTools.ts      registers tools with vscode.lm
-    agentTools.ts         the same four tools as Mastra createTool()s for the executor's loop
+    environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
+  tools/                  the client's hands - these never move to a backend
+    workspaceTools.ts     read / search / run / write implementations (UI-agnostic)
+    toolHost.ts           WorkspaceToolHost: validates + dispatches every tool call (engine or editor)
+    registerTools.ts      registers the tools with vscode.lm, delegating to the same host
+    types.ts              the client seams: Approver (approval) + RunMirror (run-command transparency)
   ui/
-    chatParticipant.ts    chat handler, streaming reply renderer + Phase-1 ChatApprover
+    chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover
     runTerminal.ts        Phase-1 RunMirror: a read-only "Dev Team" terminal logging every run command live
-    startupCheck.ts       activation health check: ping Ollama, verify routed models are pulled
+    startupCheck.ts       activation health check: surfaces the selected engine's startup warnings
 test/                     Vitest unit tests + an in-memory `vscode` mock
 esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
 md-glob.mjs               build-time `glob:./dir/*.md` expansion, shared with Vitest
@@ -70,14 +87,24 @@ md-glob.mjs               build-time `glob:./dir/*.md` expansion, shared with Vi
 
 Three layers, deliberately decoupled:
 
-- **Agent core** (`core/`, `tools/workspaceTools.ts`) knows nothing about the UI.
-- **UI layer** (`ui/`) is swappable: Chat Participant today, add a Webview later.
-- **`Approver`** is the seam. `ChatApprover` is Phase 1; a `WebviewApprover`
-  implementing the same interface is Phase 2 — the tools never change.
-- **`RunMirror`** is a second seam of the same shape: the `run` tool reports
-  each executed command's lifecycle and live output to it, and the Phase-1
-  `TerminalRunMirror` (`ui/runTerminal.ts`) displays that as a read-only
-  "Dev Team" terminal. The tools never know how it is surfaced.
+- **Engine** (`engine/`) is the brain: agents, prompts, the model router, the
+  workflow. It knows nothing about VS Code UI surfaces, and nothing outside
+  `engine/` imports its internals - only `engine/localEngine.ts` and the
+  protocol. This import discipline *is* the future repo split: Phase B lifts
+  `engine/` + `protocol/` out as the backend, and the extension keeps the rest.
+- **Client** (`tools/`, `client/`, `ui/`) is the hands: the tool
+  implementations, the approval gate, the run mirror, and the chat rendering
+  all stay on the user's machine whichever engine runs. An engine can only
+  ever *ask* for a side effect through the ToolHost.
+- **Protocol** (`protocol/`) is the contract between them - see
+  [The engine protocol](#the-engine-protocol-srcprotocol).
+- **`Approver`** stays the approval seam. `ChatApprover` is Phase 1; a
+  `WebviewApprover` implementing the same interface is Phase 2 - the tools
+  never change. **`RunMirror`** is a second seam of the same shape: the `run`
+  tool reports each executed command's lifecycle and live output to it, and
+  the Phase-1 `TerminalRunMirror` (`ui/runTerminal.ts`) displays that as a
+  read-only "Dev Team" terminal. Both are client seams: an engine never
+  knows how approval or mirroring happened.
 
 ### Request flow
 
@@ -87,14 +114,25 @@ Three layers, deliberately decoupled:
         ▼
 ui/chatParticipant.ts          resolve attached files/selections into labelled
   createHandler                attachments and the session's prior turns into
-        │                      capped history turns, pass both alongside the
-        │                      prompt, start a run of the workflow, and hand
-        │                      the run a reply-progress sink (Mastra
-        │                      RequestContext); no custom progress labels -
-        │                      the chat shows VS Code's standard "Thinking"
-        │                      indicator
+        │                      capped history turns, build a protocol
+        │                      RunRequest (version, prompt, attachments,
+        │                      history, environment facts, offered tools) and
+        │                      start a run on whichever engine the provider
+        │                      selects; fold the run's events back into reply
+        │                      snapshots and stream each render's new suffix.
+        │                      No custom progress labels - the chat shows VS
+        │                      Code's standard "Thinking" indicator
         ▼
-core/workflow.ts               Mastra workflow (createWorkflow + createStep)
+engine/localEngine.ts          the in-process engine: validates the request,
+  startRun                     assembles the workflow (the executor bound to
+        │                      the run's ToolHost), translates the workflow's
+        │                      grow-only progress snapshots into protocol
+        │                      events (triaged, plan-snapshot, answer-delta,
+        │                      execution-event, usage, done/error), and maps
+        │                      a failed step onto the protocol step + an
+        │                      Ollama hint
+        ▼
+engine/core/workflow.ts        Mastra workflow (createWorkflow + createStep)
   triage                       ── Triage.classify(triagePrompt)
         │                         conversation so far + prompt + attachment
         │                         labels only (contents omitted: routing needs
@@ -126,15 +164,63 @@ core/workflow.ts               Mastra workflow (createWorkflow + createStep)
         └─▶ deliver-answer     ── pass-through for the oneshot path, so a oneshot
         │                         run never starts an executor step
         ▼
-  the UI streams the reply onto the chat panel as it forms: each snapshot is
-  rendered conservatively and only the newly appended markdown is emitted,
-  then the validated final result completes the render.
+  the UI folds the run events back into grow-only snapshots (the protocol's
+  ReplyFolder), renders each one conservatively, and emits only the newly
+  appended markdown; the validated final reply completes the render.
 ```
 
 The branch steps carry the original `prompt`/`attachments`/`history` forward
 (the `StagedReplySchema` superset of the reply), because the execute step
 still needs them to brief the executor; the final steps strip them off again
-so the workflow's output is just the reply.
+so the workflow's output is just the reply - which is the protocol's
+`ReplySchema`, so the engine cannot produce a result the contract does not
+describe.
+
+### The engine protocol (`src/protocol/`)
+
+Everything the extension knows about the agent pipeline goes through one
+port, designed wire-shaped from day one so a remote backend can implement it
+without the client changing:
+
+- **`Engine.startRun(request, client)`** takes a versioned `RunRequest`
+  (prompt, attachments, history, the client's OS/shell facts, and the names
+  of the tools the client offers) plus a `RunClient` (an event sink and the
+  ToolHost) and returns a `RunHandle` (`result` promise + `cancel()`).
+- **Events, not callbacks**, carry the streaming reply: `triaged`,
+  `plan-snapshot` (plans are small), `answer-delta`, `execution-event`
+  (indexed, since only the transcript's last event ever changes), `usage`,
+  and `done`/`error`. The client folds them back into grow-only snapshots
+  with `ReplyFolder`, so rendering from events is pixel-identical to the old
+  direct wiring - the property that makes local and remote engines
+  indistinguishable. `tool-call`/`ToolResultMessage` are defined for the
+  Phase-B wire; the LocalEngine calls the ToolHost in-process instead.
+- **Tools are inverted.** The engine's executor never touches the workspace:
+  its Mastra tools are proxies that delegate to the client's **`ToolHost`**
+  (`tools/toolHost.ts`), which validates the arguments against the
+  protocol's input schemas and runs the implementations - including the
+  approval gate. A compromised or buggy engine can request a command, but it
+  cannot run one without the user's click, and it never learns how approval
+  happened. The tool contract (`protocol/toolContract.ts`) carries the
+  client-facing half of each tool (input schema, `devteam__*` id, display
+  name); the engine's configs keep the model-facing half (description,
+  preview hints).
+- **`usage` events are the billing seam.** Each workflow step reports its
+  model call's token counts when the SDK exposes them (best-effort,
+  engine-side `usage.ts`); the LocalEngine forwards them as events, and the
+  chat handler currently logs them. Server-side, this same stream becomes
+  the metering record.
+- **`AuthProvider`** (`client/auth.ts`) supplies credentials per run -
+  anonymous today; a VS Code auth session or stored API key slots in for the
+  remote engine without touching the protocol.
+- **Errors are protocol-shaped.** A failed run rejects with `RunFailedError`
+  carrying the protocol step (`triage | plan | answer | execute`) and an
+  engine-supplied hint (the LocalEngine names the routed model and the
+  configured Ollama endpoint); cancellation rejects with `RunCancelledError`.
+
+The **`myDevTeam.engine`** setting (read live per request,
+`client/engineFactory.ts`) selects the implementation: `local` runs the
+in-process engine; `remote` warns once and falls back to local until the
+Phase-B RemoteEngine exists.
 
 **Conversation history.** The handler converts `ChatContext.history` into the
 workflow's `history` turns: this participant's exchanges only (a request turn
@@ -151,22 +237,24 @@ section: it is context to resolve references, not work to redo.
 ### Configuration vs. code (`config/`)
 
 Anything that's *configuration* — prose an author tunes, tunable limits, UI
-copy, model selection — lives in `src/config/`, separate from the logic that
-consumes it. The agents and tools import from there and never carry literals
-inline.
+copy, model selection - lives apart from the logic that consumes it, split
+along the engine/client boundary: prompt material and the model registry in
+`src/engine/config/` (a future backend's assets), limits and chat copy in
+`src/config/` (the client's). The agents and tools import from there and
+never carry literals inline.
 
-| File                         | Holds                                                          |
-| ---------------------------- | ------------------------------------------------------------- |
-| `config/agents/*.md`         | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
-| `config/models/*.md`         | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
-| `config/tools/*.md`          | One tool per file: frontmatter (name, displayName, lmTool id, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description |
-| `config/agents.ts`           | Loads the agent files, validates the frontmatter, exports typed `agents` |
-| `config/models.ts`           | Discovers the model files, exports the registry and the capability-based `selectModel` |
-| `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
-| `config/environment.ts`      | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
-| `config/frontmatter.ts`      | Minimal parser for the frontmatter subset the config files use |
-| `config/settings.ts`         | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
-| `config/messages.ts`         | Progress labels, error text, startup warnings, reply markdown templates, and the run-mirror terminal's copy (tab name, command header, outcome note) |
+| File                            | Holds                                                          |
+| ------------------------------- | ------------------------------------------------------------- |
+| `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
+| `engine/config/models/*.md`     | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
+| `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts` |
+| `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
+| `engine/config/models.ts`       | Discovers the model files, exports the registry and the capability-based `selectModel` |
+| `engine/config/tools.ts`        | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
+| `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
+| `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
+| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, and snippet line count are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama-hint template the LocalEngine fills in, and the run-mirror terminal's copy (tab name, command header, outcome note). Knows nothing about agents or models - which model is routed where is engine knowledge that reaches the UI only as a protocol error's `hint` |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
 text loader inlines them into the bundle at build time (see `esbuild.mjs`), so
@@ -175,7 +263,7 @@ runtime file I/O. The model and tool folders are **discovered, not listed**: a
 `glob:./models/*.md` import (expanded by the `md-glob` plugin in `esbuild.mjs`,
 with `md-glob.mjs` shared by the matching Vitest plugin) resolves to the
 contents of every `.md` file in the folder, in filename order — dropping a new
-config file in registers it with no code change. `config/markdown.d.ts`
+config file in registers it with no code change. `engine/config/markdown.d.ts`
 declares both module types (`*.md` as a string, `glob:*` as a string[]).
 Agents stay on explicit imports because `agents.triage`/`agents.planner` are
 statically typed keys used across the code.
@@ -206,6 +294,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 
 | Setting                              | Default                  | Controls                                  |
 | ------------------------------------ | ------------------------ | ----------------------------------------- |
+| `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process) or `remote` (Phase B; warns and falls back to local until it exists) |
 | `myDevTeam.ollama.endpoint`          | `http://localhost:11434` | Ollama server origin (no `/api` suffix)   |
 | `myDevTeam.run.commandTimeoutMs`     | `60000`                  | `run` tool shell-command timeout (ms)     |
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
@@ -216,32 +305,32 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 Invalid values (wrong type, non-positive numbers, an endpoint that is not an
 http(s) URL) silently fall back to the defaults, so the tools always see sane
 limits. The endpoint is the **single source of truth**: the provider wiring
-(`createOllama({ baseURL })` in `core/models.ts`), the troubleshooting hint in
-chat errors, and the activation health check all derive from
+(`createOllama({ baseURL })` in `engine/core/models.ts`), the troubleshooting
+hint in chat errors, and the activation health check all derive from
 `settings.ollamaEndpoint`, so they can never disagree. Changing the endpoint
 mid-session rebuilds the provider and drops the memoised model instances; the
 next request talks to the new server. Everything not listed above
 (buffer/truncation caps, search excludes) stays a compile-time constant in
 `config/settings.ts`.
 
-On activation the extension pings `<endpoint>/api/tags`
-(`ui/startupCheck.ts`, 3s timeout, never blocks activation) and shows a
-warning if the server is unreachable or one of the router-selected models is
-not pulled - instead of letting the first chat request be the thing that
-fails.
+On activation the extension asks the selected engine for startup warnings
+(`Engine.startupWarnings`, surfaced by `ui/startupCheck.ts`, never blocks
+activation): the LocalEngine pings `<endpoint>/api/tags` (3s timeout) and
+reports an unreachable server or a router-selected model that is not
+pulled - instead of letting the first chat request be the thing that fails.
 
-### Capability-based model router (`config/models.ts` + `core/models.ts`)
+### Capability-based model router (`engine/config/models.ts` + `engine/core/models.ts`)
 
 Agents never name a concrete model. Instead:
 
-- **Registered models** (`config/models/*.md`) score how good each model is at
+- **Registered models** (`engine/config/models/*.md`) score how good each model is at
   a set of capabilities — `reasoning`, `coding`, `classification`, `planning`,
   `speed`, `structured-output` — each 0–1.
-- **Agents** (`config/agents/*.md`) declare the same capabilities as
+- **Agents** (`engine/config/agents/*.md`) declare the same capabilities as
   *weights*: how much each one matters to that agent.
-- `selectModel` (`config/models.ts`) picks the registered model with the
-  highest weighted score (Σ weight × score; an unscored capability counts
-  as 0), and `resolveModel` (`core/models.ts`) wires the winner onto an
+- `selectModel` (`engine/config/models.ts`) picks the registered model with
+  the highest weighted score (Σ weight × score; an unscored capability counts
+  as 0), and `resolveModel` (`engine/core/models.ts`) wires the winner onto an
   [AI SDK](https://sdk.vercel.ai) provider instance built from the configured
   `myDevTeam.ollama.endpoint`, memoised per model and endpoint.
 
@@ -258,7 +347,7 @@ registered model can run.
 | `executor` | coding 1, reasoning 0.7, speed 0.3                           | Ollama `qwen3-coder` |
 
 ```yaml
-# config/models/qwen3-14b.md — a registered model (scores):
+# engine/config/models/qwen3-14b.md - a registered model (scores):
 id: qwen3-14b
 provider: ollama
 model: qwen3:14b
@@ -268,7 +357,7 @@ capabilities:
   speed: 0.6
   # …
 
-# config/agents/planner.md — an agent's requirements (weights):
+# engine/config/agents/planner.md - an agent's requirements (weights):
 capabilities:
   planning: 1
   reasoning: 0.8
@@ -277,28 +366,29 @@ capabilities:
 ```
 
 ```ts
-// core/triage.ts / core/planner.ts — the dynamic wiring:
+// engine/core/triage.ts / engine/core/planner.ts - the dynamic wiring:
 model: resolveModel(agents.planner.capabilities),
 
 // …and how a paid provider would slot in later: add it to the registry's
-// provider enum and a factory in core/models.ts:
+// provider enum and a factory in engine/core/models.ts:
 //   import { createAnthropic } from '@ai-sdk/anthropic';
 //   const anthropic = createAnthropic({ apiKey: /* … */ });
 //   const factories = { ollama: …, anthropic: (model) => anthropic(model) };
 ```
 
-### Executor (`core/executor.ts` + `tools/agentTools.ts`)
+### Executor (`engine/core/executor.ts` + `engine/core/agentTools.ts`)
 
 The executor is the step that turns a drafted plan into actual work. Design
 decisions, in the order they matter:
 
 - **Mastra drives the loop, not hand-rolled control flow.** The `Executor`
-  wraps a Mastra `Agent` constructed with `tools: buildAgentTools(approver)`
-  and calls `agent.stream(prompt, { maxSteps: settings.executor.maxSteps })`.
+  wraps a Mastra `Agent` constructed with `tools: buildAgentTools(toolHost)` -
+  proxies that delegate every call to the client's ToolHost - and calls
+  `agent.stream(prompt, { maxSteps: settings.executor.maxSteps })`.
   Mastra handles the model→tool-calls→results→model iteration; the step cap
   bounds a runaway loop. The executor itself only *observes* the run.
 - **Briefing.** The executor's prompt (`executionPrompt` in
-  `core/workflow.ts`) is the full request - the conversation so far, the
+  `engine/core/workflow.ts`) is the full request - the conversation so far, the
   prompt, and the inlined attachment text, exactly what the planner saw -
   followed by a `--- Drafted plan ---` section: the plan summary and the numbered steps with their tool hints
   (`1. Find the file (tool: search) - locate it`; a `none` hint is a schema
@@ -337,24 +427,26 @@ decisions, in the order they matter:
   needs. A tool call still awaiting its result ends a partial render.
   Previews are flattened to one backtick-safe line; an empty result renders
   as `(no output)`.
-- **Approvals are unchanged.** `agentTools.ts` wraps the same
-  `workspaceTools.ts` implementations the editor-wide registrations use, so
-  `run` invokes the same `Approver` with the same command echo (`write`
-  applies directly, no approval). A decline is not an error: the tool returns
-  the "not approved" message and the system prompt tells the model to skip
-  that action and note it in the report.
+- **Approvals live in the host, not the engine.** The proxies delegate to
+  the same `WorkspaceToolHost` the editor-wide registrations use, so `run`
+  invokes the same `Approver` with the same command echo (`write` applies
+  directly, no approval) - and the engine never learns how the decision was
+  made. A decline is not an error: the tool returns the "not approved"
+  message and the system prompt tells the model to skip that action and note
+  it in the report.
 
 ### Tools (`tools/`)
 
 Declared in `package.json` under `contributes.languageModelTools` and
 registered with `vscode.lm.registerTool` in `registerTools.ts`. The
-implementations in `workspaceTools.ts` are UI-agnostic, and they are exposed
-on **two surfaces** that share them: `registerTools.ts` adapts them to the
-Language Model Tools API (so any tool-calling chat model in the editor can
-invoke them), and `agentTools.ts` adapts the same functions to Mastra
-`createTool()`s with zod input schemas mirroring the package.json
-contribution - that is the toolset the executor's tool-calling loop runs
-over. Either way the same Approver gates the same side effects.
+implementations in `workspaceTools.ts` are UI-agnostic, and every call -
+from either surface - goes through the one `WorkspaceToolHost`
+(`tools/toolHost.ts`), which validates the arguments against the protocol's
+input schemas and dispatches: `registerTools.ts` registers each tool with
+the Language Model Tools API delegating to the host (so any tool-calling
+chat model in the editor can invoke them), and the engine's executor loop
+reaches the same host through its tool proxies (`engine/core/agentTools.ts`).
+Either way the same Approver gates the same side effects.
 
 | Tool                   | Effect                          | Approval        |
 | ---------------------- | ------------------------------- | --------------- |
@@ -406,16 +498,17 @@ immediately.
 
 ## Current behavior
 
-On activation, the extension pings the configured Ollama endpoint and warns
-(once, non-blocking) if the server is down or a router-selected model is not
-pulled.
+On activation, the extension asks the selected engine for startup warnings;
+the local engine pings the configured Ollama endpoint and warns (once,
+non-blocking) if the server is down or a router-selected model is not pulled.
 
 Out of the box, `@devteam <prompt>`:
 
 1. Resolves any attached files/selections into labelled attachments and the
    chat session's prior turns (your prompts and the participant's replies,
-   capped per `settings.history`) into conversation history, and starts a run
-   of the dev-team workflow with both alongside the prompt. Follow-ups work:
+   capped per `settings.history`) into conversation history, and starts a
+   protocol run on the selected engine (`myDevTeam.engine`, the in-process
+   local engine by default) with both alongside the prompt. Follow-ups work:
    "now rename it too" reaches every agent with the turns that say what "it"
    is. While agents work, the chat shows VS Code's standard "Thinking"
    indicator - no custom progress labels are streamed.
@@ -459,7 +552,7 @@ Out of the box, `@devteam <prompt>`:
    machine they execute on - PowerShell on Windows - instead of defaulting
    to Linux commands. The transcript streams in behind an "**Execution:**" header
    as it happens: the model's commentary, one line per tool call leading with
-   the tool's `displayName` from its config frontmatter (no bullet) and its
+   the tool's display name from the protocol's tool contract (no bullet) and its
    key argument (`**Write File** \`calculator.py\``; tools without a configured
    `previewArg` fall back to compact args JSON) completed with a flattened,
    truncated result preview (`→ \`…\``, or `→ **failed** \`…\`` when the
@@ -482,9 +575,14 @@ Out of the box, `@devteam <prompt>`:
    showing only the truncated previews.
 
 The four workspace tools also stay registered with `vscode.lm`, callable by
-any VS Code chat model that supports tool calling.
+any VS Code chat model that supports tool calling - every call goes through
+the same `WorkspaceToolHost` validation and approval gate the engine uses.
 
-Cancelling the chat request cancels the workflow run (and with it the model
+Each step's model call also emits a protocol `usage` event (model + token
+counts when the SDK reports them); the chat handler currently logs them to
+the console - the data the future backend's billing meters.
+
+Cancelling the chat request cancels the engine run (and with it the model
 call) instead of letting it finish in the background; a cancelled turn stops
 rendering immediately (plan content already streamed before the cancellation
 stays visible, nothing more is added). The cancellation also reaches the
@@ -493,7 +591,8 @@ its process tree killed and a pending `write` is dropped rather than landing on
 disk, so a cancel is honoured end to end and not just at the next step.
 
 If Ollama is not reachable, the failed run is rendered with the step that
-failed and a reminder to start Ollama (on the configured endpoint) with the
+failed (delivered as a protocol `RunFailedError`) and an engine-supplied
+hint reminding you to start Ollama (on the configured endpoint) with the
 model the router selected for that agent pulled.
 
 ## Prerequisites
@@ -501,7 +600,7 @@ model the router selected for that agent pulled.
 - **VS Code** ^1.95.0
 - **Node.js** 20.x
 - **[Ollama](https://ollama.com)** running locally, with the registered models
-  pulled (the router assumes every model in `config/models/` can run):
+  pulled (the router assumes every model in `engine/config/models/` can run):
 
   ```bash
   ollama serve                 # listens on http://localhost:11434
@@ -556,9 +655,12 @@ in-memory fake in `test/mocks/vscode.ts`; the fakes are real classes so the
 source's `instanceof` checks still hold. The config also mirrors the bundle's
 markdown handling: a `markdown-as-text` transform for plain `.md` imports and
 an `md-glob` plugin (sharing `md-glob.mjs` with `esbuild.mjs`) for the
-`glob:./dir/*.md` discovery imports. Mastra agents are stubbed so tests never
-construct a model or reach Ollama. Coverage of the agent core, tools, UI
-handler, and `config/` is comprehensive — run `npm run test:coverage` to see it.
+`glob:./dir/*.md` discovery imports. Mastra agents are stubbed (and the
+LocalEngine takes injected fake agents) so tests never construct a model or
+reach Ollama. Coverage of the protocol (schemas, the event fold), the engine
+(workflow, agents, the LocalEngine's event translation and error mapping),
+the client (ToolHost, tools, engine factory), the UI handler, and `config/`
+is comprehensive - run `npm run test:coverage` to see it.
 
 ## Tech stack
 
@@ -570,12 +672,23 @@ handler, and `config/` is comprehensive — run `npm run test:coverage` to see i
 
 ## Roadmap
 
+- **Phase B: the remote engine.** Lift `engine/` + `protocol/` into packages,
+  host the engine in a thin Node server (one HTTP POST starts a run and
+  returns an SSE event stream; tool results post back per call id; DELETE
+  cancels), and implement a `RemoteEngine` client speaking that wire. The
+  protocol - events, tool inversion, usage, auth - already exists, so the
+  extension's UI and tools require **no changes**; `myDevTeam.engine:
+  "remote"` stops falling back.
+- **Phase C: the real backend.** Authentication on the `AuthProvider` seam
+  (VS Code auth session or stored API key), metering/billing on the `usage`
+  events, server-held provider keys (e.g. Anthropic slots into the model
+  registry + a provider factory), rate limits, multi-tenancy.
 - **Add a Webview front end.**
   1. Add a `WebviewApprover implements Approver` with a diff/confirm UI.
   2. Pass it instead of `ChatApprover` in `extension.ts`.
   3. Optionally add a Webview panel as a second front-end calling the same core.
 
-  The agent core and tools require **no changes**.
+  The engine and tools require **no changes**.
 - **Feedback telemetry.** `participant.onDidReceiveFeedback` currently logs
   👍/👎; forward it to telemetry/eval storage.
 

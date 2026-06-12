@@ -2,13 +2,28 @@ import { createWorkflow, createStep } from '@mastra/core/workflows';
 import type { RequestContext } from '@mastra/core/request-context';
 import { z } from 'zod';
 import { Triage, TriageSchema } from './triage';
-import { Planner, PlanSchema, PlanResult, PartialPlan } from './planner';
+import { Planner, PlanProgress } from './planner';
 import { Answerer } from './answerer';
-import { Executor, ExecutionSchema, PartialExecution } from './executor';
+import { Executor, ExecutionProgress } from './executor';
+import { AgentUsage } from './usage';
+import {
+  Attachment,
+  AttachmentSchema,
+  HistoryTurn,
+  HistoryTurnSchema,
+  Plan,
+  ReplyProgress,
+  ReplySchema,
+  Reply,
+} from '../../protocol/types';
+import { RunStep } from '../../protocol/events';
+
+export type { Attachment, HistoryTurn, ReplyProgress } from '../../protocol/types';
 
 /**
- * Step ids of the dev-team workflow. Exported so the UI layer can map
- * step failures onto error copy without magic strings.
+ * Step ids of the dev-team workflow. Engine-internal: the LocalEngine maps a
+ * failed step onto the protocol's RunStep names, so nothing outside the
+ * engine depends on these strings.
  */
 export const stepIds = {
   triage: 'triage',
@@ -17,25 +32,6 @@ export const stepIds = {
   execute: 'execute-plan',
   deliver: 'deliver-answer',
 } as const;
-
-/** One attached file/selection: a short label naming it plus its (already truncated) text. */
-export const AttachmentSchema = z.object({
-  label: z.string(),
-  text: z.string(),
-});
-export type Attachment = z.infer<typeof AttachmentSchema>;
-
-/**
- * One prior turn of the conversation: who said it (the user, or this
- * participant) and its (already capped) text. The UI layer converts VS Code's
- * ChatContext.history into these before starting a run, applying the
- * settings.history caps, so the workflow never sees an unbounded session.
- */
-export const HistoryTurnSchema = z.object({
-  role: z.enum(['user', 'assistant']),
-  text: z.string(),
-});
-export type HistoryTurn = z.infer<typeof HistoryTurnSchema>;
 
 /**
  * What the workflow consumes: the user's prompt plus any attached
@@ -111,7 +107,7 @@ export function fullPrompt(input: RequestInput): string {
  * same as the planner saw) plus the plan it is asked to carry out, rendered
  * as a numbered list with the tool hints.
  */
-export function executionPrompt(input: RequestInput, plan: PlanResult): string {
+export function executionPrompt(input: RequestInput, plan: Plan): string {
   const steps = plan.steps
     .map(
       (step, i) =>
@@ -127,19 +123,13 @@ export function executionPrompt(input: RequestInput, plan: PlanResult): string {
 const TriagedSchema = RequestSchema.extend(TriageSchema.shape);
 
 /**
- * What the workflow produces: the routing decision plus, for "planning"
- * requests, the drafted plan and the execution transcript, or, for "oneshot"
- * requests, the direct answer. Rendering this into chat markdown is the UI
- * layer's job (see ui/chatParticipant.ts).
+ * What the workflow produces is the protocol's Reply: the routing decision
+ * plus, for "planning" requests, the drafted plan and the execution
+ * transcript, or, for "oneshot" requests, the direct answer. Using the
+ * protocol schema as the output schema is the guarantee that the engine
+ * cannot produce a reply the contract does not describe.
  */
-export const ReplySchema = z.object({
-  intent: TriageSchema.shape.intent,
-  reason: z.string(),
-  plan: PlanSchema.optional(),
-  answer: z.string().optional(),
-  execution: ExecutionSchema.optional(),
-});
-export type ReplyResult = z.infer<typeof ReplySchema>;
+export type ReplyResult = Reply;
 
 /**
  * The reply plus the original request, used between the two branch stages:
@@ -149,20 +139,6 @@ export type ReplyResult = z.infer<typeof ReplySchema>;
  */
 const StagedReplySchema = RequestSchema.extend(ReplySchema.shape);
 type StagedReply = z.infer<typeof StagedReplySchema>;
-
-/**
- * A snapshot of the reply while the run is still producing it: the triage
- * decision is always complete (it comes from buffered structured output), the
- * plan grows as the planner streams it, the answer grows as the answerer
- * streams it, and the execution transcript grows as the executor calls tools.
- */
-export type ReplyProgress = {
-  intent: ReplyResult['intent'];
-  reason: string;
-  plan?: PartialPlan;
-  answer?: string;
-  execution?: PartialExecution;
-};
 
 /** Receives reply snapshots as the workflow streams them. Must not throw. */
 export type ReplyProgressSink = (progress: ReplyProgress) => void;
@@ -176,6 +152,36 @@ export const replyProgressKey = 'onReplyProgress';
 
 function progressSink(requestContext: RequestContext): ReplyProgressSink | undefined {
   return requestContext.get(replyProgressKey) as ReplyProgressSink | undefined;
+}
+
+/**
+ * One step's metering record: the agent's usage report plus which protocol
+ * step it came from. The LocalEngine forwards these as the protocol's usage
+ * events - the billing seam.
+ */
+export type StepUsage = { step: RunStep } & AgentUsage;
+
+/** Receives per-step usage reports. Must not throw. */
+export type UsageSink = (usage: StepUsage) => void;
+
+/**
+ * RequestContext key under which a caller may pass a `UsageSink` to
+ * `run.start`. Reporting is best-effort: a step whose model call exposes no
+ * token counts simply never calls the sink.
+ */
+export const usageSinkKey = 'onUsage';
+
+function usageSink(requestContext: RequestContext): UsageSink | undefined {
+  return requestContext.get(usageSinkKey) as UsageSink | undefined;
+}
+
+/** Adapt the run's UsageSink into one agent's reporter, tagging the step. */
+function usageReporter(
+  requestContext: RequestContext,
+  step: RunStep
+): ((usage: AgentUsage) => void) | undefined {
+  const sink = usageSink(requestContext);
+  return sink && ((usage) => sink({ step, ...usage }));
 }
 
 /**
@@ -214,11 +220,14 @@ export function createDevTeamWorkflow(
     id: stepIds.triage,
     inputSchema: RequestSchema,
     outputSchema: TriagedSchema,
-    execute: async ({ inputData }) => ({
+    execute: async ({ inputData, requestContext }) => ({
       prompt: inputData.prompt,
       attachments: inputData.attachments,
       history: inputData.history,
-      ...(await triage.classify(triagePrompt(inputData))),
+      ...(await triage.classify(
+        triagePrompt(inputData),
+        usageReporter(requestContext, 'triage')
+      )),
     }),
   });
 
@@ -233,9 +242,12 @@ export function createDevTeamWorkflow(
       // snapshot the planner streams, so the UI can render tokens as they
       // arrive instead of waiting for the whole plan.
       sink?.({ intent, reason });
+      const onPartial: PlanProgress | undefined =
+        sink && ((partial) => sink({ intent, reason, plan: partial }));
       const plan = await planner.plan(
         fullPrompt(inputData),
-        sink && ((partial) => sink({ intent, reason, plan: partial }))
+        onPartial,
+        usageReporter(requestContext, 'plan')
       );
       return { prompt, attachments, history, intent, reason, plan };
     },
@@ -253,7 +265,8 @@ export function createDevTeamWorkflow(
       sink?.({ intent, reason });
       const answer = await answerer.answer(
         fullPrompt(inputData),
-        sink && ((text) => sink({ intent, reason, answer: text }))
+        sink && ((text) => sink({ intent, reason, answer: text })),
+        usageReporter(requestContext, 'answer')
       );
       return { prompt, attachments, history, intent, reason, answer };
     },
@@ -272,10 +285,13 @@ export function createDevTeamWorkflow(
       // Complete the plan render before execution output starts, then
       // forward every transcript snapshot the executor produces.
       sink?.({ intent, reason, plan });
+      const onPartial: ExecutionProgress | undefined =
+        sink && ((partial) => sink({ intent, reason, plan, execution: partial }));
       const execution = await executor.execute(
         executionPrompt({ prompt, attachments, history }, plan),
-        sink && ((partial) => sink({ intent, reason, plan, execution: partial })),
-        abortSignal(requestContext)
+        onPartial,
+        abortSignal(requestContext),
+        usageReporter(requestContext, 'execute')
       );
       return { intent, reason, plan, execution };
     },

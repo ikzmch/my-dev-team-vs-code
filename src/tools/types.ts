@@ -1,9 +1,9 @@
-// Core types shared across the agent. Nothing here imports `vscode` UI
-// surfaces directly except where unavoidable; the goal is that this layer
-// does not care whether the front-end is a Chat Participant or a Webview.
-//
-// LLM-facing shapes are the standard ones: Mastra agents/workflows and the
-// AI SDK's message types. Only the seams that are genuinely ours live here.
+// The client-side UI seams of the tool layer. These stay in the extension
+// forever - they gate and surface side effects on the user's machine - and
+// they never cross the engine protocol: an engine only ever sees a tool's
+// returned text, never how the approval or the mirroring happened. Nothing
+// here imports `vscode` UI surfaces; the goal is that the tools do not care
+// whether the front-end is a Chat Participant or a Webview.
 
 /**
  * The approval seam. Phase 1 implements this with chat confirmation buttons.

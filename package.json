@@ -20,6 +20,19 @@
     "configuration": {
       "title": "My Dev Team",
       "properties": {
+        "myDevTeam.engine": {
+          "type": "string",
+          "enum": [
+            "local",
+            "remote"
+          ],
+          "default": "local",
+          "enumDescriptions": [
+            "Run the agent pipeline inside the extension against your local Ollama server.",
+            "Not available yet: will run the same pipeline on a remote backend. Falls back to local with a warning."
+          ],
+          "description": "Which engine handles @devteam requests. Read live; switching takes effect on the next request."
+        },
         "myDevTeam.ollama.endpoint": {
           "type": "string",
           "default": "http://localhost:11434",

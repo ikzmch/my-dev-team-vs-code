@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { resolveModel } from '../src/core/models';
-import { selectModel } from '../src/config/models';
-import { agents } from '../src/config/agents';
+import { resolveModel } from '../src/engine/core/models';
+import { selectModel } from '../src/engine/config/models';
+import { agents } from '../src/engine/config/agents';
 import { __reset, __setConfig } from './mocks/vscode';
 
 beforeEach(() => {

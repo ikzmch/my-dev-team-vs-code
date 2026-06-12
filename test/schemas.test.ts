@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { TriageSchema } from '../src/core/triage';
-import { PlanSchema, PlanStepSchema } from '../src/core/planner';
+import { TriageSchema } from '../src/engine/core/triage';
+import { PlanSchema, PlanStepSchema } from '../src/engine/core/planner';
 
 describe('TriageSchema', () => {
   it('accepts a well-formed oneshot result', () => {
