@@ -68,8 +68,25 @@ function loadModel(raw: string): ModelInfo {
   return { ...ModelFrontmatterSchema.parse(data), description: body.trim() };
 }
 
+/**
+ * Parse a set of model config files into registry entries, rejecting
+ * duplicate ids: the id is the memoisation key for wired instances, so two
+ * entries sharing one would silently alias each other.
+ */
+export function loadModels(files: readonly string[]): ModelInfo[] {
+  const models = files.map(loadModel);
+  const seen = new Set<string>();
+  for (const info of models) {
+    if (seen.has(info.id)) {
+      throw new Error(`Duplicate model id "${info.id}" in config/models.`);
+    }
+    seen.add(info.id);
+  }
+  return models;
+}
+
 /** All models the router may select, in filename order (ties go first). */
-export const modelRegistry: readonly ModelInfo[] = modelFiles.map(loadModel);
+export const modelRegistry: readonly ModelInfo[] = loadModels(modelFiles);
 
 /** Weighted fit of a model for a requirement profile: Σ weight × score. */
 export function scoreModel(info: ModelInfo, requirements: CapabilityScores): number {

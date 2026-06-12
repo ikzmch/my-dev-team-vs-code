@@ -9,7 +9,8 @@ import { readFile, searchFiles, runCommand, writeFile } from './workspaceTools';
  * must match the package.json contribution). Side-effecting tools receive the
  * shared Approver.
  *
- * Returns disposables for cleanup on deactivate.
+ * The registrations are pushed onto context.subscriptions for cleanup on
+ * deactivate.
  */
 export function registerTools(
   context: vscode.ExtensionContext,

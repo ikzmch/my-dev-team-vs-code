@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { exec } from 'child_process';
+import * as path from 'path';
+import { exec, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { Approver } from '../core/types';
 import { settings } from '../config/settings';
@@ -15,11 +16,31 @@ function workspaceRoot(): vscode.Uri {
   return folder.uri;
 }
 
+/**
+ * Resolve a workspace-relative path to a Uri, rejecting anything that points
+ * outside the workspace (absolute paths, `..` traversal). Tool inputs come
+ * from a model and the tools are callable by any chat model in the editor,
+ * so the path is untrusted.
+ */
+function resolveWorkspaceUri(relPath: string): vscode.Uri {
+  const root = workspaceRoot();
+  const rootPath = path.resolve(root.fsPath);
+  const target = path.resolve(rootPath, relPath);
+  const rel = path.relative(rootPath, target);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Path is outside the workspace: ${relPath}`);
+  }
+  return vscode.Uri.joinPath(root, ...rel.split(/[\\/]/));
+}
+
 /** Read a file's text contents. Read-only: no approval needed. */
 export async function readFile(relPath: string): Promise<string> {
-  const uri = vscode.Uri.joinPath(workspaceRoot(), relPath);
+  const uri = resolveWorkspaceUri(relPath);
   const bytes = await vscode.workspace.fs.readFile(uri);
-  return Buffer.from(bytes).toString('utf8');
+  const text = Buffer.from(bytes).toString('utf8');
+  return text.length > settings.readMaxChars
+    ? text.slice(0, settings.readMaxChars) + '\n…(truncated)'
+    : text;
 }
 
 /** Search by glob (file names) or by content. Read-only: no approval needed. */
@@ -30,7 +51,7 @@ export async function searchFiles(
   if (mode === 'glob') {
     const uris = await vscode.workspace.findFiles(
       query,
-      '**/node_modules/**',
+      settings.search.excludeGlob,
       settings.search.globMaxResults
     );
     return uris.map((u) => vscode.workspace.asRelativePath(u));
@@ -39,22 +60,43 @@ export async function searchFiles(
   // Content search: scan candidate files for the query string.
   const uris = await vscode.workspace.findFiles(
     '**/*',
-    '**/node_modules/**',
+    settings.search.excludeGlob,
     settings.search.contentScanLimit
   );
   const matches: string[] = [];
   for (const uri of uris) {
     try {
-      const text = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
-      if (text.includes(query)) {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      // Skip oversized files and binaries (a NUL byte marks binary content;
+      // decoding never throws, so this cannot be left to the catch below).
+      if (bytes.byteLength > settings.search.maxFileSizeBytes || bytes.includes(0)) {
+        continue;
+      }
+      if (Buffer.from(bytes).toString('utf8').includes(query)) {
         matches.push(vscode.workspace.asRelativePath(uri));
       }
     } catch {
-      // Skip unreadable/binary files.
+      // Skip unreadable files.
     }
     if (matches.length >= settings.search.contentMaxMatches) break;
   }
   return matches;
+}
+
+/**
+ * Kill a spawned command and everything it started. exec's own `timeout`
+ * only signals the shell, which on Windows leaves grandchild processes
+ * running, so the tree is taken down explicitly.
+ */
+function killProcessTree(child: ChildProcess | undefined): void {
+  if (!child || child.pid === undefined) {
+    return;
+  }
+  if (process.platform === 'win32') {
+    exec(`taskkill /pid ${child.pid} /t /f`);
+  } else {
+    child.kill('SIGKILL');
+  }
 }
 
 /** Run a shell command. SIDE-EFFECTING: gated by the Approver. */
@@ -62,19 +104,41 @@ export async function runCommand(
   command: string,
   approver: Approver
 ): Promise<string> {
+  const cwd = workspaceRoot().fsPath;
   const ok = await approver.confirm(messages.approval.runCommandTitle, '$ ' + command);
   if (!ok) {
     return messages.notApproved.run;
   }
+
+  let timedOut = false;
+  const pending = execAsync(command, {
+    cwd,
+    maxBuffer: settings.runCommandMaxBufferBytes,
+    windowsHide: true,
+  });
+  const killTimer = setTimeout(() => {
+    timedOut = true;
+    killProcessTree(pending.child);
+  }, settings.runCommandTimeoutMs);
+
   try {
-    const { stdout, stderr } = await execAsync(command, {
-      cwd: workspaceRoot().fsPath,
-      timeout: settings.runCommandTimeoutMs,
-    });
-    return (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
+    const { stdout, stderr } = await pending;
+    return combineOutput(String(stdout), String(stderr));
   } catch (err: any) {
-    return `Command failed: ${err?.message ?? String(err)}`;
+    // A failed command's output is what the caller needs to diagnose it, so
+    // include the stdout/stderr exec attaches to the error.
+    const reason = timedOut
+      ? `Command timed out after ${settings.runCommandTimeoutMs} ms and was killed.`
+      : `Command failed: ${err?.message ?? String(err)}`;
+    const output = combineOutput(String(err?.stdout ?? ''), String(err?.stderr ?? ''));
+    return output ? `${reason}\n${output}` : reason;
+  } finally {
+    clearTimeout(killTimer);
   }
+}
+
+function combineOutput(stdout: string, stderr: string): string {
+  return (stdout || '') + (stderr ? `\n[stderr]\n${stderr}` : '');
 }
 
 /** Create or overwrite a file. SIDE-EFFECTING: gated by the Approver. */
@@ -83,7 +147,7 @@ export async function writeFile(
   contents: string,
   approver: Approver
 ): Promise<string> {
-  const uri = vscode.Uri.joinPath(workspaceRoot(), relPath);
+  const uri = resolveWorkspaceUri(relPath);
 
   // Build a simple before/after preview for the approval prompt.
   let existing = '';
@@ -102,7 +166,7 @@ export async function writeFile(
   }
 
   await vscode.workspace.fs.writeFile(uri, Buffer.from(contents, 'utf8'));
-  return `Wrote ${relPath} (${contents.length} bytes).`;
+  return `Wrote ${relPath} (${Buffer.byteLength(contents, 'utf8')} bytes).`;
 }
 
 function truncate(s: string, max = settings.writePreviewMaxChars): string {

@@ -33,6 +33,8 @@ export class Triage {
       [{ role: 'user', content: prompt }],
       { structuredOutput: { schema: TriageSchema } }
     );
-    return result.object as TriageResult;
+    // Validate rather than cast: a missing or malformed object fails here
+    // with a schema error instead of rendering as "intent: undefined" later.
+    return TriageSchema.parse(result.object);
   }
 }

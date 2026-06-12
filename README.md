@@ -38,7 +38,7 @@ src/
     tools.ts              discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
     frontmatter.ts        minimal frontmatter parser for the .md config files
     markdown.d.ts         lets TS treat `*.md` and `glob:` imports as strings / string[]
-    settings.ts           operational limits (timeouts, search caps, truncation)
+    settings.ts           operational limits (timeouts, size caps, search excludes, truncation)
     messages.ts           user-facing chat copy (progress, errors, templates)
   core/
     types.ts              Approver — the approval seam
@@ -50,7 +50,7 @@ src/
     workspaceTools.ts     read / search / run / write (UI-agnostic)
     registerTools.ts      registers tools with vscode.lm
   ui/
-    chatParticipant.ts    chat handler + Phase-1 ChatApprover + followups
+    chatParticipant.ts    chat handler + Phase-1 ChatApprover
 test/                     Vitest unit tests + an in-memory `vscode` mock
 esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
 md-glob.mjs               build-time `glob:./dir/*.md` expansion, shared with Vitest
@@ -104,7 +104,7 @@ inline.
 | `config/models.ts`           | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `config/tools.ts`            | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
 | `config/frontmatter.ts`      | Minimal parser for the frontmatter subset the config files use |
-| `config/settings.ts`         | Operational limits: run timeout, search caps, truncation      |
+| `config/settings.ts`         | Operational limits: run timeout/output buffer, read cap, search caps + excludes, truncation |
 | `config/messages.ts`         | Progress labels, error text, and reply markdown templates     |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
@@ -195,6 +195,19 @@ implementations in `workspaceTools.ts` are UI-agnostic.
 | `devteam__run`         | Run a shell command (60s cap)   | **Approver**    |
 | `devteam__write`       | Create/overwrite a file         | **Approver**    |
 
+The tools treat their inputs as untrusted (they are callable by any
+tool-calling chat model in the editor, not just `@devteam`):
+
+- `read`/`write` resolve paths against the workspace root and **reject
+  anything that escapes it** (absolute paths, `..` traversal); `read` also
+  caps how much text it returns.
+- `search` never scans `node_modules`, `.git`, `dist`, `out`, or `coverage`,
+  and content mode skips binary and oversized files (see
+  `config/settings.ts` for the limits).
+- `run` executes with a configured timeout (the whole spawned process tree is
+  killed, also on Windows) and output buffer; a failed command's stdout and
+  stderr are returned so a caller can diagnose it.
+
 Side-effecting tools call `approver.confirm(title, detail)`. The Phase-1
 `ChatApprover` streams the proposed action into the chat panel and gates it
 behind a modal confirmation. The `writeFile` tool builds a current/proposed
@@ -217,8 +230,11 @@ Out of the box, `@devteam <prompt>`:
 
 The four workspace tools are registered and callable by any VS Code chat model
 that supports tool calling; the workflow itself does not yet drive a
-tool-calling loop. A followup provider is attached, but the handler never
-emits followups yet, so no suggestion chips appear after a reply.
+tool-calling loop.
+
+Cancelling the chat request cancels the workflow run (and with it the model
+call) instead of letting it finish in the background; a cancelled turn renders
+nothing.
 
 If Ollama is not reachable, the failed run is rendered with the step that
 failed and a reminder to start Ollama with the model the router selected for

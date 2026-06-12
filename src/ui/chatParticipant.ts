@@ -25,11 +25,26 @@ export class ChatApprover implements Approver {
     this.stream = stream;
   }
 
+  /**
+   * Detach the stream when its request ends. The tools are registered
+   * editor-wide and can be invoked outside a @devteam turn; without this, an
+   * approval arriving later would write into a finished request's stream.
+   */
+  clearStream() {
+    this.stream = undefined;
+  }
+
   async confirm(title: string, detail: string): Promise<boolean> {
     // A genuinely interactive confirm in chat requires routing button clicks
     // back through a command; for the boilerplate we surface the action and
     // use a modal as the approval gate so the flow is safe out of the box.
-    this.stream?.markdown(`\n**${title}**\n\n\`\`\`\n${detail}\n\`\`\`\n`);
+    // The modal carries the full detail, so the stream echo is best-effort:
+    // a stale or disposed stream must not break the approval flow.
+    try {
+      this.stream?.markdown(`\n**${title}**\n\n\`\`\`\n${detail}\n\`\`\`\n`);
+    } catch {
+      // The stream's request has ended; the modal below still shows the detail.
+    }
     const pick = await vscode.window.showWarningMessage(
       `${title}?`,
       { modal: true, detail },
@@ -128,7 +143,7 @@ function renderFailure(
  * events onto the chat stream as progress, and renders the structured result.
  */
 export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHandler {
-  return async (request, _context, stream, _token) => {
+  return async (request, _context, stream, token) => {
     // Fold any attached files/selections into the prompt so the workflow
     // sees them as part of the request.
     const attachments = await renderReferences(request.references);
@@ -137,6 +152,11 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
       : request.prompt;
 
     const run = await workflow.createRun();
+    // Cancelling the chat request aborts the run (and its model call) instead
+    // of leaving it to finish in the background.
+    const cancellation = token.onCancellationRequested(() => {
+      void run.cancel();
+    });
     const unwatch = run.watch((event) => {
       if (event.type === 'workflow-step-start') {
         const label = progressByStep[event.payload.id];
@@ -149,8 +169,20 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
     let result;
     try {
       result = await run.start({ inputData: { prompt } });
+    } catch (err) {
+      if (token.isCancellationRequested) {
+        return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
+      }
+      throw err;
     } finally {
       unwatch();
+      cancellation.dispose();
+    }
+
+    // A cancelled request renders nothing: VS Code marks the turn cancelled
+    // and the stream may already be closed.
+    if (token.isCancellationRequested || (result.status as string) === 'canceled') {
+      return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
     }
 
     if (result.status === 'success') {
@@ -162,15 +194,5 @@ export function createHandler(workflow: DevTeamWorkflow): vscode.ChatRequestHand
     }
 
     return { metadata: { command: request.command ?? '' } } as vscode.ChatResult;
-  };
-}
-
-/** Attach follow-up provider so `result.followups` render as suggestions. */
-export function attachFollowups(participant: vscode.ChatParticipant) {
-  participant.followupProvider = {
-    provideFollowups(result: vscode.ChatResult) {
-      const fus = (result as any).followups as string[] | undefined;
-      return (fus ?? []).map((label) => ({ prompt: label, label }));
-    },
   };
 }

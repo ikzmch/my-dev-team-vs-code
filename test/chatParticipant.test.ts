@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   ChatApprover,
   createHandler,
-  attachFollowups,
   PARTICIPANT_ID,
 } from '../src/ui/chatParticipant';
 import { createDevTeamWorkflow } from '../src/core/workflow';
@@ -24,6 +23,14 @@ beforeEach(() => {
 
 function fakeStream() {
   return { markdown: vi.fn(), progress: vi.fn() };
+}
+
+/** Minimal CancellationToken double; flip `isCancellationRequested` to cancel. */
+function fakeToken(cancelled = false) {
+  return {
+    isCancellationRequested: cancelled,
+    onCancellationRequested: vi.fn(() => ({ dispose: vi.fn() })),
+  };
 }
 
 const aPlan: PlanResult = {
@@ -92,6 +99,30 @@ describe('ChatApprover', () => {
     __state.warningResponse = 'Approve';
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
   });
+
+  it('stops echoing into a stream after clearStream', async () => {
+    const approver = new ChatApprover();
+    const stream = fakeStream();
+    approver.setStream(stream as any);
+    approver.clearStream();
+    __state.warningResponse = 'Approve';
+
+    await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
+    expect(stream.markdown).not.toHaveBeenCalled();
+  });
+
+  it('survives a disposed stream and still asks via the modal', async () => {
+    const approver = new ChatApprover();
+    const closed = {
+      markdown: vi.fn(() => {
+        throw new Error('stream is closed');
+      }),
+    };
+    approver.setStream(closed as any);
+    __state.warningResponse = 'Approve';
+
+    await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
+  });
 });
 
 describe('createHandler', () => {
@@ -106,7 +137,7 @@ describe('createHandler', () => {
       { prompt: 'what is 2+2', references: [] } as any,
       { history: [] } as any,
       stream as any,
-      {} as any
+      fakeToken() as any
     );
 
     const text = emitted(stream);
@@ -127,7 +158,7 @@ describe('createHandler', () => {
       { prompt: 'add a feature', references: [] } as any,
       { history: [] } as any,
       stream as any,
-      {} as any
+      fakeToken() as any
     );
 
     const text = emitted(stream);
@@ -150,7 +181,7 @@ describe('createHandler', () => {
       { prompt: 'hi', references: [] } as any,
       { history: [] } as any,
       stream as any,
-      {} as any
+      fakeToken() as any
     );
 
     const text = emitted(stream);
@@ -172,7 +203,7 @@ describe('createHandler', () => {
       { prompt: 'do work', references: [] } as any,
       { history: [] } as any,
       stream as any,
-      {} as any
+      fakeToken() as any
     );
 
     const text = emitted(stream);
@@ -188,7 +219,7 @@ describe('createHandler', () => {
       { prompt: 'hi', references: [], command: 'explain' } as any,
       { history: [] } as any,
       fakeStream() as any,
-      {} as any
+      fakeToken() as any
     );
     expect((result as any).metadata.command).toBe('explain');
   });
@@ -201,7 +232,7 @@ describe('createHandler', () => {
       { prompt: 'look at this', references: [{ value: uri }] } as any,
       { history: [] } as any,
       fakeStream() as any,
-      {} as any
+      fakeToken() as any
     );
 
     expect(seen.prompt).toContain('look at this');
@@ -219,7 +250,7 @@ describe('createHandler', () => {
       { prompt: 'explain', references: [{ value: location }] } as any,
       { history: [] } as any,
       fakeStream() as any,
-      {} as any
+      fakeToken() as any
     );
 
     expect(seen.prompt).toContain('Selection from src/b.ts (line 2)');
@@ -233,7 +264,7 @@ describe('createHandler', () => {
       { prompt: 'q', references: [{ value: 'raw snippet' }] } as any,
       { history: [] } as any,
       fakeStream() as any,
-      {} as any
+      fakeToken() as any
     );
     expect(seen.prompt).toContain('raw snippet');
   });
@@ -246,7 +277,7 @@ describe('createHandler', () => {
       { prompt: 'q', references: [{ value: ghost }] } as any,
       { history: [] } as any,
       fakeStream() as any,
-      {} as any
+      fakeToken() as any
     );
     expect(seen.prompt).toContain('could not read attachment');
   });
@@ -259,7 +290,7 @@ describe('createHandler', () => {
       { prompt: 'q', references: [{ value: huge }] } as any,
       { history: [] } as any,
       fakeStream() as any,
-      {} as any
+      fakeToken() as any
     );
     expect(seen.prompt).toContain('…(truncated)');
   });
@@ -271,29 +302,58 @@ describe('createHandler', () => {
       { prompt: 'plain', references: [] } as any,
       { history: [] } as any,
       fakeStream() as any,
-      {} as any
+      fakeToken() as any
     );
     expect(seen.prompt).toBe('plain');
   });
-});
 
-describe('attachFollowups', () => {
-  it('maps result.followups onto prompt/label suggestion objects', () => {
-    const participant: any = {};
-    attachFollowups(participant);
-    const out = participant.followupProvider.provideFollowups({
-      followups: ['a', 'b'],
-    });
-    expect(out).toEqual([
-      { prompt: 'a', label: 'a' },
-      { prompt: 'b', label: 'b' },
-    ]);
+  it('subscribes to cancellation and disposes the listener afterwards', async () => {
+    const { workflow } = makeWorkflow();
+    const token = fakeToken();
+
+    await createHandler(workflow)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      token as any
+    );
+
+    expect(token.onCancellationRequested).toHaveBeenCalledOnce();
+    const subscription = token.onCancellationRequested.mock.results[0]
+      .value as { dispose: ReturnType<typeof vi.fn> };
+    expect(subscription.dispose).toHaveBeenCalledOnce();
   });
 
-  it('returns an empty array when there are no followups', () => {
-    const participant: any = {};
-    attachFollowups(participant);
-    expect(participant.followupProvider.provideFollowups({})).toEqual([]);
+  it('renders nothing when the request was cancelled', async () => {
+    const { workflow } = makeWorkflow();
+    const stream = fakeStream();
+
+    const result = await createHandler(workflow)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken(true) as any
+    );
+
+    expect(stream.markdown).not.toHaveBeenCalled();
+    expect((result as any).metadata.command).toBe('');
+  });
+
+  it('swallows a run failure caused by cancellation', async () => {
+    const { workflow } = makeWorkflow(async () => {
+      throw new Error('aborted');
+    });
+    const stream = fakeStream();
+
+    await expect(
+      createHandler(workflow)(
+        { prompt: 'hi', references: [] } as any,
+        { history: [] } as any,
+        stream as any,
+        fakeToken(true) as any
+      )
+    ).resolves.toBeDefined();
+    expect(stream.markdown).not.toHaveBeenCalled();
   });
 });
 

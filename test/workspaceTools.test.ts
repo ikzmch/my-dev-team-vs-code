@@ -14,7 +14,8 @@ import {
   writeFile,
 } from '../src/tools/workspaceTools';
 import { Approver } from '../src/core/types';
-import { __reset, __state, __setFile, Uri } from './mocks/vscode';
+import { settings } from '../src/config/settings';
+import { __reset, __state, __setFile, Uri, workspace } from './mocks/vscode';
 
 /** Approver test double recording calls and returning a fixed verdict. */
 function makeApprover(verdict: boolean): Approver & {
@@ -49,6 +50,29 @@ describe('readFile', () => {
     __state.workspaceFolders = undefined;
     await expect(readFile('a.ts')).rejects.toThrow('No workspace folder is open.');
   });
+
+  it('rejects a path that traverses out of the workspace', async () => {
+    await expect(readFile('../secret.txt')).rejects.toThrow(/outside the workspace/);
+    await expect(readFile('src/../../secret.txt')).rejects.toThrow(
+      /outside the workspace/
+    );
+  });
+
+  it('rejects an absolute path', async () => {
+    await expect(readFile('/etc/passwd')).rejects.toThrow(/outside the workspace/);
+  });
+
+  it('allows .. segments that stay inside the workspace', async () => {
+    __setFile('a.ts', 'still inside');
+    await expect(readFile('src/../a.ts')).resolves.toBe('still inside');
+  });
+
+  it('truncates contents beyond the read cap', async () => {
+    __setFile('big.ts', 'a'.repeat(settings.readMaxChars + 10));
+    const text = await readFile('big.ts');
+    expect(text).toContain('…(truncated)');
+    expect(text.length).toBeLessThan(settings.readMaxChars + 100);
+  });
 });
 
 describe('searchFiles (glob mode)', () => {
@@ -66,6 +90,15 @@ describe('searchFiles (glob mode)', () => {
   it('returns an empty list when nothing matches', async () => {
     __state.findFilesResult = [];
     await expect(searchFiles('**/*.md', 'glob')).resolves.toEqual([]);
+  });
+
+  it('always excludes the configured noise folders', async () => {
+    __state.findFilesResult = [];
+    await searchFiles('**/*.ts', 'glob');
+    await searchFiles('needle', 'content');
+    for (const call of workspace.findFiles.mock.calls) {
+      expect(call[1]).toBe(settings.search.excludeGlob);
+    }
   });
 });
 
@@ -85,6 +118,23 @@ describe('searchFiles (content mode)', () => {
     const ghost = Uri.joinPath(__state.workspaceFolders![0].uri, 'ghost.ts');
     __state.findFilesResult = [a, ghost]; // ghost is not seeded -> readFile throws
     await expect(searchFiles('needle', 'content')).resolves.toEqual(['a.ts']);
+  });
+
+  it('skips binary files instead of matching inside them', async () => {
+    const text = __setFile('a.ts', 'has needle');
+    const binary = __setFile('blob.bin', 'needle\0with a NUL byte');
+    __state.findFilesResult = [text, binary];
+    await expect(searchFiles('needle', 'content')).resolves.toEqual(['a.ts']);
+  });
+
+  it('skips files larger than the content-search size cap', async () => {
+    const small = __setFile('small.ts', 'needle');
+    const huge = __setFile(
+      'huge.ts',
+      'needle' + 'a'.repeat(settings.search.maxFileSizeBytes)
+    );
+    __state.findFilesResult = [small, huge];
+    await expect(searchFiles('needle', 'content')).resolves.toEqual(['small.ts']);
   });
 
   it('caps content matches at 50 results', async () => {
@@ -130,6 +180,29 @@ describe('runCommand', () => {
       'Command failed: boom'
     );
   });
+
+  it('includes the output a failed command produced before exiting', async () => {
+    // The real exec attaches the collected stdout/stderr to the error.
+    const err = Object.assign(new Error('Command failed: npm test'), {
+      stdout: '1 test failed',
+      stderr: 'AssertionError',
+    });
+    execMock.mockImplementation((_cmd, _opts, cb) => cb(err, undefined));
+    const out = await runCommand('npm test', makeApprover(true));
+    expect(out).toContain('Command failed: npm test');
+    expect(out).toContain('1 test failed');
+    expect(out).toContain('[stderr]\nAssertionError');
+  });
+
+  it('runs in the workspace root with the configured output buffer', async () => {
+    execMock.mockImplementation((_cmd, _opts, cb) =>
+      cb(null, { stdout: '', stderr: '' })
+    );
+    await runCommand('echo hi', makeApprover(true));
+    const opts = execMock.mock.calls[0][1] as { cwd: string; maxBuffer: number };
+    expect(opts.cwd).toBe('/ws');
+    expect(opts.maxBuffer).toBe(settings.runCommandMaxBufferBytes);
+  });
 });
 
 describe('writeFile', () => {
@@ -144,6 +217,21 @@ describe('writeFile', () => {
     const out = await writeFile('new.ts', 'hello', makeApprover(true));
     expect(out).toBe('Wrote new.ts (5 bytes).');
     expect(__state.files.get('/ws/new.ts')).toBe('hello');
+  });
+
+  it('reports utf8 bytes, not characters, for multi-byte content', async () => {
+    // "héllo" is 5 characters but 6 utf8 bytes.
+    const out = await writeFile('uni.ts', 'héllo', makeApprover(true));
+    expect(out).toBe('Wrote uni.ts (6 bytes).');
+  });
+
+  it('rejects a traversal path before asking for approval', async () => {
+    const approver = makeApprover(true);
+    await expect(writeFile('../evil.ts', 'x', approver)).rejects.toThrow(
+      /outside the workspace/
+    );
+    expect(approver.calls).toHaveLength(0);
+    expect([...__state.files.keys()].some((k) => k.includes('evil'))).toBe(false);
   });
 
   it('labels a brand-new file as "(new file)" in the approval preview', async () => {

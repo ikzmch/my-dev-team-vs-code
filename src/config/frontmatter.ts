@@ -31,9 +31,12 @@ function parseScalar(text: string): string | number | boolean {
 }
 
 export function parseFrontmatter(raw: string): ParsedMarkdown {
-  const match = raw.match(FENCE);
+  // A UTF-8 BOM before the opening fence would make the fence regex miss and
+  // the whole file parse as body, surfacing as a confusing zod error.
+  const text = raw.replace(/^\uFEFF/, '');
+  const match = text.match(FENCE);
   if (!match) {
-    return { data: {}, body: raw };
+    return { data: {}, body: text };
   }
 
   const data: Frontmatter = {};
@@ -84,5 +87,5 @@ export function parseFrontmatter(raw: string): ParsedMarkdown {
     }
   }
 
-  return { data, body: raw.slice(match[0].length).replace(/^\s*\n/, '') };
+  return { data, body: text.slice(match[0].length).replace(/^\s*\n/, '') };
 }

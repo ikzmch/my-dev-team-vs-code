@@ -3,13 +3,19 @@ import { messages, OLLAMA_ENDPOINT } from '../src/config/messages';
 import { settings } from '../src/config/settings';
 import {
   capabilityNames,
+  loadModels,
   modelRegistry,
   scoreModel,
   selectModel,
 } from '../src/config/models';
 import { parseFrontmatter } from '../src/config/frontmatter';
 import { agents } from '../src/config/agents';
-import { toolConfigs, toolNames, renderToolsSection } from '../src/config/tools';
+import {
+  loadTools,
+  toolConfigs,
+  toolNames,
+  renderToolsSection,
+} from '../src/config/tools';
 import { PlanStepSchema } from '../src/core/planner';
 
 describe('messages templates', () => {
@@ -81,6 +87,16 @@ describe('settings', () => {
   it('exposes a positive glob result cap', () => {
     expect(settings.search.globMaxResults).toBeGreaterThan(0);
   });
+
+  it('exposes the tool hardening limits', () => {
+    expect(settings.readMaxChars).toBeGreaterThan(0);
+    expect(settings.runCommandMaxBufferBytes).toBeGreaterThan(0);
+    expect(settings.search.maxFileSizeBytes).toBeGreaterThan(0);
+    // The exclude glob replaces VS Code's defaults, so it must at least keep
+    // dependency and VCS folders out of scans.
+    expect(settings.search.excludeGlob).toContain('node_modules');
+    expect(settings.search.excludeGlob).toContain('.git');
+  });
 });
 
 describe('model registry and selection', () => {
@@ -97,6 +113,12 @@ describe('model registry and selection', () => {
   it('keeps registry ids unique', () => {
     const ids = modelRegistry.map((info) => info.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('rejects two model files sharing one id', () => {
+    const file =
+      '---\nid: twin\nprovider: ollama\nmodel: twin:1b\ncapabilities:\n  speed: 1\n---\nnote';
+    expect(() => loadModels([file, file])).toThrow(/Duplicate model id "twin"/);
   });
 
   it('keeps every capability score within [0, 1]', () => {
@@ -189,6 +211,12 @@ describe('parseFrontmatter', () => {
     expect(parseFrontmatter('just text')).toEqual({ data: {}, body: 'just text' });
   });
 
+  it('ignores a UTF-8 BOM before the opening fence', () => {
+    const { data, body } = parseFrontmatter('\uFEFF---\nid: x\n---\nbody');
+    expect(data).toEqual({ id: 'x' });
+    expect(body).toBe('body');
+  });
+
   it('throws on a malformed line', () => {
     expect(() => parseFrontmatter('---\nnot yaml at all\n---\nbody')).toThrow(
       /Unsupported frontmatter/
@@ -226,6 +254,12 @@ describe('tool configs', () => {
 
   it('rejects an unknown tool name', () => {
     expect(() => renderToolsSection(['delete'])).toThrow(/Unknown tool "delete"/);
+  });
+
+  it('rejects two tool files sharing one name', () => {
+    const file =
+      '---\nname: twin\ndisplayName: Twin\nlmTool: devteam__twin\nsideEffecting: false\n---\ndesc';
+    expect(() => loadTools([file, file])).toThrow(/Duplicate tool name "twin"/);
   });
 });
 

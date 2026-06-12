@@ -14,7 +14,8 @@ import { toolNames } from '../config/tools';
  * same registry the planner's prompt section is rendered from), plus "none"
  * for a step that is pure reasoning.
  */
-const planTools: [string, ...string[]] = [toolNames[0], ...toolNames.slice(1), 'none'];
+// "none" leads so the enum stays well-formed even with an empty tool registry.
+const planTools: [string, ...string[]] = ['none', ...toolNames];
 
 export const PlanStepSchema = z.object({
   title: z
@@ -56,6 +57,8 @@ export class Planner {
       [{ role: 'user', content: prompt }],
       { structuredOutput: { schema: PlanSchema } }
     );
-    return result.object as PlanResult;
+    // Validate rather than cast: a missing or malformed object fails here
+    // with a schema error instead of rendering broken markdown later.
+    return PlanSchema.parse(result.object);
   }
 }

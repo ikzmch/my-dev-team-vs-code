@@ -7,7 +7,6 @@ import {
   PARTICIPANT_ID,
   ChatApprover,
   createHandler,
-  attachFollowups,
 } from './ui/chatParticipant';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -25,12 +24,16 @@ export function activate(context: vscode.ExtensionContext) {
   registerTools(context, approver);
 
   // --- UI layer: the chat participant ---
+  const handler = createHandler(workflow);
   const participant = vscode.chat.createChatParticipant(
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {
       approver.setStream(stream); // wire approver to this request's stream
-      const handler = createHandler(workflow);
-      return handler(request, ctx, stream, token);
+      try {
+        return await handler(request, ctx, stream, token);
+      } finally {
+        approver.clearStream(); // never leave a finished request's stream behind
+      }
     }
   );
 
@@ -41,8 +44,6 @@ export function activate(context: vscode.ExtensionContext) {
     console.log(`[My Dev Team] feedback: ${kind}`);
     // TODO: forward to telemetry / store for evals.
   });
-
-  attachFollowups(participant);
 
   context.subscriptions.push(participant);
 }

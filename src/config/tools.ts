@@ -36,7 +36,23 @@ function loadTool(raw: string): ToolConfig {
   return { ...ToolFrontmatterSchema.parse(data), description: body.trim() };
 }
 
-const all = toolFiles.map(loadTool);
+/**
+ * Parse a set of tool config files, rejecting duplicate names: `toolConfigs`
+ * is keyed by name, so a duplicate would silently overwrite its predecessor.
+ */
+export function loadTools(files: readonly string[]): ToolConfig[] {
+  const tools = files.map(loadTool);
+  const seen = new Set<string>();
+  for (const tool of tools) {
+    if (seen.has(tool.name)) {
+      throw new Error(`Duplicate tool name "${tool.name}" in config/tools.`);
+    }
+    seen.add(tool.name);
+  }
+  return tools;
+}
+
+const all = loadTools(toolFiles);
 
 export const toolConfigs: Record<string, ToolConfig> = Object.fromEntries(
   all.map((tool) => [tool.name, tool])

@@ -59,7 +59,6 @@ describe('activate', () => {
 
     expect(logSpy).toHaveBeenCalledWith('[My Dev Team] feedback: helpful');
     expect(logSpy).toHaveBeenCalledWith('[My Dev Team] feedback: unhelpful');
-    expect(participant.followupProvider).toBeDefined();
     logSpy.mockRestore();
   });
 
@@ -82,7 +81,10 @@ describe('activate', () => {
       { prompt: 'what is x', references: [] },
       { history: [] },
       stream,
-      {}
+      {
+        isCancellationRequested: false,
+        onCancellationRequested: () => ({ dispose: () => {} }),
+      }
     );
 
     expect(stream.markdown).toHaveBeenCalled();
