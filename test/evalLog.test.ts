@@ -131,6 +131,22 @@ describe('EvalLog', () => {
     expect(lines[0]).toMatchObject({ runId: 'kept' });
   });
 
+  it('reads back stored records oldest-first, skipping blank and corrupt lines', async () => {
+    const log = makeLog();
+    await log.recordRun({ runId: 'a', outcome: 'ok', usage: [] });
+    await log.recordFeedback({ kind: 'helpful', runId: 'a' });
+    // Append a corrupt line by hand: readRecords must skip it, not throw.
+    __state.files.set(FILE, (__state.files.get(FILE) ?? '') + 'not json\n\n');
+
+    const records = await log.readRecords();
+    expect(records.map((r) => r.record)).toEqual(['run', 'feedback']);
+    expect(records[0]).toMatchObject({ runId: 'a', record: 'run' });
+  });
+
+  it('reads back an empty list when the log file does not exist', async () => {
+    expect(await makeLog().readRecords()).toEqual([]);
+  });
+
   it('serializes concurrent appends so no record is lost', async () => {
     const log = makeLog();
     await Promise.all([

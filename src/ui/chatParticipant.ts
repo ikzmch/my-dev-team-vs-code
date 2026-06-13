@@ -14,6 +14,7 @@ import { ReplyFolder, RunEvent } from '../protocol/events';
 import { clientTools, ToolHost } from '../protocol/toolContract';
 import { Engine, RunCancelledError, RunFailedError } from '../protocol/engine';
 import { EvalLog, UsageEntry } from '../client/evalLog';
+import { formatTokenCount, sumUsage } from '../client/usageStats';
 import { collectInstructions } from '../client/instructions';
 import { collectReferences } from '../client/references';
 import { CLEAR_COMMAND, COMPACT_COMMAND, MODEL_COMMAND } from '../config/clientCommands';
@@ -426,12 +427,15 @@ export interface TurnMetadata {
  * chat. It neither knows nor cares whether the engine is in-process or
  * remote - that is the point of the protocol. When an `EvalLog` is supplied,
  * each run's route, per-step usage, and outcome are recorded to it (the log
- * itself is opt-in and stores nothing unless its setting is on).
+ * itself is opt-in and stores nothing unless its setting is on). `onRunUsage`,
+ * when supplied, receives every finished run's per-step token usage (regardless
+ * of the eval-log setting) - the session token counter subscribes to it.
  */
 export function createHandler(
   getEngine: () => Engine,
   toolHost: ToolHost,
-  evalLog?: EvalLog
+  evalLog?: EvalLog,
+  onRunUsage?: (usage: readonly UsageEntry[]) => void
 ): vscode.ChatRequestHandler {
   return async (request, context, stream, token) => {
     // /clear never starts a run: the conversation history is client state
@@ -512,6 +516,11 @@ export function createHandler(
           model: event.model,
           inputTokens: event.inputTokens,
           outputTokens: event.outputTokens,
+          reasoningTokens: event.reasoningTokens,
+          cachedInputTokens: event.cachedInputTokens,
+          totalTokens: event.totalTokens,
+          estimated: event.estimated,
+          inputBreakdown: event.inputBreakdown,
         });
         console.log(
           `[My Dev Team] usage: ${event.step}` +
@@ -569,6 +578,9 @@ export function createHandler(
     // rejects, and a slow disk must not delay the turn's result.
     const recordRun = (ending: 'ok' | 'error' | 'cancelled', errorStep?: string) => {
       outcome = ending;
+      // The session counter sees every run's tokens (including a cancelled
+      // run's already-spent ones), independent of the opt-in eval log.
+      onRunUsage?.(usage);
       void evalLog?.recordRun({
         runId,
         command: request.command ?? '',
@@ -577,6 +589,31 @@ export function createHandler(
         errorStep,
         usage,
       });
+    };
+
+    // Append the `**Tokens:**` line under a rendered reply when the setting is
+    // on and the run spent any tokens. Skipped on a cancelled turn (nothing is
+    // rendered) and guarded against a closed stream like the other renders.
+    const emitTokenLine = () => {
+      if (
+        token.isCancellationRequested ||
+        usage.length === 0 ||
+        !settings.usage.showInChatEnabled
+      ) {
+        return;
+      }
+      const summary = sumUsage(usage);
+      try {
+        stream.markdown(
+          messages.usage.chatLine(
+            formatTokenCount(summary.inputTokens),
+            formatTokenCount(summary.outputTokens),
+            summary.hasEstimates
+          )
+        );
+      } catch {
+        // The stream is closed; the token line is best-effort.
+      }
     };
 
     let reply: Reply;
@@ -593,6 +630,7 @@ export function createHandler(
         recordRun('error', err.step);
         const separator = streamer.hasEmitted ? '\n\n' : '';
         stream.markdown(separator + renderFailure(err));
+        emitTokenLine();
         return chatResult();
       }
       throw err;
@@ -605,6 +643,7 @@ export function createHandler(
     if (!token.isCancellationRequested) {
       // Emits whatever the streaming path has not already rendered.
       streamer.finish(renderReply(reply, true));
+      emitTokenLine();
     }
     return chatResult();
   };

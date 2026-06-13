@@ -63,7 +63,7 @@ src/
       answerer.ts         Mastra agent: answer a oneshot request directly, streamed as accumulated text
       executor.ts         Mastra agent: walk the plan in a tool-calling loop, streamed as a transcript
       agentTools.ts       the executor's tool proxies: every call delegates to the client's ToolHost
-      usage.ts            best-effort token-count extraction feeding the usage (billing) events
+      usage.ts            token-count extraction (SDK counts, else a length-based estimate) feeding the usage (billing) events
     config/
       agents/*.md         one agent per file: frontmatter + system prompt
       models/*.md         one registered model per file: provider, model id, capability scores
@@ -80,7 +80,8 @@ src/
     auth.ts               AuthProvider implementations (anonymous today; real credentials in Phase B)
     instructions.ts       reads the workspace's AGENTS.md/CLAUDE.md as standing project instructions per request
     references.ts         resolves a request's references into attachments: files/selections/symbols + inline #codebase/#changes
-    evalLog.ts            opt-in local JSONL eval store: per-run route/usage/outcome records + 👍/👎 feedback
+    evalLog.ts            opt-in local JSONL eval store: per-run route/usage/outcome records + 👍/👎 feedback; reads them back for the usage report
+    usageStats.ts         pure token-usage aggregation: roll the log up by step/model/route/day + input-by-source + a feedback-cost join, derive cache/estimate ratios
   config/                 client-side configuration, kept out of the logic (see below)
     settings.ts           operational limits; engine/model/endpoint/baseURL/timeout/search caps read live from VS Code settings
     credentials.ts        cloud-provider API keys: SecretStorage cache + env-var fallback (never in settings.json)
@@ -95,6 +96,8 @@ src/
   ui/
     chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover
     modelCommands.ts      model selection UI: the /model picker, status-bar item, and Set API Key command
+    usageStatusBar.ts     the status-bar token counter: a running session total; click opens the usage report
+    usageView.ts          the "Show Token Usage" command: rolls the eval log up into a markdown report
     runTerminal.ts        Phase-1 RunMirror: a read-only "Dev Team" terminal logging every run command live
     startupCheck.ts       activation health check: surfaces the selected engine's startup warnings
 test/                     Vitest unit tests + an in-memory `vscode` mock
@@ -238,10 +241,21 @@ without the client changing:
   name); the engine's configs keep the model-facing half (description,
   preview hints).
 - **`usage` events are the billing seam.** Each workflow step reports its
-  model call's token counts when the SDK exposes them (best-effort,
-  engine-side `usage.ts`); the LocalEngine forwards them as events, and the
-  chat handler currently logs them. Server-side, this same stream becomes
-  the metering record.
+  model call's token counts: the SDK's when it exposes any (input/output, plus
+  reasoning, cached-input, and the provider total when present), otherwise a
+  cheap length-based estimate over the prompt and reply, flagged `estimated` so
+  measured and estimated counts stay separable (engine-side `usage.ts`). The
+  estimate runs only on the miss path, so metering still never fails or slows
+  the run. For the full-prompt steps (plan/answer/execute) the event also
+  carries an `inputBreakdown`: an estimated split of the input tokens by prompt
+  section (project instructions, conversation, the command preamble, the
+  prompt, the attachments, and the executor's drafted plan), computed where the
+  workflow assembles the prompt - the attribution that tells a user what to
+  trim. The LocalEngine forwards the counts as events; the chat handler logs
+  them, sums them into the per-reply **Tokens:** line and the status-bar session
+  counter, and (when the eval log is on) stores them per run. Server-side, this
+  same stream becomes the metering record. See
+  [Token usage statistics](#token-usage-statistics-clientusagestatsts).
 - **`AuthProvider`** (`client/auth.ts`) supplies credentials per run -
   anonymous today; a VS Code auth session or stored API key slots in for the
   remote engine without touching the protocol.
@@ -356,9 +370,9 @@ never carry literals inline.
 | `engine/config/commands.ts`     | Discovers the command files, exports `commandConfigs`/`commandNames` and the pinned-route reason |
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
-| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, the model choice (`model`), Ollama endpoint, the cloud-provider base URLs (`openaiBaseUrl`/`anthropicBaseUrl`), run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), the in-chat token-line toggle (`usage.showInChat`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, the model choice (`model`), Ollama endpoint, the cloud-provider base URLs (`openaiBaseUrl`/`anthropicBaseUrl`), run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
 | `config/credentials.ts`         | Cloud-provider API keys (OpenAI, Anthropic): an in-memory cache loaded from VS Code SecretStorage on activation (set/cleared by the "Set API Key" command), with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` as fallbacks. Kept out of settings.json on purpose; read live by the provider wiring. Phase C moves keys server-side behind the AuthProvider seam |
-| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker and Set API Key prompts), and the run-mirror terminal's copy. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
+| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker and Set API Key prompts), the token-usage copy (the **Tokens:** line, the status-bar counter, the usage report), and the run-mirror terminal's copy. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
 | `config/clientCommands.ts`      | The client-handled commands (`/clear` and `/model`, with their autocomplete descriptions) plus the `/compact` marker name the history collection watches for - client-side because conversation history and the model choice are client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
@@ -410,6 +424,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
 | `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
 | `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file (or an edit's replacement text) shown under a `write`/`edit` call in the transcript (`0` hides the snippet) |
+| `myDevTeam.usage.showInChat`         | `true`                   | Append a **Tokens:** line under each reply summing the run's input/output tokens. The status-bar session total and the "Show Token Usage" report are independent of this flag |
 | `myDevTeam.instructions.files`       | `["AGENTS.md", "CLAUDE.md"]` | Root-relative file names probed for standing project instructions, in order; the first that exists is sent with every run. Plain names only (an entry with a path separator or `..` falls back to the default list); an empty list disables the feature |
 | `myDevTeam.telemetry.evalLog`        | `false`                  | Opt-in local eval log: store per-run route/usage/outcome records and 👍/👎 feedback as JSON lines in extension storage (no prompt or reply text; nothing leaves the machine) |
 
@@ -763,6 +778,49 @@ modal dialog. A declined `run` returns "not approved" to the model, which is
 told to skip the command. `write` and `edit` are not gated and apply without a
 prompt (see [Tools](#tools-tools) for the rationale).
 
+### Token usage statistics (`client/usageStats.ts`)
+
+The `usage` events (the billing seam above) feed three surfaces, all built on
+one pure aggregation module so the same code runs over a single run's live
+usage and over the whole stored log:
+
+- **Where the counts come from.** Each agent reports the SDK's token counts
+  when its model call exposes any, and otherwise a length-based estimate over
+  the prompt and reply (`resolveTokenCounts` in `engine/core/usage.ts`), flagged
+  `estimated`. So every model call contributes a record - statistics have no
+  holes - while a `~` marks any total that includes an estimate, keeping
+  measured and estimated counts honest. Reasoning, cached-input, and
+  provider-total counts ride along on the event and into the records whenever
+  the SDK reports them.
+- **`usageStats.ts` is pure aggregation** (no vscode, no I/O): `sumUsage` folds
+  one run's per-step entries into a `TokenSummary` (input, output, total,
+  reasoning, cached-input, calls, and how many of those calls were estimated);
+  `rollupUsage` folds the stored eval records into an overall total plus
+  breakdowns by **step, model, route, and day**, an **input-by-source** sum
+  (estimated input tokens per prompt section, from the events' `inputBreakdown`),
+  and a **feedback join** that charges each 👍/👎 click the tokens its run spent
+  (paired by run id);
+  `cacheHitRate`/`estimatedShare` derive the prefix-cache and estimate ratios,
+  and `formatTokenCount` renders a count compactly (`1234` -> `1.2k`). Being
+  I/O-free is what makes it trivially testable.
+- **Three surfaces.** The chat handler appends a **Tokens:** line under each
+  reply (`myDevTeam.usage.showInChat`, on by default); a status-bar counter
+  (`ui/usageStatusBar.ts`) accumulates a running session total, fed every
+  finished run's usage by the handler independent of the eval-log setting; and
+  the **"My Dev Team: Show Token Usage"** command (`ui/usageView.ts`) reads the
+  eval log back (`EvalLog.readRecords`), rolls it up, and opens a markdown
+  report. The report leads with a **Highlights** section scoring the things the
+  design cares about - the input/output ratio (prompt weight), the prefix-cache
+  hit rate (the "lead with the stable prefix" bet), the reasoning-token share,
+  the estimated-vs-measured share (how soft the figures are), and value per
+  token (the tokens behind 👍 vs 👎) - then an **Input by source** table
+  (estimated input tokens per prompt section, so you can see whether
+  instructions, history, or attachments dominate the prompt) and the
+  by-step/model/route/day tables.
+  The report is the only surface that needs the opt-in eval log
+  (`myDevTeam.telemetry.evalLog`); with no recorded runs it points the user at
+  that setting.
+
 ## Current behavior
 
 On activation, the extension loads any stored cloud-provider API keys from
@@ -882,16 +940,22 @@ the same `WorkspaceToolHost` validation (and, for `run`, the approval gate)
 the engine uses.
 
 Each step's model call also emits a protocol `usage` event (model + token
-counts when the SDK reports them); the chat handler logs them to the console
-and collects them per run - the data the future backend's billing meters.
-With `myDevTeam.telemetry.evalLog` enabled (it is off by default), every
-finished run lands as one JSON line in an `eval-log.jsonl` under the
-extension's global storage - run id, slash command, triage route, outcome,
-and the collected per-step usage - and every 👍/👎 click on a reply is
-recorded next to it, paired with its run through the turn's chat result
-metadata, so routing and prompt changes can be measured against real feedback
-per token spent. The records carry no prompt text, file contents, or reply
-text, and the log never leaves your machine.
+counts - the SDK's, or a length-based estimate flagged `estimated` when the
+SDK reports none); the chat handler logs them, sums them into the per-reply
+**Tokens:** line (`myDevTeam.usage.showInChat`, on by default; a `~` marks a
+total that includes an estimate), feeds them to the status-bar session counter,
+and collects them per run - the data the future backend's billing meters. The
+**"My Dev Team: Show Token Usage"** command rolls the recorded runs up by model,
+route, and day into a markdown report (`client/usageStats.ts` +
+`ui/usageView.ts`). With `myDevTeam.telemetry.evalLog` enabled (it is off by
+default), every finished run lands as one JSON line in an `eval-log.jsonl` under
+the extension's global storage - run id, slash command, triage route, outcome,
+and the collected per-step usage (model + token counts) - and every 👍/👎 click
+on a reply is recorded next to it, paired with its run through the turn's chat
+result metadata, so routing and prompt changes can be measured against real
+feedback per token spent. The report reads this log, so it is populated only
+when the setting is on. The records carry no prompt text, file contents, or
+reply text, and the log never leaves your machine.
 
 Cancelling the chat request cancels the engine run (and with it the model
 call) instead of letting it finish in the background; a cancelled turn stops

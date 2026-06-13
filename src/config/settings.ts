@@ -35,6 +35,9 @@ export const defaults = {
   chat: {
     toolSnippetLines: 5,
   },
+  usage: {
+    showInChat: true,
+  },
   instructions: {
     files: ['AGENTS.md', 'CLAUDE.md'],
   },
@@ -211,6 +214,23 @@ export const settings = {
      */
     get snippetLines(): number {
       return userLimit('chat.toolSnippetLines', defaults.chat.toolSnippetLines, 0);
+    },
+  },
+
+  /** How per-run token usage is surfaced to the user (client/usageStats.ts). */
+  usage: {
+    /**
+     * Whether each reply ends with a `**Tokens:**` line summing the run's
+     * model calls (`myDevTeam.usage.showInChat`). On by default; the
+     * status-bar session total and the "Show Token Usage" report are
+     * independent of this flag. Anything but the literal `false` counts as on.
+     */
+    get showInChatEnabled(): boolean {
+      return (
+        vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<unknown>('usage.showInChat') !== false
+      );
     },
   },
 

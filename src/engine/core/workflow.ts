@@ -5,7 +5,7 @@ import { Triage, TriageSchema } from './triage';
 import { Planner, PlanProgress } from './planner';
 import { Answerer } from './answerer';
 import { Executor, ExecutionProgress } from './executor';
-import { AgentUsage } from './usage';
+import { AgentUsage, estimateTokens } from './usage';
 import { commandConfigs, pinnedReason, CommandConfig } from '../config/commands';
 import {
   Attachment,
@@ -18,7 +18,7 @@ import {
   ReplySchema,
   Reply,
 } from '../../protocol/types';
-import { RunStep } from '../../protocol/events';
+import { InputBreakdown, RunStep } from '../../protocol/events';
 
 export type {
   Attachment,
@@ -153,10 +153,52 @@ export function fullPrompt(input: RequestInput): string {
  * chooses how to carry each one out.
  */
 export function executionPrompt(input: RequestInput, plan: Plan): string {
+  return `${fullPrompt(input)}\n\n--- Drafted plan ---\n${planText(plan)}`;
+}
+
+/** The drafted plan rendered for a prompt: the summary then the numbered steps. */
+function planText(plan: Plan): string {
   const steps = plan.steps
     .map((step, i) => `${i + 1}. ${step.title} - ${step.detail}`)
     .join('\n');
-  return `${fullPrompt(input)}\n\n--- Drafted plan ---\n${plan.summary}\n${steps}`;
+  return `${plan.summary}\n${steps}`;
+}
+
+/** The attachments inlined as the prompt sees them: each label above its text. */
+function attachmentsText(input: RequestInput): string {
+  return (input.attachments ?? []).map((a) => `${a.label}\n${a.text}`).join('\n\n');
+}
+
+/**
+ * Estimated input-token attribution for a full-prompt step (plan/answer/
+ * execute), section by section - the data that tells a user what to trim. Each
+ * field is a length-based estimate of that section's content text (delimiters
+ * and the agent's system prompt are excluded: they are fixed overhead the user
+ * cannot change). A section that is empty or absent is omitted. The sources
+ * mirror the assembly in `fullPrompt`/`executionPrompt`, so the split tracks
+ * what is actually sent. `plan` is supplied only for the executor step.
+ */
+export function inputBreakdown(input: RequestInput, plan?: Plan): InputBreakdown {
+  const breakdown: InputBreakdown = {};
+  const add = (key: keyof InputBreakdown, text: string | undefined) => {
+    if (!text) {
+      return;
+    }
+    const tokens = estimateTokens(text);
+    if (tokens > 0) {
+      breakdown[key] = tokens;
+    }
+  };
+  const history = input.history ?? [];
+  add('instructions', input.instructions?.text);
+  add('history', history.length > 0 ? historySection(history) : undefined);
+  add('preamble', commandFor(input)?.preamble);
+  add('prompt', input.prompt);
+  add('attachments', (input.attachments ?? []).length > 0 ? attachmentsText(input) : undefined);
+  if (plan) {
+    add('plan', planText(plan));
+  }
+  return breakdown;
 }
 
 /** Triage decision carried forward to the branch steps. */
@@ -199,7 +241,7 @@ function progressSink(requestContext: RequestContext): ReplyProgressSink | undef
  * step it came from. The LocalEngine forwards these as the protocol's usage
  * events - the billing seam.
  */
-export type StepUsage = { step: RunStep } & AgentUsage;
+export type StepUsage = { step: RunStep; inputBreakdown?: InputBreakdown } & AgentUsage;
 
 /** Receives per-step usage reports. Must not throw. */
 export type UsageSink = (usage: StepUsage) => void;
@@ -215,13 +257,21 @@ function usageSink(requestContext: RequestContext): UsageSink | undefined {
   return requestContext.get(usageSinkKey) as UsageSink | undefined;
 }
 
-/** Adapt the run's UsageSink into one agent's reporter, tagging the step. */
+/**
+ * Adapt the run's UsageSink into one agent's reporter, tagging the step and -
+ * for the full-prompt steps - the estimated input-token split by section, so
+ * the metering record can attribute input tokens to their source.
+ */
 function usageReporter(
   requestContext: RequestContext,
-  step: RunStep
+  step: RunStep,
+  breakdown?: InputBreakdown
 ): ((usage: AgentUsage) => void) | undefined {
   const sink = usageSink(requestContext);
-  return sink && ((usage) => sink({ step, ...usage }));
+  return (
+    sink &&
+    ((usage) => sink({ step, ...(breakdown ? { inputBreakdown: breakdown } : {}), ...usage }))
+  );
 }
 
 /**
@@ -304,7 +354,7 @@ export function createDevTeamWorkflow(
       const plan = await planner.plan(
         fullPrompt(inputData),
         onPartial,
-        usageReporter(requestContext, 'plan')
+        usageReporter(requestContext, 'plan', inputBreakdown(inputData))
       );
       return { prompt, instructions, attachments, history, command, intent, reason, plan };
     },
@@ -324,7 +374,7 @@ export function createDevTeamWorkflow(
       const answer = await answerer.answer(
         fullPrompt(inputData),
         sink && ((text) => sink({ intent, reason, answer: text })),
-        usageReporter(requestContext, 'answer')
+        usageReporter(requestContext, 'answer', inputBreakdown(inputData))
       );
       return { prompt, instructions, attachments, history, command, intent, reason, answer };
     },
@@ -346,11 +396,12 @@ export function createDevTeamWorkflow(
       sink?.({ intent, reason, plan });
       const onPartial: ExecutionProgress | undefined =
         sink && ((partial) => sink({ intent, reason, plan, execution: partial }));
+      const executorInput = { prompt, instructions, attachments, history, command };
       const execution = await executor.execute(
-        executionPrompt({ prompt, instructions, attachments, history, command }, plan),
+        executionPrompt(executorInput, plan),
         onPartial,
         abortSignal(requestContext),
-        usageReporter(requestContext, 'execute')
+        usageReporter(requestContext, 'execute', inputBreakdown(executorInput, plan))
       );
       return { intent, reason, plan, execution };
     },

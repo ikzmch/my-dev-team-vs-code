@@ -18,6 +18,8 @@ import {
   SELECT_MODEL_COMMAND_ID,
   SET_API_KEY_COMMAND_ID,
 } from './ui/modelCommands';
+import { UsageStatusBar } from './ui/usageStatusBar';
+import { runShowUsageCommand, SHOW_USAGE_COMMAND_ID } from './ui/usageView';
 import { loadStoredApiKeys } from './config/credentials';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -82,8 +84,22 @@ export function activate(context: vscode.ExtensionContext) {
   // myDevTeam.telemetry.evalLog is on. It stores no prompt or reply text.
   const evalLog = new EvalLog(context.globalStorageUri);
 
+  // --- Token-usage surfaces ---
+  // A status-bar counter accumulates each run's tokens live (independent of the
+  // opt-in log), and the "Show Token Usage" command rolls the stored log up
+  // into a report. The handler feeds the counter every finished run's usage.
+  const usageStatusBar = new UsageStatusBar(SHOW_USAGE_COMMAND_ID);
+  context.subscriptions.push(
+    usageStatusBar,
+    vscode.commands.registerCommand(SHOW_USAGE_COMMAND_ID, () =>
+      runShowUsageCommand(evalLog)
+    )
+  );
+
   // --- UI layer: the chat participant ---
-  const handler = createHandler(getEngine, toolHost, evalLog);
+  const handler = createHandler(getEngine, toolHost, evalLog, (usage) =>
+    usageStatusBar.add(usage)
+  );
   const participant = vscode.chat.createChatParticipant(
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {

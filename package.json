@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.27.0",
+  "version": "0.28.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -100,10 +100,15 @@
           ],
           "description": "Project instruction files probed in the workspace root, in order; the first one found is given to the agents as standing instructions on every request. Plain file names only (no folders). An empty list turns the feature off."
         },
+        "myDevTeam.usage.showInChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append a Tokens line under each reply summing the run's input and output tokens. The status-bar session total and the My Dev Team: Show Token Usage report are independent of this setting."
+        },
         "myDevTeam.telemetry.evalLog": {
           "type": "boolean",
           "default": false,
-          "description": "Store a local eval log of @devteam runs (route, per-step model and token usage, outcome) and thumbs up/down feedback as JSON lines in the extension's global storage. No prompts, file contents, or replies are recorded, and nothing leaves your machine."
+          "description": "Store a local eval log of @devteam runs (route, per-step model and token usage, outcome) and thumbs up/down feedback as JSON lines in the extension's global storage. No prompts, file contents, or replies are recorded, and nothing leaves your machine. The My Dev Team: Show Token Usage report reads this log."
         }
       }
     },
@@ -116,6 +121,11 @@
       {
         "command": "myDevTeam.setApiKey",
         "title": "Set API Key",
+        "category": "My Dev Team"
+      },
+      {
+        "command": "myDevTeam.showUsage",
+        "title": "Show Token Usage",
         "category": "My Dev Team"
       }
     ],

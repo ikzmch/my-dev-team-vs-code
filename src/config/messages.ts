@@ -117,6 +117,32 @@ export const messages = {
   },
 
   /**
+   * Token-usage copy: the per-reply line, the status-bar session counter, and
+   * the "Show Token Usage" report. The counts are already formatted compactly
+   * by usageStats.formatTokenCount before they reach these templates - this is
+   * only the framing. The `~` prefix marks a figure that includes a
+   * length-based estimate (a model call the provider gave no counts for).
+   */
+  usage: {
+    /** The `**Tokens:**` line appended under a reply (gated by the setting). */
+    chatLine: (input: string, output: string, estimated: boolean) =>
+      `\n\n**Tokens:** ${estimated ? '~' : ''}${input} in / ${output} out`,
+    /** Status-bar item text: a running session total of input + output tokens. */
+    statusBar: (total: string, estimated: boolean) =>
+      `$(symbol-number) ${estimated ? '~' : ''}${total}`,
+    statusBarTooltip: 'My Dev Team tokens this session - click for usage stats',
+    /** The whole "Show Token Usage" report when no runs have been recorded. */
+    empty:
+      '# My Dev Team - token usage\n\n' +
+      'No runs have been recorded yet. Turn on **myDevTeam.telemetry.evalLog** ' +
+      'to collect per-run token statistics (route, per-step model, and token ' +
+      'counts) for analysis here. Nothing leaves your machine.\n',
+    /** Header of the usage report; `runs` is how many runs it summarizes. */
+    reportHeader: (runs: number) =>
+      `# My Dev Team - token usage\n\n_${runs} run${runs === 1 ? '' : 's'} recorded._\n`,
+  },
+
+  /**
    * Copy for the `run` tool's approval gate. Only `run` is gated; `write` and
    * `edit` are not (the workspace is git-backed, so their changes are
    * recoverable - see DESIGN.md).

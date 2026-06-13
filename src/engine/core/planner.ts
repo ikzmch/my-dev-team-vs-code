@@ -1,7 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
 import { resolveModel, routeModel } from './models';
-import { readUsage, UsageReporter } from './usage';
+import { resolveTokenCounts, UsageReporter } from './usage';
 import { agents } from '../config/agents';
 import { PartialPlan, Plan } from '../../protocol/types';
 
@@ -89,12 +89,13 @@ export class Planner {
         onPartial?.(value as PartialPlan);
       }
     }
-    const usage = await readUsage(output);
-    if (usage) {
-      onUsage?.({ model: this.modelName, ...usage });
-    }
+    const plan = await output.object;
+    onUsage?.({
+      model: this.modelName,
+      ...(await resolveTokenCounts(output, prompt, JSON.stringify(plan ?? {}))),
+    });
     // Validate rather than cast: a missing or malformed object fails here
     // with a schema error instead of rendering broken markdown later.
-    return PlanSchema.parse(await output.object);
+    return PlanSchema.parse(plan);
   }
 }

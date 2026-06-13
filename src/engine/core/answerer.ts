@@ -1,6 +1,6 @@
 import { Agent } from '@mastra/core/agent';
 import { resolveModel, routeModel } from './models';
-import { readUsage, UsageReporter } from './usage';
+import { resolveTokenCounts, UsageReporter } from './usage';
 import { agents } from '../config/agents';
 
 /**
@@ -57,10 +57,10 @@ export class Answerer {
         onPartial?.(text);
       }
     }
-    const usage = await readUsage(output);
-    if (usage) {
-      onUsage?.({ model: this.modelName, ...usage });
-    }
+    onUsage?.({
+      model: this.modelName,
+      ...(await resolveTokenCounts(output, prompt, text)),
+    });
     return output.text;
   }
 }

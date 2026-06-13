@@ -24,6 +24,25 @@ import {
  */
 export type RunStep = 'triage' | 'plan' | 'answer' | 'execute';
 
+/**
+ * Estimated input-token attribution for one model call, split by the prompt
+ * section the tokens came from - what the user can actually trim. Every field
+ * is an estimate (a length-based count of that section's text, since the SDK
+ * reports only a single total), and every field is optional: a section absent
+ * from the prompt simply does not appear. The sections mirror how the workflow
+ * assembles a prompt (project instructions, then conversation, the slash
+ * command's preamble, the prompt itself, the inlined attachments, and - for the
+ * executor - the drafted plan).
+ */
+export interface InputBreakdown {
+  instructions?: number;
+  history?: number;
+  preamble?: number;
+  prompt?: number;
+  attachments?: number;
+  plan?: number;
+}
+
 /** The events an engine emits over the lifetime of one run, in order. */
 export type RunEvent =
   /** Triage decided how to route the request. Always the first event. */
@@ -58,9 +77,13 @@ export type RunEvent =
    */
   | { type: 'tool-call'; callId: string; tool: string; args: unknown }
   /**
-   * Metering record for one step's model call: the billing seam. Token counts
-   * are omitted when the underlying SDK did not report them; `model` is the
-   * concrete model name locally and may be an opaque tier label remotely.
+   * Metering record for one step's model call: the billing seam. A side is
+   * omitted when neither the SDK reported it nor an estimate covers it;
+   * `estimated` is set when the counts are a length-based estimate rather than
+   * SDK-reported. `model` is the concrete model name locally and may be an
+   * opaque tier label remotely. The extra token fields (reasoning, cached
+   * input, the provider total) ride along only when the SDK exposes them, so a
+   * client that ignores them loses nothing.
    */
   | {
       type: 'usage';
@@ -68,6 +91,16 @@ export type RunEvent =
       model?: string;
       inputTokens?: number;
       outputTokens?: number;
+      reasoningTokens?: number;
+      cachedInputTokens?: number;
+      totalTokens?: number;
+      estimated?: boolean;
+      /**
+       * Estimated split of the input tokens by prompt section, attached for the
+       * steps that assemble a full prompt (plan/answer/execute); absent for
+       * triage, which sees only attachment labels.
+       */
+      inputBreakdown?: InputBreakdown;
     }
   /** The run finished; `reply` is the complete validated result. */
   | { type: 'done'; reply: Reply }

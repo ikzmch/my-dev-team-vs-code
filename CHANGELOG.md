@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-06-13
+
+### Added
+
+- **Token usage statistics.** Every reply now ends with a **Tokens:** line
+  summing the run's input and output tokens (turn it off with
+  `myDevTeam.usage.showInChat`), a status-bar counter tracks the running session
+  total, and a new "My Dev Team: Show Token Usage" command opens a report: a
+  Highlights section (input/output ratio, prompt-cache hit rate, reasoning
+  share, estimate share, and the tokens behind 👍 vs 👎), an Input-by-source
+  table that shows whether project instructions, conversation history, or
+  attachments dominate your prompts, and breakdowns by step, model, route, and
+  day. When a provider reports no counts, a
+  length-based estimate stands in and is marked with a `~`, so the statistics
+  have no holes. The report reads the opt-in eval log
+  (`myDevTeam.telemetry.evalLog`), which now also stores reasoning, cached-input,
+  and total token counts when a model exposes them.
+
 ## [0.27.0] - 2026-06-13
 
 ### Added

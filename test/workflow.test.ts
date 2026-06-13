@@ -8,6 +8,7 @@ import {
   triagePrompt,
   fullPrompt,
   executionPrompt,
+  inputBreakdown,
   Attachment,
   HistoryTurn,
   ProjectInstructions,
@@ -77,6 +78,31 @@ async function runWorkflow(workflow: DevTeamWorkflow, prompt: string) {
   const run = await workflow.createRun();
   return run.start({ inputData: { prompt } });
 }
+
+describe('inputBreakdown', () => {
+  it('estimates each prompt section that is present', () => {
+    const breakdown = inputBreakdown(
+      {
+        prompt: 'do the thing here',
+        instructions: { source: 'CLAUDE.md', text: 'always be kind to the user' },
+        history: [{ role: 'user', text: 'an earlier question about things' }],
+        attachments: [{ label: 'File: a.ts', text: 'const a = 1;' }],
+        command: 'fix',
+      },
+      aPlan
+    );
+    expect(breakdown.instructions).toBeGreaterThan(0);
+    expect(breakdown.history).toBeGreaterThan(0);
+    expect(breakdown.preamble).toBeGreaterThan(0); // /fix has a prompt preamble
+    expect(breakdown.prompt).toBeGreaterThan(0);
+    expect(breakdown.attachments).toBeGreaterThan(0);
+    expect(breakdown.plan).toBeGreaterThan(0); // only present when executing
+  });
+
+  it('omits absent sections and the plan when not executing', () => {
+    expect(inputBreakdown({ prompt: 'hi' })).toEqual({ prompt: expect.any(Number) });
+  });
+});
 
 describe('dev-team workflow routing', () => {
   it('routes a oneshot request to the answerer and skips planner and executor', async () => {
@@ -1075,11 +1101,17 @@ describe('dev-team workflow usage reporting', () => {
       requestContext: usageContext((usage) => seen.push(usage)),
     });
 
-    expect(seen).toEqual([
-      { step: 'triage', model: 'm-triage', inputTokens: 1, outputTokens: 2 },
-      { step: 'plan', model: 'm-plan', inputTokens: 3, outputTokens: 4 },
-      { step: 'execute', model: 'm-exec', inputTokens: 5, outputTokens: 6 },
-    ]);
+    expect(seen.map((u) => u.step)).toEqual(['triage', 'plan', 'execute']);
+    // Triage carries no input breakdown (it sees only attachment labels).
+    expect(seen[0]).toEqual({ step: 'triage', model: 'm-triage', inputTokens: 1, outputTokens: 2 });
+    // The full-prompt steps carry the estimated input split; with only a prompt
+    // in the request, the prompt is the one section, and the executor also sees
+    // the drafted plan.
+    expect(seen[1]).toMatchObject({ step: 'plan', model: 'm-plan', inputTokens: 3, outputTokens: 4 });
+    expect(seen[1].inputBreakdown).toEqual({ prompt: expect.any(Number) });
+    expect(seen[2]).toMatchObject({ step: 'execute', model: 'm-exec', inputTokens: 5, outputTokens: 6 });
+    expect(seen[2].inputBreakdown?.prompt).toBeGreaterThan(0);
+    expect(seen[2].inputBreakdown?.plan).toBeGreaterThan(0);
   });
 
   it('tags the answerer report with the answer step on the oneshot path', async () => {
@@ -1100,7 +1132,9 @@ describe('dev-team workflow usage reporting', () => {
       requestContext: usageContext((usage) => seen.push(usage)),
     });
 
-    expect(seen).toEqual([{ step: 'answer', model: 'm-answer', inputTokens: 7 }]);
+    expect(seen).toEqual([
+      { step: 'answer', model: 'm-answer', inputTokens: 7, inputBreakdown: { prompt: expect.any(Number) } },
+    ]);
   });
 
   it('hands the agents no usage reporter when no sink was provided', async () => {

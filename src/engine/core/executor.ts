@@ -1,7 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 import { resolveModel, routeModel } from './models';
 import { buildAgentTools, PROGRESS_TOOL, ProgressReportSchema } from './agentTools';
-import { readUsage, UsageReporter } from './usage';
+import { resolveTokenCounts, UsageReporter } from './usage';
 import { agents } from '../config/agents';
 import { toolConfigs } from '../config/tools';
 import { settings } from '../../config/settings';
@@ -245,10 +245,15 @@ export class Executor {
       }
     }
 
-    const usage = await readUsage(output);
-    if (usage) {
-      onUsage?.({ model: this.modelName, ...usage });
-    }
+    // The transcript's text events are the model's prose output; join them as
+    // the reply estimate for when the SDK reports no counts.
+    const replyText = events
+      .map((event) => (event.kind === 'text' ? event.text : ''))
+      .join('');
+    onUsage?.({
+      model: this.modelName,
+      ...(await resolveTokenCounts(output, prompt, replyText)),
+    });
 
     // Validate rather than cast, mirroring the planner: a malformed transcript
     // fails here with a schema error instead of rendering broken markdown.

@@ -636,11 +636,19 @@ describe('usage reporting', () => {
     ]);
   });
 
-  it('Triage stays silent when the result carries no usage', async () => {
+  it('Triage falls back to a length-based estimate when the result carries no usage', async () => {
     generateMock.mockResolvedValue({ object: { intent: 'oneshot', reason: 'x' } });
     const seen: AgentUsage[] = [];
     await new Triage().classify('q', (usage) => seen.push(usage));
-    expect(seen).toEqual([]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      model: routeModel(agents.triage.capabilities, undefined, localModels()).model,
+      estimated: true,
+    });
+    // The estimate is derived from the prompt and the serialized object, so
+    // both sides are present and positive rather than silently missing.
+    expect(seen[0].inputTokens).toBeGreaterThan(0);
+    expect(seen[0].outputTokens).toBeGreaterThan(0);
   });
 
   it('accepts the legacy prompt/completion token names', async () => {
@@ -694,7 +702,7 @@ describe('usage reporting', () => {
     ]);
   });
 
-  it('a rejecting usage promise is swallowed, not surfaced', async () => {
+  it('a rejecting usage promise is swallowed and falls back to an estimate', async () => {
     streamMock.mockResolvedValue({
       ...fakeTextOutput(['ok']),
       usage: Promise.reject(new Error('no usage')),
@@ -703,6 +711,9 @@ describe('usage reporting', () => {
     await expect(
       new Answerer().answer('q', undefined, (usage) => seen.push(usage))
     ).resolves.toBe('ok');
-    expect(seen).toEqual([]);
+    // The rejection degrades to undefined, so the estimate stands in rather
+    // than the run failing or the usage silently going unreported.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ estimated: true });
   });
 });

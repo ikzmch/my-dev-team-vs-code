@@ -213,6 +213,7 @@ likely to touch:
 | `myDevTeam.anthropic.baseUrl`    | `""`                     | Custom Anthropic endpoint (a proxy/gateway); empty uses Anthropic's default |
 | `myDevTeam.run.commandTimeoutMs` | `60000`                  | How long a shell command may run before it is killed |
 | `myDevTeam.chat.toolSnippetLines`| `5`                      | Lines of a written file previewed in the chat transcript (`0` hides the preview) |
+| `myDevTeam.usage.showInChat`     | `true`                   | Show the **Tokens** line under each reply; the status-bar counter and the usage report stay regardless |
 | `myDevTeam.instructions.files`   | `["AGENTS.md", "CLAUDE.md"]` | Which project files in your workspace root hold standing rules for the agent; the first one found is used. An empty list turns the feature off |
 | `myDevTeam.telemetry.evalLog`    | `false`                  | Opt-in local log of runs and 👍/👎 feedback - stays on your machine, records no prompts or file contents |
 
@@ -220,14 +221,31 @@ There are further knobs for read/search limits (`myDevTeam.read.*`,
 `myDevTeam.search.*`) and the engine choice (`myDevTeam.engine`, leave it on
 `local` for now).
 
-## 8. Feedback
+## 8. Token usage
+
+Every reply ends with a **Tokens** line - how many tokens that request spent
+(input and output). The status bar (next to the model name) keeps a running
+**total for the session**; click it to open a **token usage report**: a
+Highlights section (how much went to prompts vs answers, how often the prompt
+cache helped, and how many tokens sat behind your 👍/👎 votes), an **Input by
+source** table showing whether project instructions, conversation history, or
+attachments are taking up your prompts, and breakdowns by step, model, command,
+and day. A `~` in front of a number means it includes an estimate, because the
+model did not report exact counts.
+
+- Don't want the per-reply line? Turn off `myDevTeam.usage.showInChat`. The
+  status-bar counter and the report stay.
+- The report is built from the local log, so it only has data once you turn on
+  `myDevTeam.telemetry.evalLog` (see below). Until then it tells you so.
+
+## 9. Feedback
 
 Use the **👍 / 👎** buttons on any reply. With
 `myDevTeam.telemetry.evalLog` enabled, your votes are stored locally next to
 the run's routing and usage data, which helps tune the agents - nothing is
 ever sent anywhere.
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 - **"Ollama is unreachable" or a request fails on the first step** - make
   sure `ollama serve` is running and that `myDevTeam.ollama.endpoint`

@@ -1,7 +1,7 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
 import { resolveModel, routeModel, localModels } from './models';
-import { readUsage, UsageReporter } from './usage';
+import { resolveTokenCounts, UsageReporter } from './usage';
 import { agents } from '../config/agents';
 import { IntentSchema } from '../../protocol/types';
 
@@ -46,10 +46,10 @@ export class Triage {
       [{ role: 'user', content: prompt }],
       { structuredOutput: { schema: TriageSchema } }
     );
-    const usage = await readUsage(result);
-    if (usage) {
-      onUsage?.({ model: this.modelName, ...usage });
-    }
+    onUsage?.({
+      model: this.modelName,
+      ...(await resolveTokenCounts(result, prompt, JSON.stringify(result.object ?? {}))),
+    });
     // Validate rather than cast: a missing or malformed object fails here
     // with a schema error instead of rendering as "intent: undefined" later.
     return TriageSchema.parse(result.object);

@@ -933,6 +933,73 @@ describe('createHandler eval log recording', () => {
     });
   });
 
+  it('appends a Tokens line summing the run usage and feeds the session counter', async () => {
+    const stream = fakeStream();
+    const engine = scriptedEngine(
+      [
+        { type: 'triaged', intent: 'oneshot', reason: 'simple' },
+        { type: 'usage', step: 'triage', model: 'qwen3:8b', inputTokens: 12, outputTokens: 3 },
+        { type: 'usage', step: 'answer', model: 'qwen3:8b', outputTokens: 40 },
+        { type: 'done', reply: aReply },
+      ],
+      Promise.resolve(aReply)
+    );
+    const seen: Array<readonly any[]> = [];
+
+    await createHandler(() => engine, hostStub, undefined, (usage) => seen.push(usage))(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    // 12 in (triage) / 3 + 40 = 43 out, neither side estimated.
+    expect(emitted(stream)).toContain('**Tokens:** 12 in / 43 out');
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toHaveLength(2);
+  });
+
+  it('marks the Tokens line with ~ when any step was estimated', async () => {
+    const stream = fakeStream();
+    const engine = scriptedEngine(
+      [
+        { type: 'triaged', intent: 'oneshot', reason: 'simple' },
+        { type: 'usage', step: 'answer', model: 'qwen3:8b', inputTokens: 5, outputTokens: 9, estimated: true },
+        { type: 'done', reply: aReply },
+      ],
+      Promise.resolve(aReply)
+    );
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).toContain('**Tokens:** ~5 in / 9 out');
+  });
+
+  it('omits the Tokens line when the run reported no usage', async () => {
+    const stream = fakeStream();
+    const engine = scriptedEngine(
+      [
+        { type: 'triaged', intent: 'oneshot', reason: 'simple' },
+        { type: 'done', reply: aReply },
+      ],
+      Promise.resolve(aReply)
+    );
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).not.toContain('**Tokens:**');
+  });
+
   it('runs without an eval log exactly as before', async () => {
     const { engine } = makeEngine();
     const stream = fakeStream();

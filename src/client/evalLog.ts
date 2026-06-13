@@ -14,6 +14,7 @@
  * runs, the signal is collected (and gated) here.
  */
 import * as vscode from 'vscode';
+import { InputBreakdown } from '../protocol/events';
 import { settings } from '../config/settings';
 
 /** Metering for one step's model call, from the run's protocol usage events. */
@@ -22,6 +23,16 @@ export interface UsageEntry {
   model?: string;
   inputTokens?: number;
   outputTokens?: number;
+  /** Output tokens spent on hidden reasoning, when the model reports them. */
+  reasoningTokens?: number;
+  /** Input tokens served from a prompt cache, when the provider reports them. */
+  cachedInputTokens?: number;
+  /** The provider's own total, when given. */
+  totalTokens?: number;
+  /** True when the counts are a length-based estimate, not SDK-reported. */
+  estimated?: boolean;
+  /** Estimated split of the input tokens by prompt section (plan/answer/execute). */
+  inputBreakdown?: InputBreakdown;
 }
 
 /** How a run ended, as the chat handler saw it. */
@@ -76,6 +87,33 @@ export class EvalLog {
   /** Append one feedback record. Resolves once written; never rejects. */
   recordFeedback(record: Omit<FeedbackRecord, 'record' | 'ts'>): Promise<void> {
     return this.append({ record: 'feedback', ts: new Date().toISOString(), ...record });
+  }
+
+  /**
+   * Read back every stored record, oldest first, for offline analysis (the
+   * "Show Token Usage" command rolls these up). A missing file (the log was
+   * never written, or the setting is off) yields an empty list; a malformed
+   * line is skipped so one bad write never hides the rest of the history.
+   */
+  async readRecords(): Promise<EvalRecord[]> {
+    let text: string;
+    try {
+      text = new TextDecoder().decode(await vscode.workspace.fs.readFile(this.file));
+    } catch {
+      return [];
+    }
+    const records: EvalRecord[] = [];
+    for (const line of text.split('\n')) {
+      if (!line.trim()) {
+        continue;
+      }
+      try {
+        records.push(JSON.parse(line) as EvalRecord);
+      } catch {
+        // A truncated or corrupt line: skip it, keep the rest.
+      }
+    }
+    return records;
   }
 
   private append(record: EvalRecord): Promise<void> {
