@@ -21,6 +21,12 @@ import { beforeEach } from 'vitest';
 
 beforeEach(() => {
   __reset();
+  // Routing must not depend on the developer's machine: a cloud key in the
+  // environment would make Auto prefer that provider's model and change which
+  // model the failure hints name. Clear them so Auto routes to Ollama here.
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.GROQ_API_KEY;
 });
 
 const hostStub: ToolHost = {
@@ -304,6 +310,28 @@ describe('LocalEngine.startRun', () => {
       step: 'plan',
       message: expect.stringContaining('model not found'),
     });
+  });
+
+  it('maps a persistent rate limit onto the rate-limit hint', async () => {
+    const engine = new LocalEngine(
+      fakes({
+        createPlanner: () =>
+          ({
+            plan: async () => {
+              // Shape of a 429 that outlasted the retries (Mastra serialises it
+              // to a plain message by the time the engine maps the failure).
+              throw new Error('Rate limit reached for model, status code 429');
+            },
+          } as any),
+      })
+    );
+
+    const outcome = engine.startRun(request(), client([])).result;
+    const error = await outcome.catch((e) => e as RunFailedError);
+    expect(error.step).toBe('plan');
+    // Points at the throttle setting, not the API-key / Ollama hints.
+    expect(error.hint).toContain('myDevTeam.provider.requestsPerMinute');
+    expect(error.hint).not.toContain(settings.ollamaEndpoint);
   });
 
   it('rejects a protocol version it does not speak', async () => {

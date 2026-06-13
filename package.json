@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.29.0",
+  "version": "0.31.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -14,7 +14,9 @@
     "Chat",
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "configuration": {
@@ -57,6 +59,12 @@
           "type": "string",
           "default": "",
           "description": "Optional custom base URL for the Groq provider (a proxy or gateway). Leave empty to use Groq's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
+        },
+        "myDevTeam.provider.requestsPerMinute": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "Maximum model requests per minute sent to each provider. Requests are spaced so no provider exceeds this rate, keeping a run under its quota (e.g. a Groq free-tier limit); applied per provider, so a local Ollama call never spends a cloud provider's budget. Set to 0 to disable throttling. A rate-limited (HTTP 429) request is always retried after the delay the provider suggests, regardless of this setting."
         },
         "myDevTeam.run.commandTimeoutMs": {
           "type": "number",
@@ -144,7 +152,7 @@
         "id": "myDevTeam.agent",
         "name": "devteam",
         "fullName": "My Dev Team",
-        "description": "Ask me to read, search, run, or change files in your workspace.",
+        "description": "Describe what to build",
         "isSticky": true,
         "commands": [
           {

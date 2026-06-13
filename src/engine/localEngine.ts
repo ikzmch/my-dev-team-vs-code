@@ -37,6 +37,7 @@ import {
   ProviderName,
 } from './config/models';
 import { routeModel, localModels, isModelAvailable } from './core/models';
+import { isRateLimited } from './core/rateLimiter';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 import {
@@ -199,14 +200,19 @@ function failureDetail(error: unknown): string {
 
 /**
  * The troubleshooting hint for a failed agent, naming the model it actually
- * used. An Ollama model points at the server + tag to pull; a cloud model
- * points at its missing/invalid API key. Triage always uses a local model.
+ * used. A persistent rate limit (a 429 that outlasted the retries) points at
+ * the throttle setting; otherwise an Ollama model points at the server + tag to
+ * pull and a cloud model at its missing/invalid API key. Triage always uses a
+ * local model.
  */
-function failureHint(agent: AgentName, modelPin?: string): string {
+function failureHint(agent: AgentName, modelPin?: string, error?: unknown): string {
   const info =
     agent === 'triage'
       ? routeModel(agents.triage.capabilities, undefined, localModels())
       : routeModel(agents[agent].capabilities, modelPin);
+  if (isRateLimited(error)) {
+    return messages.rateLimitHint(info.label);
+  }
   return info.provider === 'ollama'
     ? messages.ollamaHint(settings.ollamaEndpoint, info.model)
     : messages.cloudKeyHint(info.label, info.provider);
@@ -220,10 +226,10 @@ function mapFailure(
   const detail = failureDetail(error);
   for (const { stepId, step, agent } of failureMap) {
     if (steps[stepId]?.status === 'failed') {
-      return new RunFailedError(step, detail, failureHint(agent, modelPin));
+      return new RunFailedError(step, detail, failureHint(agent, modelPin, error));
     }
   }
-  return new RunFailedError('triage', detail, failureHint('triage', modelPin));
+  return new RunFailedError('triage', detail, failureHint('triage', modelPin, error));
 }
 
 /** Shape of the Ollama `GET /api/tags` response, as far as the probe reads it. */

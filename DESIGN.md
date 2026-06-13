@@ -58,6 +58,7 @@ src/
     core/
       workflow.ts         Mastra workflow: triage -> plan -> execute | answer; per-run progress + usage sinks
       models.ts           provider wiring (ollama/openai/anthropic/groq): availability + pin-aware routing into an AI SDK model
+      rateLimiter.ts      per-provider request throttle (RPM) + 429 retry-after-delay, as an AI SDK model middleware
       triage.ts           Mastra agent: triage request as oneshot | planning
       planner.ts          Mastra agent: draft an ordered plan of titled steps, streamed as partial snapshots
       answerer.ts         Mastra agent: answer a oneshot request directly, streamed as accumulated text
@@ -95,8 +96,8 @@ src/
     types.ts              the client seams: Approver (approval) + RunMirror (run-command transparency)
   ui/
     chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover
-    modelCommands.ts      model selection UI: the /model picker, status-bar item, and Set API Key command
-    usageStatusBar.ts     the status-bar token counter: a running session total; click opens the usage report
+    modelCommands.ts      model selection UI: the /model picker and the Set API Key command
+    statusBar.ts          the single "My Dev Team" status-bar button: a menu to change the model or open the usage report; holds the live model label and session token total
     usageView.ts          the "Show Token Usage" command: rolls the eval log up into a markdown report
     runTerminal.ts        Phase-1 RunMirror: a read-only "Dev Team" terminal logging every run command live
     startupCheck.ts       activation health check: surfaces the selected engine's startup warnings
@@ -254,8 +255,8 @@ without the client changing:
   prompt, the attachments, and the executor's drafted plan), computed where the
   workflow assembles the prompt - the attribution that tells a user what to
   trim. The LocalEngine forwards the counts as events; the chat handler logs
-  them, sums them into the per-reply **Tokens:** line and the status-bar session
-  counter, and (when the eval log is on) stores them per run. Server-side, this
+  them, sums them into the per-reply **Tokens:** line and the status button's
+  session total, and (when the eval log is on) stores them per run. Server-side, this
   same stream becomes the metering record. See
   [Token usage statistics](#token-usage-statistics-clientusagestatsts).
 - **`AuthProvider`** (`client/auth.ts`) supplies credentials per run -
@@ -374,7 +375,7 @@ never carry literals inline.
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
 | `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), the in-chat token-line toggle (`usage.showInChat`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, the model choice (`model`), Ollama endpoint, the cloud-provider base URLs (`openaiBaseUrl`/`anthropicBaseUrl`/`groqBaseUrl`), run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
 | `config/credentials.ts`         | Cloud-provider API keys (OpenAI, Anthropic, Groq): an in-memory cache loaded from VS Code SecretStorage on activation (set/cleared by the "Set API Key" command), with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GROQ_API_KEY` as fallbacks. Kept out of settings.json on purpose; read live by the provider wiring. Phase C moves keys server-side behind the AuthProvider seam |
-| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker and Set API Key prompts), the token-usage copy (the **Tokens:** line, the status-bar counter, the usage report), and the run-mirror terminal's copy. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
+| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker and Set API Key prompts), the token-usage copy (the **Tokens:** line and the usage report), the status button + menu copy, and the run-mirror terminal's copy. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
 | `config/clientCommands.ts`      | The client-handled commands (`/clear` and `/model`, with their autocomplete descriptions) plus the `/compact` marker name the history collection watches for - client-side because conversation history and the model choice are client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
@@ -416,18 +417,19 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | Setting                              | Default                  | Controls                                  |
 | ------------------------------------ | ------------------------ | ----------------------------------------- |
 | `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process) or `remote` (Phase B; warns and falls back to local until it exists) |
-| `myDevTeam.model`                    | `auto`                   | What the planner/answerer/executor use: a model id, a `provider:<name>` to route within one provider, or `auto` to route by capability among the available models. Triage always uses a local Ollama model. Set it with `/model` or the status-bar item |
+| `myDevTeam.model`                    | `auto`                   | What the planner/answerer/executor use: a model id, a `provider:<name>` to route within one provider, or `auto` to route by capability among the available models. Triage always uses a local Ollama model. Set it with `/model` or the "My Dev Team" status button's menu |
 | `myDevTeam.ollama.endpoint`          | `http://localhost:11434` | Ollama server origin (no `/api` suffix)   |
 | `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
 | `myDevTeam.anthropic.baseUrl`        | `""`                     | Optional custom base URL for Anthropic (a proxy/gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
 | `myDevTeam.groq.baseUrl`             | `""`                     | Optional custom base URL for Groq (a proxy/gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
+| `myDevTeam.provider.requestsPerMinute` | `0`                    | Max model requests per minute sent to each provider; calls are spaced to stay under it, keeping a run within a provider's quota. `0` disables throttling. A 429 is always retried after the provider's suggested delay regardless of this |
 | `myDevTeam.run.commandTimeoutMs`     | `60000`                  | `run` tool shell-command timeout (ms)     |
 | `myDevTeam.read.maxLines`            | `200`                    | Max lines one `read` call returns; partial results name the range and total so the model continues |
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
 | `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
 | `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file (or an edit's replacement text) shown under a `write`/`edit` call in the transcript (`0` hides the snippet) |
-| `myDevTeam.usage.showInChat`         | `true`                   | Append a **Tokens:** line under each reply summing the run's input/output tokens. The status-bar session total and the "Show Token Usage" report are independent of this flag |
+| `myDevTeam.usage.showInChat`         | `true`                   | Append a **Tokens:** line under each reply summing the run's input/output tokens. The status button's session total and the "Show Token Usage" report are independent of this flag |
 | `myDevTeam.instructions.files`       | `["AGENTS.md", "CLAUDE.md"]` | Root-relative file names probed for standing project instructions, in order; the first that exists is sent with every run. Plain names only (an entry with a path separator or `..` falls back to the default list); an empty list disables the feature |
 | `myDevTeam.telemetry.evalLog`        | `false`                  | Opt-in local eval log: store per-run route/usage/outcome records and 👍/👎 feedback as JSON lines in extension storage (no prompt or reply text; nothing leaves the machine) |
 | `myDevTeam.telemetry.shadowTriage`   | `false`                  | On a slash-command (pinned) run, also run triage in the background and record its prediction, so the usage report can score triage against the pinned route. Adds one local triage call per pinned run; only collects while the eval log is on |
@@ -479,8 +481,27 @@ OpenAI-compatible/Anthropic/Groq gateway. Each provider is built lazily and
 rebuilt when its endpoint, key, or base URL changes, dropping the memoised
 model instances so the next request uses the new configuration.
 
+**Rate limiting and 429 retries.** Every wired model is wrapped in an AI SDK
+language-model middleware (`core/rateLimiter.ts`) that sits below Mastra, so it
+sees the raw provider `APICallError`. It does two things, both per provider and
+both reading their settings live:
+
+- **Throttle.** When `myDevTeam.provider.requestsPerMinute` is set, calls are
+  spaced `60_000 / rpm` apart so a provider never receives more than that many
+  requests per rolling minute - keeping a run under a provider's quota (e.g.
+  Groq's free tier) instead of firing until one is rejected. The budget is per
+  provider, so a local Ollama call never spends a cloud provider's allowance.
+  `0` (the default) disables it.
+- **Retry.** A 429 is caught and retried after the delay the provider suggests
+  (its `retry-after`/`retry-after-ms` header, or the "try again in Ns" hint in
+  the message), plus a small buffer, clamped to a 60s cap and capped at
+  `provider.maxRateLimitRetries` attempts. The throttle slot is re-acquired
+  before each attempt. A 429 that outlasts the retries surfaces with a
+  rate-limit hint (`messages.rateLimitHint`) pointing at the throttle setting,
+  rather than the API-key hint.
+
 **User selection: Auto, a model, or a provider.** The user picks with `/model`
-(or the status-bar item / "My Dev Team: Select Model" command); the choice is
+(or the "My Dev Team" status button's menu / "My Dev Team: Select Model" command); the choice is
 stored in `myDevTeam.model` and travels on every `RunRequest.model`. Three
 kinds of choice, all decided in `selectModel`:
 
@@ -813,9 +834,10 @@ usage and over the whole stored log:
   and `formatTokenCount` renders a count compactly (`1234` -> `1.2k`). Being
   I/O-free is what makes it trivially testable.
 - **Three surfaces.** The chat handler appends a **Tokens:** line under each
-  reply (`myDevTeam.usage.showInChat`, on by default); a status-bar counter
-  (`ui/usageStatusBar.ts`) accumulates a running session total, fed every
-  finished run's usage by the handler independent of the eval-log setting; and
+  reply (`myDevTeam.usage.showInChat`, on by default); the single "My Dev Team"
+  status button (`ui/statusBar.ts`) accumulates a running session total it shows
+  in its menu, fed every finished run's usage by the handler independent of the
+  eval-log setting; and
   the **"My Dev Team: Show Token Usage"** command (`ui/usageView.ts`) reads the
   eval log back (`EvalLog.readRecords`), rolls it up, and opens a markdown
   report. The report leads with a **Highlights** section scoring the things the
@@ -833,13 +855,17 @@ usage and over the whole stored log:
 
 ## Current behavior
 
-On activation, the extension loads any stored cloud-provider API keys from
+The extension activates at startup (`onStartupFinished` in package.json, in
+addition to the implicit chat-participant event), so its UI is present before
+the first `@devteam` request rather than appearing only after it. On activation,
+the extension loads any stored cloud-provider API keys from
 SecretStorage, then asks the selected engine for startup warnings; the local
 engine pings the configured Ollama endpoint and warns (once, non-blocking) if
-the server is down or an Auto-routed local model is not pulled. A status-bar
-item shows the active model.
+the server is down or an Auto-routed local model is not pulled. A single
+"My Dev Team" status-bar button opens a menu to change the model or open the
+token-usage report; its menu rows show the active model and the session token total.
 
-You choose the model with `/model` (or the status-bar item): a registry id
+You choose the model with `/model` (or the status button's menu): a registry id
 pins the planner, answerer, and executor to that model, while `Auto` (the
 default) routes each by capability among the available models - Ollama plus any
 cloud provider (OpenAI, Anthropic) whose API key you have set with the "My Dev
@@ -953,7 +979,7 @@ Each step's model call also emits a protocol `usage` event (model + token
 counts - the SDK's, or a length-based estimate flagged `estimated` when the
 SDK reports none); the chat handler logs them, sums them into the per-reply
 **Tokens:** line (`myDevTeam.usage.showInChat`, on by default; a `~` marks a
-total that includes an estimate), feeds them to the status-bar session counter,
+total that includes an estimate), feeds them to the status button's session total,
 and collects them per run - the data the future backend's billing meters. The
 **"My Dev Team: Show Token Usage"** command rolls the recorded runs up into a
 markdown report (`client/usageStats.ts` + `ui/usageView.ts`). With

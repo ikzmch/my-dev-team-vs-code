@@ -42,6 +42,12 @@ import {
 
 beforeEach(() => {
   __reset();
+  // Keep model routing independent of the developer's machine: a cloud key in
+  // the environment would make Auto prefer that provider and change which model
+  // the failure hints name (these tests assert the local Ollama hint).
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.GROQ_API_KEY;
 });
 
 function fakeStream() {

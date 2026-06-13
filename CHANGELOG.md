@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-06-13
+
+### Changed
+
+- **One "My Dev Team" status-bar button.** The separate model-picker and
+  token-counter status-bar items are now a single **My Dev Team** button whose
+  menu offers **Select model** (with the active model) and **Token usage** (with
+  the running session total), so the two surfaces read as one and take less room
+  in the status bar.
+- **Activate at startup.** The extension now activates when VS Code finishes
+  starting up, so the status-bar button is there from launch instead of
+  appearing only after the first `@devteam` request.
+
+## [0.30.0] - 2026-06-13
+
+### Added
+
+- **Request rate limiting.** A new `myDevTeam.provider.requestsPerMinute`
+  setting caps how many model requests per minute are sent to each provider,
+  spacing calls so a run stays under a provider's quota (e.g. a Groq free-tier
+  limit) instead of firing until one is rejected. Applied per provider, so a
+  local Ollama call never spends a cloud provider's budget; `0` (the default)
+  disables it.
+
+### Fixed
+
+- **Graceful rate-limit handling.** A provider rate-limit response (HTTP 429) is
+  now caught and retried automatically after the delay the provider suggests
+  (its `retry-after` header or "try again in Ns" hint), so transient limits
+  recover on their own instead of failing the run. A limit that outlasts the
+  retries now fails with a hint pointing at the throttle setting rather than the
+  API-key hint.
+
 ## [0.29.0] - 2026-06-13
 
 ### Added

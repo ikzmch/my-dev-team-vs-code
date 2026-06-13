@@ -59,6 +59,18 @@ export const messages = {
   },
 
   /**
+   * Hint appended when a step failed because the provider kept rate-limiting
+   * the request even after the automatic retries. Points at the throttle
+   * setting so the user can stay under their quota. Travels to the UI as the
+   * protocol error's `hint`.
+   */
+  rateLimitHint: (label: string) =>
+    `\`${label}\` was rate limited by its provider and the automatic retries ` +
+    `were exhausted. Lower the request rate with the ` +
+    `"myDevTeam.provider.requestsPerMinute" setting, or upgrade your provider ` +
+    `plan, then try again.\n\n`,
+
+  /**
    * Copy for model selection: the "which model ran" line in the reply, and the
    * `/model` picker. This is the one place the UI names a concrete model - the
    * user chose it (or asked what Auto picked), so the identity is deliberately
@@ -84,9 +96,6 @@ export const messages = {
     /** The reply when `/model <name>` named something not in the catalogue. */
     unknown: (name: string) =>
       `No model "${name}". Run /model with no argument to pick from the list.`,
-    /** Status-bar item text (a short prefix plus the current label). */
-    statusBar: (label: string) => `$(sparkle) ${label}`,
-    statusBarTooltip: 'My Dev Team model - click to change',
     /**
      * The "which model ran" line under the triage block. In pinned mode it
      * names the chosen model; in Auto mode it lists the work agents' models so
@@ -131,10 +140,6 @@ export const messages = {
     /** The `**Tokens:**` line appended under a reply (gated by the setting). */
     chatLine: (input: string, output: string, estimated: boolean) =>
       `\n\n**Tokens:** ${estimated ? '~' : ''}${input} in / ${output} out`,
-    /** Status-bar item text: a running session total of input + output tokens. */
-    statusBar: (total: string, estimated: boolean) =>
-      `$(symbol-number) ${estimated ? '~' : ''}${total}`,
-    statusBarTooltip: 'My Dev Team tokens this session - click for usage stats',
     /** The whole "Show Token Usage" report when no runs have been recorded. */
     empty:
       '# My Dev Team - token usage\n\n' +
@@ -144,6 +149,25 @@ export const messages = {
     /** Header of the usage report; `runs` is how many runs it summarizes. */
     reportHeader: (runs: number) =>
       `# My Dev Team - token usage\n\n_${runs} run${runs === 1 ? '' : 's'} recorded._\n`,
+  },
+
+  /**
+   * Copy for the single "My Dev Team" status-bar button and the menu it opens.
+   * The one item replaces the former separate model and token-counter items:
+   * the bar is just the brand, and the live model label and running session
+   * token total ride in the two menu rows.
+   */
+  status: {
+    /** The status-bar button text - the brand, no live figures. */
+    statusBar: '$(rocket) My Dev Team',
+    statusBarTooltip: 'My Dev Team - click for model and token usage',
+    /** Placeholder atop the quick-pick menu the button opens. */
+    menuPlaceholder: 'My Dev Team',
+    /** The "change model" row, showing the currently-active model. */
+    menuModel: (label: string) => `$(sparkle) Select model  -  current: ${label}`,
+    /** The "open usage report" row, showing this session's running token total. */
+    menuUsage: (total: string, estimated: boolean) =>
+      `$(symbol-number) Token usage  -  ${estimated ? '~' : ''}${total} this session`,
   },
 
   /**

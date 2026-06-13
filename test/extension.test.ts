@@ -52,11 +52,12 @@ describe('activate', () => {
       expect.any(Function)
     );
     // The approval command + the run-mirror terminal + five tools + the
-    // participant, plus the model status bar, the select-model and set-api-key
-    // commands, the config-change listener, and the usage status bar + the
-    // show-usage command, get pushed for disposal.
+    // participant, plus the unified status-bar button and its status-menu
+    // command, the select-model and set-api-key commands, the config-change
+    // listener, and the show-usage command, get pushed for disposal.
     expect(context.subscriptions).toHaveLength(14);
     expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.statusMenu')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.selectModel')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.setApiKey')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.showUsage')).toBe(true);

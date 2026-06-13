@@ -12,13 +12,12 @@ import {
 import { TerminalRunMirror } from './ui/runTerminal';
 import { checkEngineAtStartup } from './ui/startupCheck';
 import {
-  ModelStatusBar,
   pickModel,
   runSetApiKeyCommand,
   SELECT_MODEL_COMMAND_ID,
   SET_API_KEY_COMMAND_ID,
 } from './ui/modelCommands';
-import { UsageStatusBar } from './ui/usageStatusBar';
+import { StatusBar, STATUS_MENU_COMMAND_ID } from './ui/statusBar';
 import { runShowUsageCommand, SHOW_USAGE_COMMAND_ID } from './ui/usageView';
 import { loadStoredApiKeys } from './config/credentials';
 
@@ -53,27 +52,36 @@ export function activate(context: vscode.ExtensionContext) {
   const getEngine = createEngineProvider();
   void checkEngineAtStartup(getEngine());
 
+  // --- The unified status-bar button ---
+  // One "My Dev Team" button whose menu changes the model and opens the usage
+  // report; it also holds the live state those rows show (the current model
+  // label and the running session token total). Created here so model
+  // selection can refresh its label and the chat handler can feed it usage.
+  const statusBar = new StatusBar(getEngine(), STATUS_MENU_COMMAND_ID);
+  context.subscriptions.push(statusBar);
+  void statusBar.refresh();
+  context.subscriptions.push(
+    vscode.commands.registerCommand(STATUS_MENU_COMMAND_ID, () => statusBar.openMenu())
+  );
+
   // --- Model selection ---
   // Load any cloud-provider API keys from SecretStorage into the in-memory
-  // cache (env vars are the fallback), then wire the picker, the "Set API Key"
-  // command, and a status-bar item showing the active model. The chosen model
-  // travels on every run request via the myDevTeam.model setting; the engine
-  // routes by capability when it is "auto".
+  // cache (env vars are the fallback), then wire the picker and the "Set API
+  // Key" command. The chosen model travels on every run request via the
+  // myDevTeam.model setting; the engine routes by capability when it is "auto".
+  // The status button's menu shows the active model and refreshes after a pick.
   void loadStoredApiKeys(context.secrets);
-  const modelStatusBar = new ModelStatusBar(getEngine(), SELECT_MODEL_COMMAND_ID);
-  context.subscriptions.push(modelStatusBar);
-  void modelStatusBar.refresh();
   context.subscriptions.push(
     vscode.commands.registerCommand(SELECT_MODEL_COMMAND_ID, async () => {
       await pickModel(getEngine());
-      void modelStatusBar.refresh();
+      void statusBar.refresh();
     }),
     vscode.commands.registerCommand(SET_API_KEY_COMMAND_ID, () =>
       runSetApiKeyCommand(context.secrets)
     ),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('myDevTeam.model')) {
-        void modelStatusBar.refresh();
+        void statusBar.refresh();
       }
     })
   );
@@ -85,12 +93,11 @@ export function activate(context: vscode.ExtensionContext) {
   const evalLog = new EvalLog(context.globalStorageUri);
 
   // --- Token-usage surfaces ---
-  // A status-bar counter accumulates each run's tokens live (independent of the
-  // opt-in log), and the "Show Token Usage" command rolls the stored log up
-  // into a report. The handler feeds the counter every finished run's usage.
-  const usageStatusBar = new UsageStatusBar(SHOW_USAGE_COMMAND_ID);
+  // The status button accumulates each run's tokens live (independent of the
+  // opt-in log) and shows the session total in its menu, and the "Show Token
+  // Usage" command rolls the stored log up into a report. The handler feeds the
+  // button every finished run's usage.
   context.subscriptions.push(
-    usageStatusBar,
     vscode.commands.registerCommand(SHOW_USAGE_COMMAND_ID, () =>
       runShowUsageCommand(evalLog)
     )
@@ -98,7 +105,7 @@ export function activate(context: vscode.ExtensionContext) {
 
   // --- UI layer: the chat participant ---
   const handler = createHandler(getEngine, toolHost, evalLog, (usage) =>
-    usageStatusBar.add(usage)
+    statusBar.add(usage)
   );
   const participant = vscode.chat.createChatParticipant(
     PARTICIPANT_ID,

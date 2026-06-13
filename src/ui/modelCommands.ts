@@ -153,37 +153,3 @@ export async function runSetApiKeyCommand(secrets: vscode.SecretStorage): Promis
       : messages.model.keyCleared(pickedProvider.label)
   );
 }
-
-/**
- * A status-bar item showing the active model; clicking it runs the picker
- * command. `refresh` re-reads the engine catalogue to show the current label;
- * call it on activation and after the setting changes.
- */
-export class ModelStatusBar {
-  private readonly item: vscode.StatusBarItem;
-
-  constructor(private readonly engine: Engine, pickCommandId: string) {
-    this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    this.item.command = pickCommandId;
-    this.item.tooltip = messages.model.statusBarTooltip;
-    this.render(settings.model);
-    this.item.show();
-  }
-
-  private render(label: string): void {
-    this.item.text = messages.model.statusBar(label);
-  }
-
-  /** Re-read the catalogue and show the current model's label. */
-  async refresh(): Promise<void> {
-    try {
-      this.render(currentModelLabel(await this.engine.listModels()));
-    } catch {
-      this.render(settings.model);
-    }
-  }
-
-  dispose(): void {
-    this.item.dispose();
-  }
-}

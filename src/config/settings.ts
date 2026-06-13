@@ -23,6 +23,7 @@ export const defaults = {
   engine: 'local' as const,
   model: 'auto',
   ollamaEndpoint: 'http://localhost:11434',
+  requestsPerMinute: 0,
   runCommandTimeoutMs: 60_000,
   read: {
     maxLines: 200,
@@ -148,6 +149,36 @@ export const settings = {
    */
   get groqBaseUrl(): string | undefined {
     return userBaseUrl('groq.baseUrl');
+  },
+
+  /** Outgoing model-request rate limiting and rate-limit retry behaviour. */
+  provider: {
+    /**
+     * Max model requests per minute sent to each provider
+     * (`myDevTeam.provider.requestsPerMinute`). The rate limiter spaces calls
+     * so no provider receives more than this many requests per rolling minute,
+     * keeping runs under a provider's quota (e.g. a Groq free-tier limit).
+     * Applied per provider, so a local Ollama call never spends a cloud
+     * provider's budget. `0` (the default) disables throttling. Read live.
+     */
+    get requestsPerMinute(): number {
+      return userLimit('provider.requestsPerMinute', defaults.requestsPerMinute, 0);
+    },
+    /**
+     * How many times a rate-limited (HTTP 429) request is retried before the
+     * step is failed. Each retry waits the delay the provider suggests (its
+     * `retry-after` header or the "try again in Ns" hint in the error),
+     * clamped to `maxRetryWaitMs`.
+     */
+    maxRateLimitRetries: 5,
+    /** Cap on a single rate-limit retry wait, in milliseconds. */
+    maxRetryWaitMs: 60_000,
+    /**
+     * Buffer added to a provider-suggested retry delay, in milliseconds: the
+     * suggested time is approximate, so we wait a touch longer to avoid
+     * tripping the same limit again immediately.
+     */
+    retryBufferMs: 250,
   },
 
   /** Shell command timeout for the `run` tool, in milliseconds (`myDevTeam.run.commandTimeoutMs`). */

@@ -15,10 +15,12 @@
  * key, or base URL) changes, dropping the memoised model instances so the next
  * request talks to the new configuration without a reload.
  */
+import { wrapLanguageModel } from 'ai';
 import { createOllama } from 'ollama-ai-provider-v2';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGroq } from '@ai-sdk/groq';
+import { rateLimitMiddleware } from './rateLimiter';
 import {
   CapabilityScores,
   ModelInfo,
@@ -164,7 +166,14 @@ export function resolveModel(
   const key = instanceKey(info);
   let model = instances.get(key);
   if (!model) {
-    model = factory(info.model);
+    // Wrap every wired model in the rate limiter: it throttles to the
+    // configured RPM and retries a provider 429 after the suggested delay. The
+    // middleware reads its settings live, so the wrapped instance can be
+    // memoised even though the limit can change between requests.
+    model = wrapLanguageModel({
+      model: factory(info.model),
+      middleware: rateLimitMiddleware(info.provider),
+    }) as RoutedModel;
     instances.set(key, model);
   }
   return model;

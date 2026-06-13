@@ -112,8 +112,9 @@ every tool call.
 By default the model is **Auto**: My Dev Team picks the best available model
 for each part of your request, and shows you what it chose on a **Model:** line
 under each reply. To change it, type **`/model`** in the chat (or click the
-model name in the status bar at the bottom of the window) and pick from the
-list - or type the name directly, e.g. `/model Claude Sonnet 4.6`.
+**My Dev Team** button in the status bar at the bottom of the window and choose
+**Select model**) and pick from the list - or type the name directly, e.g.
+`/model Claude Sonnet 4.6`.
 
 The list offers three kinds of choice:
 
@@ -209,14 +210,15 @@ likely to touch:
 
 | Setting                          | Default                  | What it controls                                  |
 | -------------------------------- | ------------------------ | ------------------------------------------------- |
-| `myDevTeam.model`                | `auto`                   | Which model, provider (`provider:<name>`), or `auto` to use; easier to set with `/model` or the status bar |
+| `myDevTeam.model`                | `auto`                   | Which model, provider (`provider:<name>`), or `auto` to use; easier to set with `/model` or the **My Dev Team** status button |
 | `myDevTeam.ollama.endpoint`      | `http://localhost:11434` | Where your Ollama server listens                  |
 | `myDevTeam.openai.baseUrl`       | `""`                     | Custom OpenAI endpoint (Azure / compatible gateway); empty uses OpenAI's default |
 | `myDevTeam.anthropic.baseUrl`    | `""`                     | Custom Anthropic endpoint (a proxy/gateway); empty uses Anthropic's default |
 | `myDevTeam.groq.baseUrl`         | `""`                     | Custom Groq endpoint (a proxy/gateway); empty uses Groq's default |
+| `myDevTeam.provider.requestsPerMinute` | `0`                | Cap on requests per minute sent to each provider, to stay under its rate limit (e.g. a free-tier quota); `0` means no cap |
 | `myDevTeam.run.commandTimeoutMs` | `60000`                  | How long a shell command may run before it is killed |
 | `myDevTeam.chat.toolSnippetLines`| `5`                      | Lines of a written file previewed in the chat transcript (`0` hides the preview) |
-| `myDevTeam.usage.showInChat`     | `true`                   | Show the **Tokens** line under each reply; the status-bar counter and the usage report stay regardless |
+| `myDevTeam.usage.showInChat`     | `true`                   | Show the **Tokens** line under each reply; the status button's session total and the usage report stay regardless |
 | `myDevTeam.instructions.files`   | `["AGENTS.md", "CLAUDE.md"]` | Which project files in your workspace root hold standing rules for the agent; the first one found is used. An empty list turns the feature off |
 | `myDevTeam.telemetry.evalLog`    | `false`                  | Opt-in local log of runs and 👍/👎 feedback - stays on your machine, records no prompts or file contents |
 | `myDevTeam.telemetry.shadowTriage` | `false`                | While the log is on, also check on each `/command` run how the router would have classified it, so the usage report can show how often it agrees. Adds a small background step per command run |
@@ -228,8 +230,9 @@ There are further knobs for read/search limits (`myDevTeam.read.*`,
 ## 8. Token usage
 
 Every reply ends with a **Tokens** line - how many tokens that request spent
-(input and output). The status bar (next to the model name) keeps a running
-**total for the session**; click it to open a **token usage report**: a
+(input and output). The **My Dev Team** button in the status bar keeps a running
+**total for the session** (shown on its **Token usage** menu row); click the
+button and choose **Token usage** to open a **token usage report**: a
 Highlights section (how much went to prompts vs answers, how often the prompt
 cache helped, how many tokens sat behind your 👍/👎 votes, how fast runs were,
 and - as you keep chatting - how much your prompts grow as the conversation
@@ -241,7 +244,7 @@ pin. A `~` in front of a number means it includes an estimate, because the model
 did not report exact counts.
 
 - Don't want the per-reply line? Turn off `myDevTeam.usage.showInChat`. The
-  status-bar counter and the report stay.
+  status button's session total and the report stay.
 - The report is built from the local log, so it only has data once you turn on
   `myDevTeam.telemetry.evalLog` (see below). Until then it tells you so.
 
@@ -263,6 +266,11 @@ ever sent anywhere.
   [Choosing a model](#4-choosing-a-model)).
 - **A cloud model shows as unavailable in `/model`** - you have not set its API
   key yet; run "My Dev Team: Set API Key".
+- **A cloud request fails saying it was rate limited** - the extension already
+  retries automatically after the wait the provider asks for, so brief limits
+  recover on their own. If it still fails (a tight free-tier quota), set
+  `myDevTeam.provider.requestsPerMinute` to slow the request rate, or upgrade
+  your provider plan.
 - **A command seems stuck** - long commands are killed after
   `myDevTeam.run.commandTimeoutMs` (60s by default); raise it for slow
   builds or test suites.

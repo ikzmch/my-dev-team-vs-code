@@ -267,6 +267,19 @@ describe('user-tunable settings (VS Code configuration)', () => {
     __setConfig('myDevTeam.run.commandTimeoutMs', 1500.9);
     expect(settings.runCommandTimeoutMs).toBe(1500);
   });
+
+  it('reads the provider requests-per-minute limit, defaulting to disabled', () => {
+    expect(settings.provider.requestsPerMinute).toBe(defaults.requestsPerMinute);
+    expect(settings.provider.requestsPerMinute).toBe(0);
+    __setConfig('myDevTeam.provider.requestsPerMinute', 30);
+    expect(settings.provider.requestsPerMinute).toBe(30);
+    // 0 is a valid value (throttling off), unlike the other positive-only limits.
+    __setConfig('myDevTeam.provider.requestsPerMinute', 0);
+    expect(settings.provider.requestsPerMinute).toBe(0);
+    // A negative or non-number value is invalid and falls back to the default.
+    __setConfig('myDevTeam.provider.requestsPerMinute', -5);
+    expect(settings.provider.requestsPerMinute).toBe(defaults.requestsPerMinute);
+  });
 });
 
 describe('model registry and selection', () => {
