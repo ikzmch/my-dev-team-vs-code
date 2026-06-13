@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   have no holes. The report reads the opt-in eval log
   (`myDevTeam.telemetry.evalLog`), which now also stores reasoning, cached-input,
   and total token counts when a model exposes them.
+- **Deeper usage analysis.** The Show Token Usage report gained run-level
+  insight: how long runs take (and tokens/second), how input tokens grow as a
+  conversation accumulates history, and - with the new opt-in
+  `myDevTeam.telemetry.shadowTriage` - how often triage agrees with the route a
+  slash command pins (and what the disagreements cost). The eval log now records
+  a conversation id, the run duration, and the shadow triage prediction.
 
 ## [0.27.0] - 2026-06-13
 

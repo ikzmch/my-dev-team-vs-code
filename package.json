@@ -109,6 +109,11 @@
           "type": "boolean",
           "default": false,
           "description": "Store a local eval log of @devteam runs (route, per-step model and token usage, outcome) and thumbs up/down feedback as JSON lines in the extension's global storage. No prompts, file contents, or replies are recorded, and nothing leaves your machine. The My Dev Team: Show Token Usage report reads this log."
+        },
+        "myDevTeam.telemetry.shadowTriage": {
+          "type": "boolean",
+          "default": false,
+          "description": "On a slash-command run (which pins the route), also run triage in the background to record what it would have decided, so the Show Token Usage report can score triage against the command you chose. Adds one local triage call per pinned run and only collects data while the eval log is on. Off by default."
         }
       }
     },

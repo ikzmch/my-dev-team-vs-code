@@ -15,6 +15,7 @@
  */
 import * as vscode from 'vscode';
 import { InputBreakdown } from '../protocol/events';
+import { Intent } from '../protocol/types';
 import { settings } from '../config/settings';
 
 /** Metering for one step's model call, from the run's protocol usage events. */
@@ -51,6 +52,20 @@ export interface RunRecord {
   /** The protocol step that failed, when the outcome is an error. */
   errorStep?: string;
   usage: UsageEntry[];
+  /**
+   * Stable id of the chat conversation this run belongs to, so runs of one
+   * thread can be grouped to watch input tokens grow turn over turn. Absent on
+   * records written before the field existed.
+   */
+  conversationId?: string;
+  /** Wall-clock duration of the run in milliseconds, as the client measured it. */
+  durationMs?: number;
+  /**
+   * On a pinned run with shadow triage on, what triage would have decided. With
+   * the pinned route in `command`/`intent`, this is the signal for scoring
+   * triage; absent on non-pinned runs and when shadow triage was off.
+   */
+  triagePredicted?: Intent;
 }
 
 /** One 👍/👎 click, paired with its run through the chat result metadata. */

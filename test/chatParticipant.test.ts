@@ -1000,6 +1000,117 @@ describe('createHandler eval log recording', () => {
     expect(emitted(stream)).not.toContain('**Tokens:**');
   });
 
+  it('records a conversation id and the run duration', async () => {
+    const engine = scriptedEngine(
+      [
+        { type: 'triaged', intent: 'oneshot', reason: 'simple' },
+        { type: 'done', reply: aReply },
+      ],
+      Promise.resolve(aReply)
+    );
+
+    await createHandler(() => engine, hostStub, new EvalLog(Uri.file('/global')))(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    await flush();
+
+    const record = storedRecords()[0];
+    expect(typeof record.conversationId).toBe('string');
+    expect(typeof record.durationMs).toBe('number');
+  });
+
+  it('records the shadow triage prediction on a pinned run', async () => {
+    const engine = scriptedEngine(
+      [
+        { type: 'triaged', intent: 'planning', reason: 'pinned' },
+        { type: 'triage-shadow', predicted: 'oneshot' },
+        { type: 'done', reply: aReply },
+      ],
+      Promise.resolve(aReply)
+    );
+
+    await createHandler(() => engine, hostStub, new EvalLog(Uri.file('/global')))(
+      { prompt: 'do work', references: [], command: 'plan' } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    await flush();
+
+    expect(storedRecords()[0]).toMatchObject({ command: 'plan', triagePredicted: 'oneshot' });
+  });
+
+  it('reuses the conversation id from the most recent prior turn', async () => {
+    const makeEngineFor = () =>
+      scriptedEngine(
+        [
+          { type: 'triaged', intent: 'oneshot', reason: 'x' },
+          { type: 'done', reply: aReply },
+        ],
+        Promise.resolve(aReply)
+      );
+    const log = new EvalLog(Uri.file('/global'));
+
+    // First turn: no history, so it mints a fresh id.
+    await createHandler(() => makeEngineFor(), hostStub, log)(
+      { prompt: 'a', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    await flush();
+    const first = storedRecords()[0].conversationId as string;
+
+    // Second turn: a prior response turn carries that id and there is history.
+    const priorTurn = new ChatResponseTurn(
+      [new ChatResponseMarkdownPart('earlier reply')],
+      'myDevTeam.agent',
+      { metadata: { conversationId: first, runId: 'prev', command: '' } }
+    );
+    await createHandler(() => makeEngineFor(), hostStub, log)(
+      { prompt: 'b', references: [] } as any,
+      { history: [new ChatRequestTurn('a'), priorTurn] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    await flush();
+
+    expect(storedRecords()[1].conversationId).toBe(first);
+  });
+
+  it('asks for shadow triage only when the setting and the eval log are both on', async () => {
+    let captured: any;
+    const engine = {
+      kind: 'local' as const,
+      startRun: (req: any) => {
+        captured = req;
+        return { result: Promise.resolve(aReply), cancel: vi.fn() };
+      },
+      startupWarnings: async () => [],
+    };
+
+    __setConfig('myDevTeam.telemetry.shadowTriage', true); // eval log already on
+    await createHandler(() => engine as any, hostStub)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    expect(captured.shadowTriage).toBe(true);
+
+    __setConfig('myDevTeam.telemetry.shadowTriage', false);
+    await createHandler(() => engine as any, hostStub)(
+      { prompt: 'hi', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+    expect(captured.shadowTriage).toBe(false);
+  });
+
   it('runs without an eval log exactly as before', async () => {
     const { engine } = makeEngine();
     const stream = fakeStream();

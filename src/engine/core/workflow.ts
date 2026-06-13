@@ -12,6 +12,7 @@ import {
   AttachmentSchema,
   HistoryTurn,
   HistoryTurnSchema,
+  Intent,
   Plan,
   ProjectInstructionsSchema,
   ReplyProgress,
@@ -54,6 +55,12 @@ export const RequestSchema = z.object({
   attachments: z.array(AttachmentSchema).optional(),
   history: z.array(HistoryTurnSchema).optional(),
   command: z.string().optional(),
+  /**
+   * Run triage even when a command pins the route, keeping the pin but
+   * reporting triage's prediction (see RunRequest.shadowTriage). Off unless the
+   * client asked for the triage-accuracy signal.
+   */
+  shadowTriage: z.boolean().optional(),
 });
 export type RequestInput = z.infer<typeof RequestSchema>;
 
@@ -274,6 +281,20 @@ function usageReporter(
   );
 }
 
+/** Receives triage's prediction on a pinned run when shadow triage is on. */
+export type TriageShadowSink = (predicted: Intent) => void;
+
+/**
+ * RequestContext key under which a caller may pass a `TriageShadowSink`. Only
+ * used on a pinned run with `shadowTriage` set: triage is run anyway, the pin
+ * still wins, and its prediction goes here for the metering record.
+ */
+export const triageShadowKey = 'onTriageShadow';
+
+function triageShadowSink(requestContext: RequestContext): TriageShadowSink | undefined {
+  return requestContext.get(triageShadowKey) as TriageShadowSink | undefined;
+}
+
 /**
  * RequestContext key under which a caller may pass an `AbortSignal` to
  * `run.start`. The executor forwards it to its tool-calling loop so a
@@ -320,12 +341,26 @@ export function createDevTeamWorkflow(
       // and a chance to misroute. The pinned reason renders where the model's
       // reason would, so the UI needs no special case.
       const command = commandFor(inputData);
-      const decision = command
-        ? { intent: command.intent, reason: pinnedReason(command.name) }
-        : await triage.classify(
+      let decision;
+      if (command) {
+        decision = { intent: command.intent, reason: pinnedReason(command.name) };
+        // Shadow triage: score the pin without changing the route. Triage runs
+        // anyway (its tokens are real spend, reported like any triage call),
+        // the pinned route still wins, and the prediction is reported for the
+        // metering record so the report can measure triage against the command.
+        if (inputData.shadowTriage) {
+          const predicted = await triage.classify(
             triagePrompt(inputData),
             usageReporter(requestContext, 'triage')
           );
+          triageShadowSink(requestContext)?.(predicted.intent);
+        }
+      } else {
+        decision = await triage.classify(
+          triagePrompt(inputData),
+          usageReporter(requestContext, 'triage')
+        );
+      }
       return {
         prompt: inputData.prompt,
         instructions: inputData.instructions,

@@ -415,8 +415,33 @@ function renderFailure(error: RunFailedError): string {
 export interface TurnMetadata {
   command: string;
   runId: string;
+  /** The chat conversation this turn belongs to; reused by later turns. */
+  conversationId?: string;
   intent?: Intent;
   outcome?: 'ok' | 'error' | 'cancelled';
+}
+
+/**
+ * The conversation id for this turn: when there is collected history this is a
+ * follow-up, so it reuses the most recent prior turn's id (scanning back for
+ * the first response turn that carries one); otherwise - a new chat, or the
+ * first turn after a /clear emptied the history - it mints a fresh id. A
+ * /clear or /model turn carries no id, so the scan skips past it to the real
+ * conversation it belongs to.
+ */
+function conversationIdFor(context: vscode.ChatContext, hasHistory: boolean): string {
+  if (hasHistory) {
+    for (let i = context.history.length - 1; i >= 0; i--) {
+      const turn = context.history[i];
+      if (turn instanceof vscode.ChatResponseTurn && turn.participant === PARTICIPANT_ID) {
+        const id = (turn.result?.metadata as Partial<TurnMetadata> | undefined)?.conversationId;
+        if (id) {
+          return id;
+        }
+      }
+    }
+  }
+  return randomUUID();
 }
 
 /**
@@ -488,13 +513,22 @@ export function createHandler(
     // metadata, where collectHistory reads it back to trust (or not) a
     // /compact summary.
     const runId = randomUUID();
+    // The conversation this run belongs to: reused from the most recent prior
+    // turn (a follow-up continues the thread), minted fresh when there is no
+    // collected history (a new chat, or the first turn after /clear). It rides
+    // in the turn metadata so the next turn can read it back, and into the run
+    // record so a thread's runs can be grouped for context-growth analysis.
+    const conversationId = conversationIdFor(context, history.length > 0);
+    const startedAt = Date.now();
     let intent: Intent | undefined;
+    let triagePredicted: Intent | undefined;
     let outcome: TurnMetadata['outcome'];
     const usage: UsageEntry[] = [];
     const chatResult = (): vscode.ChatResult => {
       const metadata: TurnMetadata = {
         command: request.command ?? '',
         runId,
+        conversationId,
         intent,
         outcome,
       };
@@ -532,6 +566,12 @@ export function createHandler(
       if (event.type === 'triaged') {
         intent = event.intent;
       }
+      if (event.type === 'triage-shadow') {
+        // What triage would have decided on this pinned run; recorded only, it
+        // never changes the route or the render.
+        triagePredicted = event.predicted;
+        return;
+      }
       if (token.isCancellationRequested) {
         return;
       }
@@ -564,6 +604,11 @@ export function createHandler(
         history,
         environment: { os: environment.os, shell: environment.shell },
         offeredTools: [...toolHost.tools],
+        // Ask the engine to shadow-run triage on a pinned command only when the
+        // user opted into it and the eval log is on to receive the signal -
+        // otherwise the extra triage call would buy nothing.
+        shadowTriage:
+          settings.telemetry.shadowTriageEnabled && settings.telemetry.evalLogEnabled,
       },
       { onEvent, toolHost }
     );
@@ -583,11 +628,14 @@ export function createHandler(
       onRunUsage?.(usage);
       void evalLog?.recordRun({
         runId,
+        conversationId,
         command: request.command ?? '',
         intent,
         outcome: ending,
         errorStep,
         usage,
+        durationMs: Date.now() - startedAt,
+        triagePredicted,
       });
     };
 

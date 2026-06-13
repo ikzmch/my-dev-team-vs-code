@@ -193,6 +193,91 @@ describe('rollupUsage input-by-source', () => {
   });
 });
 
+describe('rollupUsage run-level analyses', () => {
+  const recs: EvalRecord[] = [
+    // Conversation c1: two runs, input grows 100 -> 300.
+    {
+      record: 'run',
+      ts: '2026-06-12T10:00:00.000Z',
+      runId: 'a',
+      conversationId: 'c1',
+      durationMs: 2000,
+      outcome: 'ok',
+      usage: [{ step: 'answer', model: 'm', inputTokens: 100, outputTokens: 20 }],
+    },
+    {
+      record: 'run',
+      ts: '2026-06-12T10:05:00.000Z',
+      runId: 'b',
+      conversationId: 'c1',
+      durationMs: 4000,
+      outcome: 'ok',
+      usage: [{ step: 'answer', model: 'm', inputTokens: 300, outputTokens: 30 }],
+    },
+    // Pinned run, shadow prediction agrees with the pin (6 tokens).
+    {
+      record: 'run',
+      ts: '2026-06-12T11:00:00.000Z',
+      runId: 'c',
+      command: 'plan',
+      intent: 'planning',
+      triagePredicted: 'planning',
+      durationMs: 1000,
+      outcome: 'ok',
+      usage: [{ step: 'triage', model: 'm', inputTokens: 5, outputTokens: 1 }],
+    },
+    // Pinned run, shadow prediction disagrees (misroute cost = 100 tokens).
+    {
+      record: 'run',
+      ts: '2026-06-12T12:00:00.000Z',
+      runId: 'd',
+      command: 'explain',
+      intent: 'oneshot',
+      triagePredicted: 'planning',
+      durationMs: 1000,
+      outcome: 'ok',
+      usage: [{ step: 'answer', model: 'm', inputTokens: 50, outputTokens: 50 }],
+    },
+  ];
+  const rollup = rollupUsage(recs);
+
+  it('sums run durations for the speed stat', () => {
+    expect(rollup.speed).toEqual({ runsTimed: 4, totalMs: 8000 });
+  });
+
+  it('scores shadow-triage agreement and misroute cost', () => {
+    expect(rollup.triageShadow).toEqual({
+      runs: 2,
+      agreed: 1,
+      agreedTokens: 6,
+      disagreedTokens: 100,
+    });
+  });
+
+  it('measures context growth across multi-run conversations only', () => {
+    expect(rollup.contextGrowth).toEqual({
+      conversations: 1,
+      firstInputAvg: 100,
+      lastInputAvg: 300,
+    });
+  });
+
+  it('leaves the analyses empty when records carry no such data', () => {
+    const empty = rollupUsage([
+      {
+        record: 'run',
+        ts: '2026-06-12T10:00:00.000Z',
+        runId: 'x',
+        outcome: 'ok',
+        usage: [{ step: 'answer', model: 'm', inputTokens: 10, outputTokens: 2 }],
+      },
+    ]);
+    expect(empty.speed).toEqual({ runsTimed: 0, totalMs: 0 });
+    expect(empty.triageShadow.runs).toBe(0);
+    expect(empty.contextGrowth.conversations).toBe(0);
+  });
+});
+
 describe('cacheHitRate', () => {
   it('is cached input over total input', () => {
     const summary = sumUsage([

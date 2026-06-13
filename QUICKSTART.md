@@ -216,6 +216,7 @@ likely to touch:
 | `myDevTeam.usage.showInChat`     | `true`                   | Show the **Tokens** line under each reply; the status-bar counter and the usage report stay regardless |
 | `myDevTeam.instructions.files`   | `["AGENTS.md", "CLAUDE.md"]` | Which project files in your workspace root hold standing rules for the agent; the first one found is used. An empty list turns the feature off |
 | `myDevTeam.telemetry.evalLog`    | `false`                  | Opt-in local log of runs and 👍/👎 feedback - stays on your machine, records no prompts or file contents |
+| `myDevTeam.telemetry.shadowTriage` | `false`                | While the log is on, also check on each `/command` run how the router would have classified it, so the usage report can show how often it agrees. Adds a small background step per command run |
 
 There are further knobs for read/search limits (`myDevTeam.read.*`,
 `myDevTeam.search.*`) and the engine choice (`myDevTeam.engine`, leave it on
@@ -227,11 +228,14 @@ Every reply ends with a **Tokens** line - how many tokens that request spent
 (input and output). The status bar (next to the model name) keeps a running
 **total for the session**; click it to open a **token usage report**: a
 Highlights section (how much went to prompts vs answers, how often the prompt
-cache helped, and how many tokens sat behind your 👍/👎 votes), an **Input by
-source** table showing whether project instructions, conversation history, or
-attachments are taking up your prompts, and breakdowns by step, model, command,
-and day. A `~` in front of a number means it includes an estimate, because the
-model did not report exact counts.
+cache helped, how many tokens sat behind your 👍/👎 votes, how fast runs were,
+and - as you keep chatting - how much your prompts grow as the conversation
+builds up), an **Input by source** table showing whether project instructions,
+conversation history, or attachments are taking up your prompts, and breakdowns
+by step, model, command, and day. Turn on `myDevTeam.telemetry.shadowTriage` and
+it also reports how often the router agrees with the route your slash commands
+pin. A `~` in front of a number means it includes an estimate, because the model
+did not report exact counts.
 
 - Don't want the per-reply line? Turn off `myDevTeam.usage.showInChat`. The
   status-bar counter and the report stay.

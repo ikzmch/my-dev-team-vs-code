@@ -21,6 +21,7 @@ import {
   replyProgressKey,
   stepIds,
   usageSinkKey,
+  triageShadowKey,
   ReplyProgress,
   StepUsage,
 } from './core/workflow';
@@ -314,6 +315,9 @@ export class LocalEngine implements Engine {
       requestContext.set(usageSinkKey, (usage: StepUsage) =>
         emit({ type: 'usage', ...usage })
       );
+      requestContext.set(triageShadowKey, (predicted: Intent) =>
+        emit({ type: 'triage-shadow', predicted })
+      );
 
       let outcome;
       try {
@@ -324,6 +328,7 @@ export class LocalEngine implements Engine {
             attachments: input.attachments,
             history: input.history,
             command: input.command,
+            shadowTriage: input.shadowTriage,
           },
           requestContext,
         });

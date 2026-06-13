@@ -224,7 +224,9 @@ without the client changing:
   `model-selected` (which model each step uses; emitted right after `triaged`),
   `plan-snapshot` (plans are small), `answer-delta`, `execution-event`
   (indexed, since only the transcript's last event ever changes), `usage`,
-  and `done`/`error`. The client folds them back into grow-only snapshots
+  `triage-shadow` (what triage would have decided on a pinned run, only when
+  the request asked for it - a non-rendering metering signal), and
+  `done`/`error`. The client folds them back into grow-only snapshots
   with `ReplyFolder`, so rendering from events is pixel-identical to the old
   direct wiring - the property that makes local and remote engines
   indistinguishable. `tool-call`/`ToolResultMessage` are defined for the
@@ -427,6 +429,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.usage.showInChat`         | `true`                   | Append a **Tokens:** line under each reply summing the run's input/output tokens. The status-bar session total and the "Show Token Usage" report are independent of this flag |
 | `myDevTeam.instructions.files`       | `["AGENTS.md", "CLAUDE.md"]` | Root-relative file names probed for standing project instructions, in order; the first that exists is sent with every run. Plain names only (an entry with a path separator or `..` falls back to the default list); an empty list disables the feature |
 | `myDevTeam.telemetry.evalLog`        | `false`                  | Opt-in local eval log: store per-run route/usage/outcome records and 👍/👎 feedback as JSON lines in extension storage (no prompt or reply text; nothing leaves the machine) |
+| `myDevTeam.telemetry.shadowTriage`   | `false`                  | On a slash-command (pinned) run, also run triage in the background and record its prediction, so the usage report can score triage against the pinned route. Adds one local triage call per pinned run; only collects while the eval log is on |
 
 Invalid values (wrong type, non-positive numbers, an endpoint that is not an
 http(s) URL) silently fall back to the defaults, so the tools always see sane
@@ -798,8 +801,12 @@ usage and over the whole stored log:
   `rollupUsage` folds the stored eval records into an overall total plus
   breakdowns by **step, model, route, and day**, an **input-by-source** sum
   (estimated input tokens per prompt section, from the events' `inputBreakdown`),
-  and a **feedback join** that charges each 👍/👎 click the tokens its run spent
-  (paired by run id);
+  a **feedback join** that charges each 👍/👎 click the tokens its run spent
+  (paired by run id), and three run-level analyses: **speed** (from the run
+  durations the handler records), **triage agreement** (pinned runs whose
+  `triagePredicted` shadow matched the pinned route, with the misroute token
+  cost), and **context growth** (input tokens of the first vs last run of each
+  multi-run conversation, grouped by `conversationId`);
   `cacheHitRate`/`estimatedShare` derive the prefix-cache and estimate ratios,
   and `formatTokenCount` renders a count compactly (`1234` -> `1.2k`). Being
   I/O-free is what makes it trivially testable.
@@ -812,11 +819,12 @@ usage and over the whole stored log:
   report. The report leads with a **Highlights** section scoring the things the
   design cares about - the input/output ratio (prompt weight), the prefix-cache
   hit rate (the "lead with the stable prefix" bet), the reasoning-token share,
-  the estimated-vs-measured share (how soft the figures are), and value per
-  token (the tokens behind 👍 vs 👎) - then an **Input by source** table
-  (estimated input tokens per prompt section, so you can see whether
-  instructions, history, or attachments dominate the prompt) and the
-  by-step/model/route/day tables.
+  the estimated-vs-measured share (how soft the figures are), value per token
+  (the tokens behind 👍 vs 👎), and - when the records carry them - run speed,
+  triage agreement (with shadow triage on), and conversation context growth -
+  then an **Input by source** table (estimated input tokens per prompt section,
+  so you can see whether instructions, history, or attachments dominate the
+  prompt) and the by-step/model/route/day tables.
   The report is the only surface that needs the opt-in eval log
   (`myDevTeam.telemetry.evalLog`); with no recorded runs it points the user at
   that setting.
@@ -945,17 +953,21 @@ SDK reports none); the chat handler logs them, sums them into the per-reply
 **Tokens:** line (`myDevTeam.usage.showInChat`, on by default; a `~` marks a
 total that includes an estimate), feeds them to the status-bar session counter,
 and collects them per run - the data the future backend's billing meters. The
-**"My Dev Team: Show Token Usage"** command rolls the recorded runs up by model,
-route, and day into a markdown report (`client/usageStats.ts` +
-`ui/usageView.ts`). With `myDevTeam.telemetry.evalLog` enabled (it is off by
-default), every finished run lands as one JSON line in an `eval-log.jsonl` under
-the extension's global storage - run id, slash command, triage route, outcome,
-and the collected per-step usage (model + token counts) - and every 👍/👎 click
-on a reply is recorded next to it, paired with its run through the turn's chat
-result metadata, so routing and prompt changes can be measured against real
-feedback per token spent. The report reads this log, so it is populated only
-when the setting is on. The records carry no prompt text, file contents, or
-reply text, and the log never leaves your machine.
+**"My Dev Team: Show Token Usage"** command rolls the recorded runs up into a
+markdown report (`client/usageStats.ts` + `ui/usageView.ts`). With
+`myDevTeam.telemetry.evalLog` enabled (it is off by default), every finished run
+lands as one JSON line in an `eval-log.jsonl` under the extension's global
+storage - run id, conversation id, slash command, triage route, outcome,
+duration, the collected per-step usage (model + token counts), and (with
+`myDevTeam.telemetry.shadowTriage` on) what triage would have decided on a
+pinned run - and every 👍/👎 click on a reply is recorded next to it, paired
+with its run through the turn's chat result metadata, so routing and prompt
+changes can be measured against real feedback per token spent. The conversation
+id (threaded through the turn metadata) groups a thread's runs to track context
+growth; the shadow prediction scores triage against the command the user chose;
+the duration drives the speed stat. The report reads this log, so it is
+populated only when the setting is on. The records carry no prompt text, file
+contents, or reply text, and the log never leaves your machine.
 
 Cancelling the chat request cancels the engine run (and with it the model
 call) instead of letting it finish in the background; a cancelled turn stops

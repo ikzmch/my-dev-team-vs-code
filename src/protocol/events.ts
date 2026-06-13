@@ -48,6 +48,14 @@ export type RunEvent =
   /** Triage decided how to route the request. Always the first event. */
   | { type: 'triaged'; intent: Intent; reason: string }
   /**
+   * Shadow triage: on a slash-command run that pinned the route, what triage
+   * would have decided had it run. Emitted only when the request asked for it
+   * (`RunRequest.shadowTriage`); carries no rendering, only the labelled signal
+   * the eval log records to score triage against the pinned route. A client
+   * that does not know it simply ignores it.
+   */
+  | { type: 'triage-shadow'; predicted: Intent }
+  /**
    * Which model(s) the engine selected for the run, emitted right after
    * `triaged` (the route determines which steps run). Surfaces the "which
    * model answered" line, and tells the user when Auto picked for them. An

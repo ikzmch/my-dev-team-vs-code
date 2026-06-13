@@ -116,6 +116,38 @@ export interface InputSource {
   tokens: number;
 }
 
+/** Wall-clock time over the runs that recorded a duration. */
+export interface SpeedStats {
+  /** Runs whose record carried a duration. */
+  runsTimed: number;
+  /** Their summed wall-clock time, in milliseconds. */
+  totalMs: number;
+}
+
+/**
+ * Shadow-triage agreement: of the pinned (slash-command) runs that recorded
+ * what triage would have decided, how often it matched the pinned route, and
+ * the token cost of the runs where it did not (the misroute-cost view).
+ */
+export interface TriageShadowStats {
+  runs: number;
+  agreed: number;
+  agreedTokens: number;
+  disagreedTokens: number;
+}
+
+/**
+ * Conversation context growth: across threads with more than one run, the
+ * average input tokens of the first vs the last run - does the prompt balloon
+ * as history accumulates? Only multi-run conversations count (growth needs two
+ * points); runs with no conversation id are ignored.
+ */
+export interface ContextGrowth {
+  conversations: number;
+  firstInputAvg: number;
+  lastInputAvg: number;
+}
+
 /** A whole-log rollup: the overall total plus the standard breakdowns. */
 export interface UsageRollup {
   overall: TokenSummary;
@@ -128,6 +160,9 @@ export interface UsageRollup {
   /** Estimated input tokens by prompt section, sorted by tokens descending. */
   inputBySource: InputSource[];
   feedback: FeedbackUsage;
+  speed: SpeedStats;
+  triageShadow: TriageShadowStats;
+  contextGrowth: ContextGrowth;
 }
 
 /** Turn a key->summary map into buckets sorted by total tokens, descending. */
@@ -161,6 +196,15 @@ export function rollupUsage(records: readonly EvalRecord[]): UsageRollup {
   // One summary per run, so a later feedback click can be charged the tokens
   // its run actually spent (the value-per-token join below).
   const runUsage = new Map<string, TokenSummary>();
+  const speed: SpeedStats = { runsTimed: 0, totalMs: 0 };
+  const triageShadow: TriageShadowStats = {
+    runs: 0,
+    agreed: 0,
+    agreedTokens: 0,
+    disagreedTokens: 0,
+  };
+  // Per-conversation list of (ts, input tokens) for the context-growth fold.
+  const byConversation = new Map<string, { ts: string; input: number }[]>();
   let runs = 0;
   for (const record of records) {
     if (record.record !== 'run') {
@@ -184,7 +228,47 @@ export function rollupUsage(records: readonly EvalRecord[]): UsageRollup {
       }
     }
     runUsage.set(record.runId, perRun);
+
+    if (typeof record.durationMs === 'number') {
+      speed.runsTimed += 1;
+      speed.totalMs += record.durationMs;
+    }
+    // Shadow triage only on pinned (slash-command) runs that recorded a
+    // prediction; `intent` holds the pinned route the prediction is scored
+    // against.
+    if (record.command && record.triagePredicted !== undefined) {
+      triageShadow.runs += 1;
+      if (record.triagePredicted === record.intent) {
+        triageShadow.agreed += 1;
+        triageShadow.agreedTokens += perRun.totalTokens;
+      } else {
+        triageShadow.disagreedTokens += perRun.totalTokens;
+      }
+    }
+    if (record.conversationId) {
+      const thread = byConversation.get(record.conversationId) ?? [];
+      thread.push({ ts: record.ts, input: perRun.inputTokens });
+      byConversation.set(record.conversationId, thread);
+    }
   }
+
+  let conversations = 0;
+  let firstInputSum = 0;
+  let lastInputSum = 0;
+  for (const thread of byConversation.values()) {
+    if (thread.length < 2) {
+      continue;
+    }
+    const ordered = [...thread].sort((a, b) => a.ts.localeCompare(b.ts));
+    conversations += 1;
+    firstInputSum += ordered[0].input;
+    lastInputSum += ordered[ordered.length - 1].input;
+  }
+  const contextGrowth: ContextGrowth = {
+    conversations,
+    firstInputAvg: conversations > 0 ? firstInputSum / conversations : 0,
+    lastInputAvg: conversations > 0 ? lastInputSum / conversations : 0,
+  };
 
   const feedback: FeedbackUsage = {
     helpful: { runs: 0, usage: emptySummary() },
@@ -216,6 +300,9 @@ export function rollupUsage(records: readonly EvalRecord[]): UsageRollup {
       .map(([source, tokens]) => ({ source, tokens }))
       .sort((a, b) => b.tokens - a.tokens),
     feedback,
+    speed,
+    triageShadow,
+    contextGrowth,
   };
 }
 

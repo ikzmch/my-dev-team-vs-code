@@ -62,6 +62,44 @@ describe('renderUsageReport', () => {
     expect(report).toContain('| Project instructions |');
   });
 
+  it('includes the run-level highlights when the records carry them', () => {
+    const recs: EvalRecord[] = [
+      {
+        record: 'run',
+        ts: '2026-06-12T10:00:00.000Z',
+        runId: 'a',
+        conversationId: 'c1',
+        durationMs: 2000,
+        outcome: 'ok',
+        usage: [{ step: 'answer', model: 'm', inputTokens: 1000, outputTokens: 200 }],
+      },
+      {
+        record: 'run',
+        ts: '2026-06-12T10:05:00.000Z',
+        runId: 'b',
+        conversationId: 'c1',
+        durationMs: 2000,
+        outcome: 'ok',
+        usage: [{ step: 'answer', model: 'm', inputTokens: 3000, outputTokens: 200 }],
+      },
+      {
+        record: 'run',
+        ts: '2026-06-12T11:00:00.000Z',
+        runId: 'c',
+        command: 'explain',
+        intent: 'oneshot',
+        triagePredicted: 'planning',
+        durationMs: 0,
+        outcome: 'ok',
+        usage: [{ step: 'answer', model: 'm', inputTokens: 50, outputTokens: 50 }],
+      },
+    ];
+    const richReport = renderUsageReport(rollupUsage(recs));
+    expect(richReport).toContain('**Speed:**');
+    expect(richReport).toContain('**Triage agreement:** matched the pinned route on 0 of 1');
+    expect(richReport).toContain('**Context growth:** input grew from ~1.0k to ~3.0k');
+  });
+
   it('includes the by-step, by-model, by-route, and by-day tables', () => {
     expect(report).toContain('## By step');
     expect(report).toContain('| answer |');

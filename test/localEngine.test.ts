@@ -238,6 +238,30 @@ describe('LocalEngine.startRun', () => {
     });
   });
 
+  it('shadow-runs triage on a pinned command and emits the prediction', async () => {
+    let triageCalled = false;
+    const engine = new LocalEngine(
+      fakes({
+        triage: {
+          classify: async () => {
+            triageCalled = true;
+            return { intent: 'oneshot', reason: 'would oneshot' };
+          },
+        } as any,
+      })
+    );
+
+    const events: RunEvent[] = [];
+    const reply = await engine
+      .startRun(request({ command: 'plan', shadowTriage: true }), client(events))
+      .result;
+
+    expect(triageCalled).toBe(true);
+    // The pinned /plan route still wins; triage only shadows.
+    expect(reply.intent).toBe('planning');
+    expect(events).toContainEqual({ type: 'triage-shadow', predicted: 'oneshot' });
+  });
+
   it('binds the executor to the ToolHost the client handed in', async () => {
     let receivedHost: ToolHost | undefined;
     const engine = new LocalEngine(

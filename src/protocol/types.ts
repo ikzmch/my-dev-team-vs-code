@@ -92,6 +92,15 @@ export const RunRequestSchema = z.object({
   history: z.array(HistoryTurnSchema).optional(),
   environment: EnvironmentFactsSchema.optional(),
   offeredTools: z.array(z.string()),
+  /**
+   * When set, the engine runs triage even on a slash command that pins the
+   * route: it keeps the pinned route but reports what triage would have decided
+   * as a `triage-shadow` event - the labelled signal for measuring triage
+   * accuracy against the command the user chose. Costs one extra (local) triage
+   * call per pinned run, so the client only sets it when the user opted into
+   * collecting that analysis. An engine that does not know the field ignores it.
+   */
+  shadowTriage: z.boolean().optional(),
 });
 export type RunRequest = z.infer<typeof RunRequestSchema>;
 

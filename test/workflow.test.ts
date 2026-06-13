@@ -18,7 +18,9 @@ import {
   StepUsage,
   UsageSink,
   usageSinkKey,
+  triageShadowKey,
 } from '../src/engine/core/workflow';
+import { Intent } from '../src/protocol/types';
 import { UsageReporter } from '../src/engine/core/usage';
 import { TriageResult } from '../src/engine/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/engine/core/planner';
@@ -1067,6 +1069,52 @@ describe('dev-team workflow failures', () => {
       expect(result.error.message).toContain('model not found');
       expect(result.steps[stepIds.answer]?.status).toBe('failed');
     }
+  });
+});
+
+describe('dev-team workflow shadow triage', () => {
+  function shadowRun(shadowTriage: boolean) {
+    let triageCalls = 0;
+    let predicted: Intent | undefined;
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => {
+        triageCalls += 1;
+        return { intent: 'oneshot', reason: 'would oneshot' };
+      }),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async () => anExecution)
+    );
+    const requestContext = new RequestContext();
+    requestContext.set(triageShadowKey, (p: Intent) => {
+      predicted = p;
+    });
+    return { workflow, requestContext, getCalls: () => triageCalls, getPredicted: () => predicted };
+  }
+
+  it('runs triage on a pinned command, keeps the pin, and reports the prediction', async () => {
+    const { workflow, requestContext, getCalls, getPredicted } = shadowRun(true);
+    const run = await workflow.createRun();
+    // /do pins the planning route; triage predicts oneshot - the pin must win.
+    const outcome = await run.start({
+      inputData: { prompt: 'add a feature', command: 'do', shadowTriage: true },
+      requestContext,
+    });
+    expect(getCalls()).toBe(1);
+    expect(getPredicted()).toBe('oneshot');
+    expect(outcome.status).toBe('success');
+    expect((outcome as { result: { intent: string } }).result.intent).toBe('planning');
+  });
+
+  it('does not run triage on a pinned command when shadow triage is off', async () => {
+    const { workflow, requestContext, getCalls, getPredicted } = shadowRun(false);
+    const run = await workflow.createRun();
+    await run.start({
+      inputData: { prompt: 'add a feature', command: 'do' },
+      requestContext,
+    });
+    expect(getCalls()).toBe(0);
+    expect(getPredicted()).toBeUndefined();
   });
 });
 

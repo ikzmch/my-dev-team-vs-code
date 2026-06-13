@@ -110,6 +110,31 @@ function highlights(rollup: UsageRollup): string {
         )})`
     );
   }
+  const { speed, triageShadow, contextGrowth } = rollup;
+  if (speed.runsTimed > 0) {
+    const seconds = speed.totalMs / speed.runsTimed / 1000;
+    const perSecond = speed.totalMs > 0 ? o.totalTokens / (speed.totalMs / 1000) : 0;
+    lines.push(
+      `- **Speed:** avg ${seconds.toFixed(1)} s/run over ${speed.runsTimed} ` +
+        `timed run${speed.runsTimed === 1 ? '' : 's'} (~${formatTokenCount(perSecond)} tokens/s)`
+    );
+  }
+  if (triageShadow.runs > 0) {
+    lines.push(
+      `- **Triage agreement:** matched the pinned route on ${triageShadow.agreed} of ` +
+        `${triageShadow.runs} shadowed run${triageShadow.runs === 1 ? '' : 's'} ` +
+        `(${percentLabel(triageShadow.agreed / triageShadow.runs)}); misrouted runs cost ` +
+        `~${formatTokenCount(triageShadow.disagreedTokens)} tokens`
+    );
+  }
+  if (contextGrowth.conversations > 0) {
+    lines.push(
+      `- **Context growth:** input grew from ~${formatTokenCount(contextGrowth.firstInputAvg)} ` +
+        `to ~${formatTokenCount(contextGrowth.lastInputAvg)} tokens on average across ` +
+        `${contextGrowth.conversations} multi-run ` +
+        `conversation${contextGrowth.conversations === 1 ? '' : 's'}`
+    );
+  }
   return `\n## Highlights\n\n${lines.join('\n')}\n`;
 }
 

@@ -43,6 +43,7 @@ export const defaults = {
   },
   telemetry: {
     evalLog: false,
+    shadowTriage: false,
   },
 } as const;
 
@@ -250,6 +251,22 @@ export const settings = {
     },
     /** Cap on the eval log file, in characters; the oldest records are dropped past it. */
     evalLogMaxChars: 1_000_000,
+
+    /**
+     * Whether a slash-command run also runs triage in the background to record
+     * what it would have decided (`myDevTeam.telemetry.shadowTriage`), so the
+     * usage report can score triage against the pinned route. Off by default -
+     * it adds one local triage call per pinned run. Only meaningful with the
+     * eval log on (that is where the signal lands); the client sets the run's
+     * shadow flag only when both are true. Anything but the literal `true` is off.
+     */
+    get shadowTriageEnabled(): boolean {
+      return (
+        vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<unknown>('telemetry.shadowTriage') === true
+      );
+    },
   },
 
   /**
