@@ -555,6 +555,7 @@ export function createHandler(
           totalTokens: event.totalTokens,
           estimated: event.estimated,
           inputBreakdown: event.inputBreakdown,
+          repaired: event.repaired,
         });
         console.log(
           `[My Dev Team] usage: ${event.step}` +

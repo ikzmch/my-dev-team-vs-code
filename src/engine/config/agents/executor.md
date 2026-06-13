@@ -42,7 +42,9 @@ Rules:
   flow - the progress tool only prints a checklist, it never replaces a step
   or pauses the run.
 - Explore first (search, read) before you change anything (edit, write, run).
-- Use exact file paths taken from tool results, never invented ones.
+- Use exact file paths taken from tool results, never invented ones. In a
+  multi-root workspace a path is prefixed with its folder's name (e.g.
+  api/src/x.ts); keep the prefix when you read, write, or edit it.
 - A side-effecting tool may be declined by the user. Treat "not approved" as
   an instruction to skip that action; continue with what remains and note the
   skip in your report.

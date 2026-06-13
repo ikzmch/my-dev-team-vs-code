@@ -5,6 +5,45 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] - 2026-06-13
+
+### Added
+
+- **Multi-root workspace support.** The file tools now resolve a
+  `folderName/relative/path` (the form the search tool lists across all open
+  folders) against the named folder, so a path the search tool returns is one
+  the read/write/edit tools can actually open - previously files outside the
+  first folder were unreachable and search could hand back paths the other
+  tools rejected. Bare paths and single-folder workspaces behave exactly as
+  before; in a multi-root workspace the `run` approval prompt also names the
+  folder the command runs in.
+
+- **Runs in Restricted Mode and virtual workspaces.** The extension now stays
+  active in an untrusted folder and in a virtual workspace instead of being
+  disabled wholesale. Triage, answers, `/explain`, and the read/search tools
+  keep working; the side-effecting tools narrow themselves - `run`, `write`,
+  and `edit` refuse in an untrusted folder, and `run` refuses in a virtual
+  workspace (it needs a real local filesystem) - each with a reason the agent
+  relays rather than an opaque failure.
+
+- **Content search returns line numbers and a match preview.** A content
+  search now returns one `path:line: <trimmed line preview>` result per
+  matching line instead of just the file path, so the model can jump straight
+  to a ranged read around the match rather than re-reading the whole file -
+  fewer round trips and less wasted context, which matters most for small
+  local models. A per-file match cap keeps one busy file from eating the
+  result budget, and the previous scan, size, and binary guards are unchanged.
+
+- **Self-repair for malformed structured output.** When triage or the planner
+  emits JSON that fails schema validation - a common failure on small local
+  models - the step now re-asks the same model once with the validation error
+  appended ("emit only the corrected JSON") before failing the run, instead of
+  dying on a single bad generation and making the user retype the request. The
+  repair is a real second model call, so its tokens are still metered and the
+  eval log marks the run `repaired`, keeping routing quality measurable. The
+  retry budget is the compile-time `structuredOutput.repairAttempts` (one, by
+  default).
+
 ## [0.31.0] - 2026-06-13
 
 ### Changed

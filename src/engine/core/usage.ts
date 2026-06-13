@@ -25,8 +25,13 @@ export interface TokenCounts {
   estimated?: boolean;
 }
 
-/** What an agent reports per model call: the routed model plus the counts. */
-export type AgentUsage = { model: string } & TokenCounts;
+/**
+ * What an agent reports per model call: the routed model plus the counts.
+ * `repaired` marks a self-repair retry (a re-ask after the first generation
+ * failed schema validation - see core/repair.ts), so the billing seam and the
+ * eval log can tell a corrective second call apart from the first.
+ */
+export type AgentUsage = { model: string; repaired?: boolean } & TokenCounts;
 
 /** Receives one agent's usage report. Must not throw. */
 export type UsageReporter = (usage: AgentUsage) => void;

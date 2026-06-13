@@ -184,18 +184,28 @@ Running a shell command stops and asks you first, right in the chat: a
 **Run Command** prompt shows the exact command, and you click **Approve** to
 let it run or **Decline** to skip it. Declining does not abort the run: the
 agent is told the command was not approved, carries on with the rest of the
-plan, and notes the skip in its report.
+plan, and notes the skip in its report. If you have more than one folder open
+(a multi-root workspace), the prompt also names the folder the command will
+run in.
 
 Reading, searching, writing, and editing files do not ask - they apply
 directly. Writing and editing are safe to run unprompted because your
 workspace is backed by Git: if the agent changes a file you did not want
 changed, you can see it in your source-control view and revert it like any
 other edit. (Commit or stash work you want to be sure of first; Git cannot
-restore changes that were never committed.) The agent only edits files inside
-your workspace folder - it cannot reach outside it.
+restore changes that were never committed.) The agent only touches files
+inside your workspace folders - it cannot reach outside them.
 
 Cancelling the chat request (the stop button) cancels everything, including a
 command already running and any file change still in flight.
+
+If you open a folder you have **not trusted** (VS Code's Restricted Mode), the
+agent can still answer questions and read and search your files, but running
+commands, writing, and editing are turned off until you trust the workspace.
+In a **virtual workspace** (for example a repository opened in the browser),
+everything works except running shell commands, which needs a real local
+filesystem. In both cases the agent simply tells you why it could not do the
+action.
 
 Every approved command's full live output also appears in a read-only
 **"Dev Team" terminal** in the terminal panel - open that tab to watch

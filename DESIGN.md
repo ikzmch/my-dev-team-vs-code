@@ -63,6 +63,7 @@ src/
       planner.ts          Mastra agent: draft an ordered plan of titled steps, streamed as partial snapshots
       answerer.ts         Mastra agent: answer a oneshot request directly, streamed as accumulated text
       executor.ts         Mastra agent: walk the plan in a tool-calling loop, streamed as a transcript
+      repair.ts           bounded self-repair for structured output: re-ask on a schema-validation failure
       agentTools.ts       the executor's tool proxies: every call delegates to the client's ToolHost
       usage.ts            token-count extraction (SDK counts, else a length-based estimate) feeding the usage (billing) events
     config/
@@ -254,7 +255,10 @@ without the client changing:
   section (project instructions, conversation, the command preamble, the
   prompt, the attachments, and the executor's drafted plan), computed where the
   workflow assembles the prompt - the attribution that tells a user what to
-  trim. The LocalEngine forwards the counts as events; the chat handler logs
+  trim. A self-repair retry (triage or the planner re-asking after a
+  schema-validation failure) reports its own usage event flagged `repaired`, so
+  the extra spend is metered and the eval log can score how often structured
+  output needs repair. The LocalEngine forwards the counts as events; the chat handler logs
   them, sums them into the per-reply **Tokens:** line and the status button's
   session total, and (when the eval log is on) stores them per run. Server-side, this
   same stream becomes the metering record. See
@@ -427,7 +431,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.read.maxLines`            | `200`                    | Max lines one `read` call returns; partial results name the range and total so the model continues |
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
 | `myDevTeam.search.contentScanLimit`  | `500`                    | Max files a content search scans          |
-| `myDevTeam.search.contentMaxMatches` | `50`                     | Max matches before a content search stops |
+| `myDevTeam.search.contentMaxMatches` | `50`                     | Max match lines before a content search stops |
 | `myDevTeam.chat.toolSnippetLines`    | `5`                      | Leading lines of a written file (or an edit's replacement text) shown under a `write`/`edit` call in the transcript (`0` hides the snippet) |
 | `myDevTeam.usage.showInChat`         | `true`                   | Append a **Tokens:** line under each reply summing the run's input/output tokens. The status button's session total and the "Show Token Usage" report are independent of this flag |
 | `myDevTeam.instructions.files`       | `["AGENTS.md", "CLAUDE.md"]` | Root-relative file names probed for standing project instructions, in order; the first that exists is sent with every run. Plain names only (an entry with a path separator or `..` falls back to the default list); an empty list disables the feature |
@@ -743,7 +747,15 @@ tool-calling chat model in the editor, not just `@devteam`):
 - `read`/`write`/`edit` resolve paths against the workspace root and **reject
   anything that escapes it** (absolute paths, `..` traversal, and **symbolic
   links anywhere in the resolved path** - the target itself or any ancestor
-  directory - since a link inside the workspace can point outside it).
+  directory - since a link inside the workspace can point outside it). In a
+  **multi-root workspace** `resolveFolder` first maps a path to its folder: a
+  path whose first segment names an open folder (the `folderName/relative/path`
+  form `asRelativePath` produces, and the form the search tool lists) resolves
+  against that folder, a bare path against the first folder, and the
+  containment/symlink checks then run per folder. The search tool scans all
+  roots, so a path it returns is now one read/write/edit can open - the two
+  surfaces no longer disagree. A single-folder workspace behaves exactly as
+  before.
 - `read` returns at most **`myDevTeam.read.maxLines` lines per call** (plus a
   character backstop against enormous lines), so one read of a large file
   cannot flood a small model's context. An optional `startLine`/`endLine`
@@ -764,7 +776,15 @@ tool-calling chat model in the editor, not just `@devteam`):
 - `search` never scans `node_modules`, `.git`, `dist`, `out`, or `coverage`,
   and content mode skips binary and oversized files (see
   `config/settings.ts` for the limits; the result/scan caps are user-tunable
-  via the `myDevTeam.search.*` settings).
+  via the `myDevTeam.search.*` settings). Content mode returns **one
+  `path:line: <trimmed preview>` line per matching line** (not just the file
+  path), so the model learns *where* a file matches and can follow up with a
+  ranged `read` around that line instead of re-reading from the start. A
+  per-file match cap (`search.contentMaxMatchesPerFile`) keeps one busy file
+  from eating the overall `contentMaxMatches` budget, and each preview is
+  trimmed and capped (`search.contentPreviewMaxChars`). The client's
+  `#codebase` resolver reuses the same scan and folds the per-line matches back
+  down to distinct files.
 - `run` executes with a configured timeout (`myDevTeam.run.commandTimeoutMs`)
   and output buffer; on expiry or cancellation the **whole spawned process
   tree** is killed (`taskkill /t` on Windows, a process-group signal to the
@@ -775,7 +795,9 @@ tool-calling chat model in the editor, not just `@devteam`):
   Commands run in the shell `config/environment.ts` announces to the model:
   **PowerShell on Windows** (its Unix-style aliases absorb residual
   `ls`/`cat` habits, and models write it more reliably than cmd.exe batch),
-  the platform default `/bin/sh` elsewhere.
+  the platform default `/bin/sh` elsewhere. The command's cwd is the first
+  workspace folder; in a multi-root workspace the approval prompt names that
+  folder so the user knows where it lands.
 - every approved `run` command is also **mirrored live into a "Dev Team"
   terminal** (the `RunMirror` seam; `ui/runTerminal.ts`). The child process
   stays owned by the tool - capture, timeout, and kill-tree are unchanged -
@@ -787,6 +809,18 @@ tool-calling chat model in the editor, not just `@devteam`):
   first opened - or reopened after closing it - so the full history is
   visible whenever the user looks. Declined commands never ran, so they
   never appear.
+
+**Workspace trust and virtual workspaces.** The extension declares
+`capabilities.untrustedWorkspaces: "limited"` and
+`virtualWorkspaces: "limited"` (package.json), so VS Code keeps it active in
+Restricted Mode and in virtual workspaces instead of disabling it wholesale.
+The safe surface - triage, oneshot answers, `/explain`, and the read/search
+tools - works everywhere. The side-effecting tools narrow themselves at the
+implementation: `run`/`write`/`edit` check `vscode.workspace.isTrusted` and
+refuse in an untrusted folder, and `run` also refuses in a virtual workspace
+(it spawns a child process against a real cwd, which read/write/edit do not
+need - they go through `vscode.workspace.fs`). A refusal returns a short reason
+the model relays; no approval prompt is shown for an action that cannot run.
 
 The only gated tool, `run`, calls `approver.confirm(title, detail)` with the
 command echo, so a shell command - which can reach outside the workspace and
@@ -899,7 +933,14 @@ Out of the box, `@devteam <prompt>`:
 2. Triages the prompt as `oneshot` or `planning` via the capability-routed
    local Ollama model (currently `qwen3:8b`) - this stays a buffered
    structured-output call, since its whole product is a small validated
-   object. A slash command (`/explain`, `/review`, `/plan`, `/do`, `/fix`,
+   object. If that object fails schema validation, the step self-repairs
+   (`engine/core/repair.ts`): it re-asks the same model once with the original
+   prompt plus the zod issues ("emit only the corrected JSON"), up to
+   `settings.structuredOutput.repairAttempts` extra times, before the run fails
+   for real - small local models routinely need that nudge. The repair is a
+   real second model call, so it reports usage too (flagged `repaired` on the
+   usage event and the eval-log record, so how often output needs repair stays
+   measurable). A slash command (`/explain`, `/review`, `/plan`, `/do`, `/fix`,
    `/test`, `/compact` - see [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts))
    skips this call and pins the route directly, with `Requested via /<name>.`
    as the rendered reason. The boundary is the deliverable, not the difficulty: requests
@@ -929,7 +970,10 @@ Out of the box, `@devteam <prompt>`:
    authoring the code is the executor's job (it is the routed coding
    specialist). The partial-JSON snapshots are rendered conservatively so the
    already-emitted markdown is never revised, and the validated final result
-   completes the reply.
+   completes the reply. Like triage, the planner self-repairs a plan that fails
+   validation (`engine/core/repair.ts`): a repair re-streams a fresh plan that
+   overwrites the partial snapshots already shown, and its usage is reported
+   flagged `repaired`.
 6. Then **executes the plan**: the
    executor's routed model (currently `qwen3-coder`) is briefed with the full
    request plus the numbered plan and runs a Mastra tool-calling loop over

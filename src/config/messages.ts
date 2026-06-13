@@ -177,6 +177,14 @@ export const messages = {
    */
   approval: {
     runCommandTitle: 'Run command',
+    /**
+     * The preview shown for a run approval: the command, prefixed with a
+     * shell-comment naming its cwd folder in a multi-root workspace (where the
+     * command runs in the first folder). A single-folder workspace omits the
+     * line, so the preview is just the command as before.
+     */
+    runCommandDetail: (command: string, cwdFolder?: string) =>
+      cwdFolder ? `# cwd: ${cwdFolder}\n$ ${command}` : `$ ${command}`,
     /** The in-chat approval question: the action title plus its preview. */
     block: (title: string, detail: string) =>
       `\n\n**${title}?**\n\n${fence(detail, 3)}\n`,
@@ -188,6 +196,37 @@ export const messages = {
   /** Returned to the model when the user declines the (gated) run tool. */
   notApproved: {
     run: 'Command was not approved by the user.',
+  },
+
+  /**
+   * Returned to the model when a side-effecting tool is disabled by the
+   * workspace mode rather than declined. An untrusted folder (VS Code
+   * Restricted Mode) disables run/write/edit; a virtual workspace (no local
+   * filesystem) disables run. Read and search stay available in both. The
+   * model relays the reason instead of reporting an opaque failure, and no
+   * approval prompt is shown for an action that cannot run.
+   */
+  restricted: {
+    run:
+      'This workspace is not trusted, so the run tool is disabled. Trust the ' +
+      'workspace (Restricted Mode banner, or the "Workspaces: Manage Workspace ' +
+      'Trust" command) and try again.',
+    write:
+      'This workspace is not trusted, so the write tool is disabled. Trust the ' +
+      'workspace (Restricted Mode banner, or the "Workspaces: Manage Workspace ' +
+      'Trust" command) and try again.',
+    edit:
+      'This workspace is not trusted, so the edit tool is disabled. Trust the ' +
+      'workspace (Restricted Mode banner, or the "Workspaces: Manage Workspace ' +
+      'Trust" command) and try again.',
+  },
+
+  /** Returned to the model when a tool cannot run in a virtual workspace. */
+  virtual: {
+    run:
+      'This is a virtual workspace with no local filesystem, so the run tool ' +
+      '(which starts a shell process) is not available here. Reading, ' +
+      'searching, writing, and editing files still work.',
   },
 
   /**

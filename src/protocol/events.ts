@@ -109,6 +109,14 @@ export type RunEvent =
        * triage, which sees only attachment labels.
        */
       inputBreakdown?: InputBreakdown;
+      /**
+       * Set when this record is a self-repair retry: the step's first
+       * generation failed schema validation, so the engine re-asked with the
+       * error appended. The retry's tokens count like any other, and this flag
+       * lets the eval log measure how often structured output needs repair. A
+       * client that ignores it loses nothing.
+       */
+      repaired?: boolean;
     }
   /** The run finished; `reply` is the complete validated result. */
   | { type: 'done'; reply: Reply }

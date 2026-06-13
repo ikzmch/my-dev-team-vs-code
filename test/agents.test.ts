@@ -159,9 +159,14 @@ describe('Planner', () => {
     expect(options).toEqual({ structuredOutput: { schema: PlanSchema } });
   });
 
-  it('rejects when the final object does not match the plan schema', async () => {
-    streamMock.mockResolvedValue(fakeStreamOutput([], { summary: 's', steps: [] }));
+  it('rejects when the final object does not match the plan schema even after a repair', async () => {
+    // A fresh output per call so the retry re-streams rather than re-reading a
+    // locked stream; both fail validation (steps below the min), so the run dies.
+    streamMock.mockImplementation(async () =>
+      fakeStreamOutput([], { summary: 's', steps: [] })
+    );
     await expect(new Planner().plan('bad')).rejects.toThrow();
+    expect(streamMock).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -611,6 +616,72 @@ describe('Executor', () => {
     await expect(new Executor(toolHostStub).execute('go')).resolves.toEqual({
       events: [{ kind: 'text', text: 'ok' }],
     });
+  });
+});
+
+describe('self-repair for malformed structured output', () => {
+  const counts = { inputTokens: 11, outputTokens: 7 };
+  const plan = {
+    summary: 'do the thing',
+    steps: [{ title: 'Read it', detail: 'because' }],
+  };
+
+  it('Triage retries once with the validation error and returns the corrected object', async () => {
+    generateMock
+      // First generation is malformed (no valid intent), so it fails the schema.
+      .mockResolvedValueOnce({ object: { intent: 'nonsense' } })
+      .mockResolvedValueOnce({ object: { intent: 'oneshot', reason: 'ok' } });
+
+    const result = await new Triage().classify('what is a closure');
+    expect(result).toEqual({ intent: 'oneshot', reason: 'ok' });
+    expect(generateMock).toHaveBeenCalledTimes(2);
+    // The retry re-asks with the original prompt plus the validation error.
+    const retryContent = generateMock.mock.calls[1][0][0].content as string;
+    expect(retryContent).toContain('what is a closure');
+    expect(retryContent).toContain('failed validation');
+  });
+
+  it('Triage reports both calls, flagging only the repair as repaired', async () => {
+    generateMock
+      .mockResolvedValueOnce({ object: { intent: 'nonsense' }, usage: counts })
+      .mockResolvedValueOnce({ object: { intent: 'oneshot', reason: 'ok' }, usage: counts });
+
+    const seen: AgentUsage[] = [];
+    await new Triage().classify('q', (usage) => seen.push(usage));
+    expect(seen).toHaveLength(2);
+    expect(seen[0].repaired).toBeUndefined();
+    expect(seen[1].repaired).toBe(true);
+  });
+
+  it('Triage fails for real when the repair also fails to validate', async () => {
+    generateMock.mockResolvedValue({ object: { intent: 'nonsense' } });
+    await expect(new Triage().classify('q')).rejects.toThrow();
+    expect(generateMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('Planner retries once with the validation error and returns the corrected plan', async () => {
+    streamMock
+      // First plan has no steps (below the min), so it fails the schema.
+      .mockResolvedValueOnce(fakeStreamOutput([], { summary: 's', steps: [] }))
+      .mockResolvedValueOnce(fakeStreamOutput([], plan));
+
+    await expect(new Planner().plan('build it')).resolves.toEqual(plan);
+    expect(streamMock).toHaveBeenCalledTimes(2);
+    const retryContent = streamMock.mock.calls[1][0][0].content as string;
+    expect(retryContent).toContain('build it');
+    expect(retryContent).toContain('failed validation');
+  });
+
+  it('Planner reports both calls, flagging only the repair as repaired', async () => {
+    streamMock
+      .mockResolvedValueOnce(fakeStreamOutput([], { summary: 's', steps: [] }))
+      .mockResolvedValueOnce({ ...fakeStreamOutput([], plan), usage: Promise.resolve(counts) });
+
+    const seen: AgentUsage[] = [];
+    await new Planner().plan('build it', undefined, (usage) => seen.push(usage));
+    expect(seen).toHaveLength(2);
+    expect(seen[0].repaired).toBeUndefined();
+    expect(seen[1].repaired).toBe(true);
   });
 });
 

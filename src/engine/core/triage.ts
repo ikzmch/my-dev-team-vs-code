@@ -2,6 +2,7 @@ import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
 import { resolveModel, routeModel, localModels } from './models';
 import { resolveTokenCounts, UsageReporter } from './usage';
+import { parseWithRepair } from './repair';
 import { agents } from '../config/agents';
 import { IntentSchema } from '../../protocol/types';
 
@@ -42,16 +43,29 @@ export class Triage {
   });
 
   async classify(prompt: string, onUsage?: UsageReporter): Promise<TriageResult> {
-    const result = await this.agent.generate(
-      [{ role: 'user', content: prompt }],
-      { structuredOutput: { schema: TriageSchema } }
-    );
-    onUsage?.({
-      model: this.modelName,
-      ...(await resolveTokenCounts(result, prompt, JSON.stringify(result.object ?? {}))),
+    // Validate rather than cast: a missing or malformed object would otherwise
+    // render as "intent: undefined" later. On a validation failure, parseWithRepair
+    // re-asks once with the zod issues appended (see ./repair.ts) before the
+    // step fails for real - small local models routinely need that nudge.
+    return parseWithRepair(TriageSchema, async (repair) => {
+      const content = repair ? `${prompt}\n\n${repair}` : prompt;
+      const result = await this.agent.generate(
+        [{ role: 'user', content }],
+        { structuredOutput: { schema: TriageSchema } }
+      );
+      const counts = await resolveTokenCounts(
+        result,
+        content,
+        JSON.stringify(result.object ?? {})
+      );
+      // The retry is a real second model call: report it (flagged repaired) so
+      // the billing seam and the eval log see the extra spend.
+      onUsage?.({
+        model: this.modelName,
+        ...counts,
+        ...(repair ? { repaired: true } : {}),
+      });
+      return result.object;
     });
-    // Validate rather than cast: a missing or malformed object fails here
-    // with a schema error instead of rendering as "intent: undefined" later.
-    return TriageSchema.parse(result.object);
   }
 }

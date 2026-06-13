@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.31.0",
+  "version": "0.32.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -18,6 +18,16 @@
     "onStartupFinished"
   ],
   "main": "./dist/extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Triage, oneshot answers, /explain, and the read/search tools work in an untrusted folder; the side-effecting tools (run, write, edit) are disabled until you trust the workspace."
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Reading, searching, writing, and editing files work in a virtual workspace; the run tool needs a local filesystem and is disabled there."
+    }
+  },
   "contributes": {
     "configuration": {
       "title": "My Dev Team",

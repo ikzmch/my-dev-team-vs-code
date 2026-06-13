@@ -2,6 +2,7 @@ import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
 import { resolveModel, routeModel } from './models';
 import { resolveTokenCounts, UsageReporter } from './usage';
+import { parseWithRepair } from './repair';
 import { agents } from '../config/agents';
 import { PartialPlan, Plan } from '../../protocol/types';
 
@@ -72,30 +73,40 @@ export class Planner {
     onPartial?: PlanProgress,
     onUsage?: UsageReporter
   ): Promise<PlanResult> {
-    const output = await this.agent.stream(
-      [{ role: 'user', content: prompt }],
-      { structuredOutput: { schema: PlanSchema } }
-    );
-    // Drain the partial-object stream, forwarding each snapshot to the
-    // caller; reading it is also what drives the generation to completion,
-    // so this loop runs even when nobody listens.
-    const reader = output.objectStream.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) {
-        break;
+    // Validate rather than cast: a missing or malformed object would otherwise
+    // render as broken markdown later. On a validation failure, parseWithRepair
+    // re-asks once with the zod issues appended (see ./repair.ts) before the
+    // step fails for real; a repair attempt simply re-streams a fresh plan,
+    // which overwrites the partial snapshots already shown.
+    return parseWithRepair(PlanSchema, async (repair) => {
+      const content = repair ? `${prompt}\n\n${repair}` : prompt;
+      const output = await this.agent.stream(
+        [{ role: 'user', content }],
+        { structuredOutput: { schema: PlanSchema } }
+      );
+      // Drain the partial-object stream, forwarding each snapshot to the
+      // caller; reading it is also what drives the generation to completion,
+      // so this loop runs even when nobody listens.
+      const reader = output.objectStream.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        if (value !== undefined) {
+          onPartial?.(value as PartialPlan);
+        }
       }
-      if (value !== undefined) {
-        onPartial?.(value as PartialPlan);
-      }
-    }
-    const plan = await output.object;
-    onUsage?.({
-      model: this.modelName,
-      ...(await resolveTokenCounts(output, prompt, JSON.stringify(plan ?? {}))),
+      const plan = await output.object;
+      const counts = await resolveTokenCounts(output, content, JSON.stringify(plan ?? {}));
+      // The retry is a real second model call: report it (flagged repaired) so
+      // the billing seam and the eval log see the extra spend.
+      onUsage?.({
+        model: this.modelName,
+        ...counts,
+        ...(repair ? { repaired: true } : {}),
+      });
+      return plan;
     });
-    // Validate rather than cast: a missing or malformed object fails here
-    // with a schema error instead of rendering broken markdown later.
-    return PlanSchema.parse(plan);
   }
 }

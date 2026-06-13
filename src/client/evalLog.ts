@@ -34,6 +34,8 @@ export interface UsageEntry {
   estimated?: boolean;
   /** Estimated split of the input tokens by prompt section (plan/answer/execute). */
   inputBreakdown?: InputBreakdown;
+  /** True when this call was a self-repair retry after the first output failed validation. */
+  repaired?: boolean;
 }
 
 /** How a run ended, as the chat handler saw it. */

@@ -45,8 +45,11 @@ import {
   __state,
   __setConfig,
   __setFile,
+  __setFileIn,
   __setSymlink,
   __setSymlinkDir,
+  __setTrusted,
+  __setWorkspaceFolders,
   Uri,
   workspace,
 } from './mocks/vscode';
@@ -251,28 +254,66 @@ describe('searchFiles (glob mode)', () => {
 });
 
 describe('searchFiles (content mode)', () => {
-  it('returns only files whose contents include the query', async () => {
-    const a = __setFile('a.ts', 'const needle = 1;');
+  it('returns one path:line: preview line per matching line', async () => {
+    const a = __setFile('a.ts', 'first line\nconst needle = 1;\nlast line');
     const b = __setFile('b.ts', 'unrelated');
     const c = __setFile('c.ts', 'also needle here');
     __state.findFilesResult = [a, b, c];
 
     const results = await searchFiles('needle', 'content');
-    expect(results).toEqual(['a.ts', 'c.ts']);
+    expect(results).toEqual(['a.ts:2: const needle = 1;', 'c.ts:1: also needle here']);
+  });
+
+  it('reports every matching line within a file', async () => {
+    const a = __setFile('a.ts', 'needle one\nskip\nneedle two\nneedle three');
+    __state.findFilesResult = [a];
+    await expect(searchFiles('needle', 'content')).resolves.toEqual([
+      'a.ts:1: needle one',
+      'a.ts:3: needle two',
+      'a.ts:4: needle three',
+    ]);
+  });
+
+  it('trims the previewed line and strips a trailing CR', async () => {
+    const a = __setFile('a.ts', 'plain\r\n\t  needle indented  \r\n');
+    __state.findFilesResult = [a];
+    await expect(searchFiles('needle', 'content')).resolves.toEqual([
+      'a.ts:2: needle indented',
+    ]);
+  });
+
+  it('caps a very long matched line in the preview', async () => {
+    const max = settings.search.contentPreviewMaxChars;
+    const line = 'needle' + 'x'.repeat(max + 50);
+    const a = __setFile('a.ts', line);
+    __state.findFilesResult = [a];
+    const [result] = await searchFiles('needle', 'content');
+    expect(result.startsWith('a.ts:1: needle')).toBe(true);
+    expect(result.endsWith('…')).toBe(true);
+    // "a.ts:1: " prefix + at most max chars of preview + the ellipsis.
+    expect(result.length).toBeLessThanOrEqual('a.ts:1: '.length + max + 1);
+  });
+
+  it('caps the match lines reported from a single file', async () => {
+    const perFile = settings.search.contentMaxMatchesPerFile;
+    const body = Array.from({ length: perFile + 10 }, () => 'needle').join('\n');
+    const a = __setFile('a.ts', body);
+    __state.findFilesResult = [a];
+    await expect(searchFiles('needle', 'content')).resolves.toHaveLength(perFile);
   });
 
   it('skips files that cannot be read without failing', async () => {
     const a = __setFile('a.ts', 'has needle');
     const ghost = Uri.joinPath(__state.workspaceFolders![0].uri, 'ghost.ts');
     __state.findFilesResult = [a, ghost]; // ghost is not seeded -> readFile throws
-    await expect(searchFiles('needle', 'content')).resolves.toEqual(['a.ts']);
+    await expect(searchFiles('needle', 'content')).resolves.toEqual(['a.ts:1: has needle']);
   });
 
   it('skips binary files instead of matching inside them', async () => {
     const text = __setFile('a.ts', 'has needle');
     const binary = __setFile('blob.bin', 'needle\0with a NUL byte');
     __state.findFilesResult = [text, binary];
-    await expect(searchFiles('needle', 'content')).resolves.toEqual(['a.ts']);
+    await expect(searchFiles('needle', 'content')).resolves.toEqual(['a.ts:1: has needle']);
   });
 
   it('skips files larger than the content-search size cap', async () => {
@@ -282,7 +323,7 @@ describe('searchFiles (content mode)', () => {
       'needle' + 'a'.repeat(settings.search.maxFileSizeBytes)
     );
     __state.findFilesResult = [small, huge];
-    await expect(searchFiles('needle', 'content')).resolves.toEqual(['small.ts']);
+    await expect(searchFiles('needle', 'content')).resolves.toEqual(['small.ts:1: needle']);
   });
 
   it('checks an oversized file via stat without ever reading it', async () => {
@@ -303,14 +344,14 @@ describe('searchFiles (content mode)', () => {
     expect(readPaths).not.toContain(huge.path);
   });
 
-  it('caps content matches at 50 results', async () => {
+  it('caps total content matches at the configured budget', async () => {
     const uris: Uri[] = [];
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < settings.search.contentMaxMatches + 10; i++) {
       uris.push(__setFile(`f${i}.ts`, 'needle'));
     }
     __state.findFilesResult = uris;
     const results = await searchFiles('needle', 'content');
-    expect(results).toHaveLength(50);
+    expect(results).toHaveLength(settings.search.contentMaxMatches);
   });
 });
 
@@ -678,5 +719,113 @@ describe('editFile', () => {
     __setFile('linkdir/a.ts', 'const a = 1;');
     await expect(editFile('linkdir/a.ts', '1', '2')).rejects.toThrow(/symbolic link/);
     expect(__state.files.get('/ws/linkdir/a.ts')).toBe('const a = 1;');
+  });
+});
+
+describe('multi-root workspace', () => {
+  // In a multi-root workspace asRelativePath prefixes paths with the folder
+  // name, so the tools must resolve a `folderName/relative/path` against the
+  // named folder. A single-folder workspace is covered by every test above.
+  beforeEach(() => {
+    __setWorkspaceFolders([
+      { name: 'api', path: '/api' },
+      { name: 'web', path: '/web' },
+    ]);
+  });
+
+  it('resolves a folder-prefixed read against the named folder', async () => {
+    __setFileIn('api', 'src/a.ts', 'api file');
+    __setFileIn('web', 'src/a.ts', 'web file');
+    await expect(readFile('api/src/a.ts')).resolves.toBe('api file');
+    await expect(readFile('web/src/a.ts')).resolves.toBe('web file');
+  });
+
+  it('resolves a bare path against the first folder', async () => {
+    __setFileIn('api', 'src/a.ts', 'api file');
+    await expect(readFile('src/a.ts')).resolves.toBe('api file');
+  });
+
+  it('writes and edits through a folder-prefixed path', async () => {
+    await writeFile('web/new.ts', 'hello');
+    expect(__state.files.get('/web/new.ts')).toBe('hello');
+    __setFileIn('api', 'b.ts', 'const a = 1;');
+    await editFile('api/b.ts', 'const a = 1;', 'const a = 2;');
+    expect(__state.files.get('/api/b.ts')).toBe('const a = 2;');
+  });
+
+  it('lists folder-prefixed paths the read tool can then open', async () => {
+    const a = __setFileIn('api', 'src/a.ts', 'alpha');
+    const b = __setFileIn('web', 'src/b.ts', 'beta');
+    __state.findFilesResult = [a, b];
+
+    const results = await searchFiles('**/*.ts', 'glob');
+    expect(results).toEqual(['api/src/a.ts', 'web/src/b.ts']);
+    // The whole point: a path search returns is one read can open.
+    await expect(readFile(results[1])).resolves.toBe('beta');
+  });
+
+  it('still rejects a traversal that escapes the named folder', async () => {
+    await expect(readFile('api/../../secret.txt')).rejects.toThrow(
+      /outside the workspace/
+    );
+  });
+});
+
+describe('workspace trust and virtual workspaces', () => {
+  it('refuses run in an untrusted workspace without prompting', async () => {
+    __setTrusted(false);
+    const approver = makeApprover(true);
+    const out = await runCommand('npm test', approver);
+    expect(out).toMatch(/not trusted/);
+    expect(execMock).not.toHaveBeenCalled();
+    // No approval prompt for an action that cannot run.
+    expect(approver.calls).toEqual([]);
+  });
+
+  it('refuses write in an untrusted workspace', async () => {
+    __setTrusted(false);
+    const out = await writeFile('a.ts', 'x');
+    expect(out).toMatch(/not trusted/);
+    expect(__state.files.has('/ws/a.ts')).toBe(false);
+  });
+
+  it('refuses edit in an untrusted workspace', async () => {
+    __setTrusted(false);
+    __setFile('a.ts', 'old');
+    const out = await editFile('a.ts', 'old', 'new');
+    expect(out).toMatch(/not trusted/);
+    expect(__state.files.get('/ws/a.ts')).toBe('old');
+  });
+
+  it('still allows read and search in an untrusted workspace', async () => {
+    __setTrusted(false);
+    const a = __setFile('a.ts', 'needle');
+    __state.findFilesResult = [a];
+    await expect(readFile('a.ts')).resolves.toBe('needle');
+    await expect(searchFiles('needle', 'content')).resolves.toEqual(['a.ts:1: needle']);
+  });
+
+  it('refuses run in a virtual workspace but keeps write working', async () => {
+    __setWorkspaceFolders([{ name: 'remote', path: '/remote', scheme: 'vscode-vfs' }]);
+    const out = await runCommand('npm test', makeApprover(true));
+    expect(out).toMatch(/virtual workspace/);
+    expect(execMock).not.toHaveBeenCalled();
+    // Write goes through the filesystem API and keeps working in a trusted
+    // virtual workspace.
+    await writeFile('a.ts', 'x');
+    expect(__state.files.get('/remote/a.ts')).toBe('x');
+  });
+
+  it('names the cwd folder in the run approval prompt in a multi-root workspace', async () => {
+    __setWorkspaceFolders([
+      { name: 'api', path: '/api' },
+      { name: 'web', path: '/web' },
+    ]);
+    execMock.mockImplementation((_cmd, _opts, cb) =>
+      cb(null, { stdout: '', stderr: '' })
+    );
+    const approver = makeApprover(true);
+    await runCommand('npm test', approver);
+    expect(approver.calls[0].detail).toBe('# cwd: api\n$ npm test');
   });
 });

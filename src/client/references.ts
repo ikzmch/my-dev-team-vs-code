@@ -28,7 +28,7 @@ import { promisify } from 'util';
 import { Attachment } from '../protocol/types';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
-import { readFile, searchFiles } from '../tools/workspaceTools';
+import { readFile, searchContent } from '../tools/workspaceTools';
 
 const execFileAsync = promisify(execFile);
 
@@ -121,7 +121,7 @@ const STOPWORDS = new Set([
 /**
  * Derive a few distinctive search terms from the prompt for `#codebase`.
  * Original casing is preserved so a term matches mixed-case identifiers
- * (`searchFiles` content mode is a case-sensitive substring scan); short and
+ * (`searchContent` is a case-sensitive substring scan); short and
  * common words are dropped, and the longest terms are tried first.
  */
 function deriveTerms(prompt: string): string[] {
@@ -155,16 +155,18 @@ async function resolveCodebase(prompt: string): Promise<Attachment> {
   const files: string[] = [];
   const seen = new Set<string>();
   for (const term of terms) {
-    let hits: string[] = [];
+    let hits: { path: string }[] = [];
     try {
-      hits = await searchFiles(term, 'content');
+      hits = await searchContent(term);
     } catch {
       // A failed search yields no hits for this term; the others still run.
     }
-    for (const file of hits) {
-      if (!seen.has(file)) {
-        seen.add(file);
-        files.push(file);
+    // Content search now returns one entry per matching line; #codebase wants
+    // the distinct files, so fold the matches down by path.
+    for (const hit of hits) {
+      if (!seen.has(hit.path)) {
+        seen.add(hit.path);
+        files.push(hit.path);
       }
       if (files.length >= settings.references.codebaseMaxFiles) {
         break;

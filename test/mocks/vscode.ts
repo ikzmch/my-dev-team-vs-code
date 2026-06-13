@@ -13,17 +13,23 @@ import { vi } from 'vitest';
 
 export class Uri {
   private constructor(
+    public readonly scheme: string,
     public readonly fsPath: string,
     public readonly path: string
   ) {}
 
   static file(p: string): Uri {
-    return new Uri(p, p);
+    return new Uri('file', p, p);
+  }
+
+  /** Build a Uri on an arbitrary scheme (a virtual filesystem in tests). */
+  static from(scheme: string, p: string): Uri {
+    return new Uri(scheme, p, p);
   }
 
   static joinPath(base: Uri, ...segments: string[]): Uri {
     const joined = [base.path.replace(/\/+$/, ''), ...segments].join('/');
-    return new Uri(joined, joined);
+    return new Uri(base.scheme, joined, joined);
   }
 
   toString(): string {
@@ -140,7 +146,9 @@ interface MockState {
   files: Map<string, string>;
   /** Paths (by `uri.path`) that fs.stat should report as symbolic links. */
   symlinks: Set<string>;
-  workspaceFolders: Array<{ uri: Uri }> | undefined;
+  workspaceFolders: Array<{ uri: Uri; name: string }> | undefined;
+  /** Whether the workspace is trusted (Restricted Mode is the `false` case). */
+  trusted: boolean;
   findFilesResult: Uri[];
   warningResponse: string | undefined;
   registeredTools: Map<string, unknown>;
@@ -165,7 +173,8 @@ interface MockState {
 export const __state: MockState = {
   files: new Map(),
   symlinks: new Set(),
-  workspaceFolders: [{ uri: Uri.file('/ws') }],
+  workspaceFolders: [{ uri: Uri.file('/ws'), name: 'ws' }],
+  trusted: true,
   findFilesResult: [],
   warningResponse: undefined,
   registeredTools: new Map(),
@@ -183,7 +192,8 @@ export const __state: MockState = {
 export function __reset(): void {
   __state.files = new Map();
   __state.symlinks = new Set();
-  __state.workspaceFolders = [{ uri: Uri.file('/ws') }];
+  __state.workspaceFolders = [{ uri: Uri.file('/ws'), name: 'ws' }];
+  __state.trusted = true;
   __state.findFilesResult = [];
   __state.warningResponse = undefined;
   __state.registeredTools = new Map();
@@ -240,6 +250,36 @@ export function __setConfig(fullKey: string, value: unknown): void {
   __state.configuration.set(fullKey, value);
 }
 
+/** Toggle workspace trust (the `false` case is Restricted Mode). */
+export function __setTrusted(trusted: boolean): void {
+  __state.trusted = trusted;
+}
+
+/**
+ * Replace the open workspace folders. Each spec is a folder name and root
+ * path; an optional scheme other than "file" stands in for a virtual
+ * workspace folder.
+ */
+export function __setWorkspaceFolders(
+  specs: Array<{ name: string; path: string; scheme?: string }>
+): void {
+  __state.workspaceFolders = specs.map((s) => ({
+    name: s.name,
+    uri: s.scheme ? Uri.from(s.scheme, s.path) : Uri.file(s.path),
+  }));
+}
+
+/** Seed a file under a named workspace folder (multi-root tests). */
+export function __setFileIn(folderName: string, relPath: string, contents: string): Uri {
+  const folder = __state.workspaceFolders?.find((f) => f.name === folderName);
+  if (!folder) {
+    throw new Error(`No workspace folder named "${folderName}" in the mock state.`);
+  }
+  const uri = Uri.joinPath(folder.uri, relPath);
+  __state.files.set(uri.path, contents);
+  return uri;
+}
+
 /** Seed a file into the fake fs under the workspace root. */
 export function __setFile(relPath: string, contents: string): Uri {
   const uri = Uri.joinPath(__state.workspaceFolders![0].uri, relPath);
@@ -273,6 +313,10 @@ export function __setSymlinkDir(relPath: string): Uri {
 export const workspace = {
   get workspaceFolders() {
     return __state.workspaceFolders;
+  },
+
+  get isTrusted() {
+    return __state.trusted;
   },
 
   fs: {
@@ -313,9 +357,19 @@ export const workspace = {
   ),
 
   asRelativePath: vi.fn((uri: Uri): string => {
-    const base = __state.workspaceFolders?.[0]?.uri.path;
-    if (base && uri.path.startsWith(base + '/')) {
-      return uri.path.slice(base.length + 1);
+    // Mirror VS Code: in a multi-root workspace the path is prefixed with the
+    // folder's name; in a single-folder workspace it is not.
+    const folders = __state.workspaceFolders ?? [];
+    const multi = folders.length > 1;
+    for (const folder of folders) {
+      const base = folder.uri.path;
+      if (uri.path === base) {
+        return multi ? folder.name : '';
+      }
+      if (uri.path.startsWith(base + '/')) {
+        const rel = uri.path.slice(base.length + 1);
+        return multi ? `${folder.name}/${rel}` : rel;
+      }
     }
     return uri.path;
   }),

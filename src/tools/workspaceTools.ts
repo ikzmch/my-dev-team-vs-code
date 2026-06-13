@@ -9,19 +9,61 @@ import { environment } from '../config/environment';
 
 const execAsync = promisify(exec);
 
-function workspaceRoot(): vscode.Uri {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) {
+/** Every open workspace folder, or throw when none is open. */
+function workspaceFolders(): readonly vscode.WorkspaceFolder[] {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders || folders.length === 0) {
     throw new Error('No workspace folder is open.');
   }
-  return folder.uri;
+  return folders;
+}
+
+/** The first workspace folder: the default root and the `run` tool's cwd. */
+function workspaceRoot(): vscode.Uri {
+  return workspaceFolders()[0].uri;
+}
+
+/**
+ * True when every open folder lives on a virtual (non-`file`) filesystem - a
+ * GitHub repo opened in the browser, say. The `run` tool spawns a child
+ * process against a real cwd and so cannot work there; the fs-based tools
+ * (read/search/write/edit) still do.
+ */
+function isVirtualWorkspace(): boolean {
+  const folders = vscode.workspace.workspaceFolders;
+  return (
+    !!folders && folders.length > 0 && folders.every((f) => f.uri.scheme !== 'file')
+  );
+}
+
+/**
+ * Split a tool-supplied path into the workspace folder it targets and the path
+ * relative to that folder. In a multi-root workspace `asRelativePath` prefixes
+ * every path it returns with the folder's name (e.g. `backend/src/app.ts`), so
+ * a path whose first segment names an open folder is resolved against that
+ * folder; a bare path - and every single-folder workspace - resolves against
+ * the first folder, exactly as before. This keeps the tools consistent: a path
+ * the search tool lists (it scans all roots) is one read/write/edit can open.
+ */
+function resolveFolder(relPath: string): { root: vscode.Uri; rel: string } {
+  const folders = workspaceFolders();
+  if (folders.length > 1) {
+    const slash = relPath.search(/[\\/]/);
+    const head = slash === -1 ? relPath : relPath.slice(0, slash);
+    const match = folders.find((f) => f.name === head);
+    if (match) {
+      return { root: match.uri, rel: slash === -1 ? '' : relPath.slice(slash + 1) };
+    }
+  }
+  return { root: folders[0].uri, rel: relPath };
 }
 
 /**
  * Resolve a workspace-relative path to a Uri, rejecting anything that points
  * outside the workspace (absolute paths, `..` traversal). Tool inputs come
  * from a model and the tools are callable by any chat model in the editor,
- * so the path is untrusted.
+ * so the path is untrusted. The path is first mapped to its workspace folder
+ * (see `resolveFolder`), then checked against that folder's root.
  *
  * The lexical check alone is not enough: a symlink that lives inside the
  * workspace can still point outside it, so every component of the resolved
@@ -32,9 +74,9 @@ function workspaceRoot(): vscode.Uri {
  * target) has nothing to follow, so a stat that fails is not an error here.
  */
 async function resolveWorkspaceUri(relPath: string): Promise<vscode.Uri> {
-  const root = workspaceRoot();
+  const { root, rel: relativeToRoot } = resolveFolder(relPath);
   const rootPath = path.resolve(root.fsPath);
-  const target = path.resolve(rootPath, relPath);
+  const target = path.resolve(rootPath, relativeToRoot);
   const rel = path.relative(rootPath, target);
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(`Path is outside the workspace: ${relPath}`);
@@ -110,28 +152,45 @@ export async function readFile(
   );
 }
 
-/** Search by glob (file names) or by content. Read-only: no approval needed. */
-export async function searchFiles(
-  query: string,
-  mode: 'glob' | 'content'
-): Promise<string[]> {
-  if (mode === 'glob') {
-    const uris = await vscode.workspace.findFiles(
-      query,
-      settings.search.excludeGlob,
-      settings.search.globMaxResults
-    );
-    return uris.map((u) => vscode.workspace.asRelativePath(u));
-  }
+/** One content-search hit: a 1-based line number and a trimmed preview of that line. */
+export interface ContentMatch {
+  path: string;
+  line: number;
+  preview: string;
+}
 
-  // Content search: scan candidate files for the query string.
+/**
+ * Trim a matched line for the preview and cap its length, so one very long
+ * line (a minified bundle, a data blob) cannot flood the result. The trailing
+ * CR of a CRLF line is stripped first, since the file is split on `\n`.
+ */
+function previewLine(line: string): string {
+  const trimmed = line.replace(/\r$/, '').trim();
+  const max = settings.search.contentPreviewMaxChars;
+  return trimmed.length > max ? trimmed.slice(0, max) + '…' : trimmed;
+}
+
+/**
+ * Scan candidate files for `query` and return one match per line that contains
+ * it (1-based line number + a trimmed line preview). Keeps the same scan,
+ * size, and binary guards as before: an oversized file is rejected by its stat
+ * size and never read into memory, and a NUL byte marks binary content that is
+ * skipped. A per-file match cap (`contentMaxMatchesPerFile`) stops one busy
+ * file (a log) from eating the whole budget, and the overall
+ * `contentMaxMatches` cap stops the scan early. Used both by the `search` tool
+ * (content mode) and by the client's `#codebase` resolver.
+ */
+export async function searchContent(query: string): Promise<ContentMatch[]> {
   const uris = await vscode.workspace.findFiles(
     '**/*',
     settings.search.excludeGlob,
     settings.search.contentScanLimit
   );
-  const matches: string[] = [];
+  const matches: ContentMatch[] = [];
   for (const uri of uris) {
+    if (matches.length >= settings.search.contentMaxMatches) {
+      break;
+    }
     try {
       // Check the size via stat before reading, so an oversized file is never
       // pulled into memory just to be discarded - the cap bounds memory, not
@@ -146,15 +205,56 @@ export async function searchFiles(
       if (bytes.includes(0)) {
         continue;
       }
-      if (Buffer.from(bytes).toString('utf8').includes(query)) {
-        matches.push(vscode.workspace.asRelativePath(uri));
+      const text = Buffer.from(bytes).toString('utf8');
+      // A cheap whole-file reject before the per-line scan.
+      if (!text.includes(query)) {
+        continue;
+      }
+      const relPath = vscode.workspace.asRelativePath(uri);
+      const lines = text.split('\n');
+      let perFile = 0;
+      for (let i = 0; i < lines.length; i++) {
+        if (!lines[i].includes(query)) {
+          continue;
+        }
+        matches.push({ path: relPath, line: i + 1, preview: previewLine(lines[i]) });
+        perFile++;
+        if (perFile >= settings.search.contentMaxMatchesPerFile) {
+          break;
+        }
+        if (matches.length >= settings.search.contentMaxMatches) {
+          break;
+        }
       }
     } catch {
       // Skip unreadable files.
     }
-    if (matches.length >= settings.search.contentMaxMatches) break;
   }
   return matches;
+}
+
+/**
+ * Search by glob (file names) or by content. Read-only: no approval needed.
+ * Glob mode returns workspace-relative paths; content mode returns one
+ * `path:line: <trimmed preview>` line per match, so the model learns where a
+ * file matches and can follow up with a ranged `read` around that line instead
+ * of reading the file from the start.
+ */
+export async function searchFiles(
+  query: string,
+  mode: 'glob' | 'content'
+): Promise<string[]> {
+  if (mode === 'glob') {
+    const uris = await vscode.workspace.findFiles(
+      query,
+      settings.search.excludeGlob,
+      settings.search.globMaxResults
+    );
+    return uris.map((u) => vscode.workspace.asRelativePath(u));
+  }
+
+  const matches = await searchContent(query);
+  return matches.map((m) => `${m.path}:${m.line}: ${m.preview}`);
 }
 
 /**
@@ -212,13 +312,30 @@ export async function runCommand(
   mirror?: RunMirror,
   signal?: AbortSignal
 ): Promise<string> {
+  // An untrusted folder (Restricted Mode) or a virtual workspace cannot run a
+  // shell command; refuse before the approval prompt so the user is never
+  // asked to confirm an action that cannot happen, and the model gets a reason
+  // it can relay.
+  if (!vscode.workspace.isTrusted) {
+    return messages.restricted.run;
+  }
+  if (isVirtualWorkspace()) {
+    return messages.virtual.run;
+  }
+  const folders = vscode.workspace.workspaceFolders;
   const cwd = workspaceRoot().fsPath;
   // A request cancelled before (or during) the approval prompt must not start
   // a process.
   if (signal?.aborted) {
     return messages.cancelled.run;
   }
-  const ok = await approver.confirm(messages.approval.runCommandTitle, '$ ' + command);
+  // In a multi-root workspace the command runs in the first folder; name it in
+  // the prompt so the user knows which directory the command lands in.
+  const cwdFolder = folders && folders.length > 1 ? folders[0].name : undefined;
+  const ok = await approver.confirm(
+    messages.approval.runCommandTitle,
+    messages.approval.runCommandDetail(command, cwdFolder)
+  );
   if (!ok) {
     // Declined commands never ran, so they never reach the mirror either.
     return messages.notApproved.run;
@@ -303,6 +420,11 @@ export async function writeFile(
   contents: string,
   signal?: AbortSignal
 ): Promise<string> {
+  // An untrusted folder (Restricted Mode) disables writing; refuse with a
+  // reason the model can relay rather than touching disk.
+  if (!vscode.workspace.isTrusted) {
+    return messages.restricted.write;
+  }
   // Resolve (and so validate) the path first: a traversal or symlink target
   // is rejected outright before anything touches disk.
   const uri = await resolveWorkspaceUri(relPath);
@@ -375,6 +497,11 @@ export async function editFile(
   newText: string,
   signal?: AbortSignal
 ): Promise<string> {
+  // An untrusted folder (Restricted Mode) disables editing; refuse with a
+  // reason the model can relay rather than touching disk.
+  if (!vscode.workspace.isTrusted) {
+    return messages.restricted.edit;
+  }
   // Resolve (and so validate) the path first: a traversal or symlink target
   // is rejected outright before anything touches disk.
   const uri = await resolveWorkspaceUri(relPath);

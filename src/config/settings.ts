@@ -226,10 +226,20 @@ export const settings = {
     get contentScanLimit(): number {
       return userLimit('search.contentScanLimit', defaults.search.contentScanLimit);
     },
-    /** Max matches collected before a content search stops early (`myDevTeam.search.contentMaxMatches`). */
+    /** Max match lines collected before a content search stops early (`myDevTeam.search.contentMaxMatches`). */
     get contentMaxMatches(): number {
       return userLimit('search.contentMaxMatches', defaults.search.contentMaxMatches);
     },
+    /**
+     * Max match lines reported from a single file, so one busy file (e.g. a log)
+     * cannot eat the whole `contentMaxMatches` budget. Compile-time.
+     */
+    contentMaxMatchesPerFile: 5,
+    /**
+     * Max characters of a matched line kept in a content-search preview; a
+     * longer line is trimmed (a `…` marker appended). Compile-time.
+     */
+    contentPreviewMaxChars: 200,
     /**
      * Folders the `search` tool never looks into. Passing an explicit exclude
      * to findFiles replaces VS Code's default excludes, so the usual noise
@@ -238,6 +248,22 @@ export const settings = {
     excludeGlob: '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/coverage/**}',
     /** Files larger than this are skipped by a content search. */
     maxFileSizeBytes: 1024 * 1024,
+  },
+
+  /**
+   * Self-repair for the structured-output steps (triage, the planner). Small
+   * local models routinely emit JSON that fails schema validation; rather than
+   * fail the whole run on one bad generation, the step re-asks the same agent
+   * with the validation error appended. Compile-time: the cost is bounded model
+   * calls, not something an end user tunes.
+   */
+  structuredOutput: {
+    /**
+     * Extra generations allowed after a schema-validation failure before the
+     * step fails for real. `0` disables self-repair (the first bad object fails
+     * the run, as before); `1` (the default) gives one corrective retry.
+     */
+    repairAttempts: 1,
   },
 
   /** Limits on the executor's tool-calling loop and its transcript previews. */

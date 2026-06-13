@@ -153,6 +153,14 @@ describe('settings', () => {
     );
   });
 
+  it('exposes positive content-search per-file and preview caps', () => {
+    expect(settings.search.contentMaxMatchesPerFile).toBeGreaterThan(0);
+    expect(settings.search.contentMaxMatchesPerFile).toBeLessThanOrEqual(
+      settings.search.contentMaxMatches
+    );
+    expect(settings.search.contentPreviewMaxChars).toBeGreaterThan(0);
+  });
+
   it('exposes a positive glob result cap', () => {
     expect(settings.search.globMaxResults).toBeGreaterThan(0);
   });
@@ -166,6 +174,10 @@ describe('settings', () => {
     expect(settings.executor.maxSteps).toBeGreaterThan(0);
     expect(settings.executor.inputPreviewMaxChars).toBeGreaterThan(0);
     expect(settings.executor.resultPreviewMaxChars).toBeGreaterThan(0);
+  });
+
+  it('exposes a non-negative structured-output repair attempt count', () => {
+    expect(settings.structuredOutput.repairAttempts).toBeGreaterThanOrEqual(0);
   });
 
   it('exposes the tool hardening limits', () => {
