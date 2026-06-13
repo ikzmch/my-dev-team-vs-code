@@ -83,7 +83,10 @@ Then try a real request:
 
 The agent decides on its own whether your request is a question (it answers
 directly) or work on files (it plans, then executes). You watch the plan and
-an execution transcript stream into the chat as it happens.
+an execution transcript stream into the chat as it happens. On a longer task it
+also prints a **Progress** checklist from time to time - the plan steps with
+each one ticked off as it goes - so you can see where it stands without reading
+every tool call.
 
 ## 4. Slash commands
 

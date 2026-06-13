@@ -1,6 +1,6 @@
 import { Agent } from '@mastra/core/agent';
 import { resolveModel } from './models';
-import { buildAgentTools } from './agentTools';
+import { buildAgentTools, PROGRESS_TOOL, ProgressReportSchema } from './agentTools';
 import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
 import { selectModel } from '../config/models';
@@ -182,6 +182,19 @@ export class Executor {
         }
         case 'tool-call': {
           const tool = String(chunk.payload?.toolName ?? '');
+          // The progress tool is engine-only: rather than a transcript tool
+          // call, its arguments become a `progress` checklist event. A
+          // malformed or empty report is dropped (it only fails to render,
+          // never the run), and its result chunk is ignored below because it
+          // was never put in `pendingCalls`.
+          if (tool === PROGRESS_TOOL) {
+            const parsed = ProgressReportSchema.safeParse(chunk.payload?.args);
+            if (parsed.success && parsed.data.items.length > 0) {
+              events.push({ kind: 'progress', items: parsed.data.items });
+              emit();
+            }
+            break;
+          }
           const snippet = inputSnippet(tool, chunk.payload?.args);
           const event = {
             kind: 'tool' as const,

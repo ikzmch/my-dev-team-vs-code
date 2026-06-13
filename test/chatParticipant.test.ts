@@ -1413,6 +1413,42 @@ describe('renderReply', () => {
     expect(renderReply(progress(aPlan), true)).not.toContain('not yet implemented');
   });
 
+  it('renders a progress event as a checklist resolved against the plan', () => {
+    const reply: ReplyProgress = {
+      intent: 'planning',
+      reason: 'needs steps',
+      plan: aPlan,
+      execution: {
+        events: [
+          {
+            kind: 'progress',
+            items: [
+              { step: 1, status: 'done' },
+              { step: 2, status: 'in_progress' },
+            ],
+          },
+        ],
+      },
+    };
+    const text = renderReply(reply, true);
+    expect(text).toContain('**Progress:**');
+    // The step number resolves to the plan title; done is checked, in-progress noted.
+    expect(text).toContain('- [x] Find the file');
+    expect(text).toContain('- [ ] Think _(in progress)_');
+  });
+
+  it('falls back to a bare step label when a reported step is out of range', () => {
+    const reply: ReplyProgress = {
+      intent: 'planning',
+      reason: 'needs steps',
+      plan: aPlan,
+      execution: {
+        events: [{ kind: 'progress', items: [{ step: 9, status: 'pending' }] }],
+      },
+    };
+    expect(renderReply(reply, true)).toContain('- [ ] Step 9');
+  });
+
   it('appends the not-executed note only to a finished plan-only reply', () => {
     // Finished with a plan and no transcript: the /plan path.
     expect(renderReply(progress(aPlan), true)).toContain('nothing was executed');

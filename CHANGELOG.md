@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-06-13
+
+### Added
+
+- **Progress checklists during execution.** As it carries out a plan, the agent
+  now prints a "Progress" checklist from time to time - the plan steps with each
+  one's status (done, in progress, or pending) - so you can see where things
+  stand on a long multi-step task. The agent decides when to show it; it never
+  pauses the work or adds steps, it only reports.
+
 ## [0.23.1] - 2026-06-13
 
 ### Changed

@@ -9,6 +9,7 @@
  * hint is a template the LocalEngine fills in - which model is routed where
  * is engine knowledge the client no longer has.
  */
+import type { ProgressStatus } from '../protocol/types';
 
 /**
  * Wrap untrusted content (a command, a file path, a written-file snippet) in a
@@ -185,6 +186,21 @@ export const messages = {
     snippet: (snippet: string) => '\n\n' + fence(snippet, 4),
     /** Shown in a result slot when the tool produced no output at all. */
     emptyResult: '(no output)',
+    /**
+     * A self-reported progress snapshot the executor prints from time to time:
+     * a markdown checklist of plan steps with their status. The caller resolves
+     * each reported step number to its plan title before calling this; a "done"
+     * step is checked, an "in_progress" step is noted, a "pending" step is bare.
+     */
+    progress: (items: readonly { title: string; status: ProgressStatus }[]) =>
+      '\n\n**Progress:**\n' +
+      items
+        .map((item) => {
+          const box = item.status === 'done' ? '[x]' : '[ ]';
+          const note = item.status === 'in_progress' ? ' _(in progress)_' : '';
+          return `- ${box} ${item.title}${note}`;
+        })
+        .join('\n'),
   },
 
   run: {

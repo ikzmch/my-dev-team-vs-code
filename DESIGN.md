@@ -303,7 +303,7 @@ never carry literals inline.
 | ------------------------------- | ------------------------------------------------------------- |
 | `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
 | `engine/config/models/*.md`     | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
-| `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts` |
+| `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, `plannable` - default true; false for engine-only tools like `progress` that the executor uses but the planner must not plan with, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` tool has no client half |
 | `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
 | `engine/config/models.ts`       | Discovers the model files, exports the registry and the capability-based `selectModel` |
@@ -532,6 +532,20 @@ decisions, in the order they matter:
   (`settings.executor.*PreviewMaxChars`): the model saw the full values, the
   transcript only shows the user what happened. A run-level `error` chunk throws, failing the workflow step so
   the UI renders the executor error with the Ollama hint.
+- **Progress checklists.** The executor also carries one engine-only tool,
+  `progress` (`config/tools/progress.md`, `plannable: false` so it never
+  enters a plan step, no client implementation, no approval gate). The system
+  prompt tells the model to call it from time to time - when it starts a step
+  and as steps complete - passing the plan steps it wants to show by their
+  1-based numbers with a status (`pending`/`in_progress`/`done`). The executor
+  intercepts that `tool-call` chunk and, instead of a `tool` event, folds it
+  into a `progress` event (a third `ExecutionEvent` kind) carrying just the
+  reported step numbers and statuses; its result chunk is ignored. The model
+  decides when to report, and the work continues in the same loop - the
+  progress tool only prints a checklist, it never breaks the run between steps.
+  A malformed or empty report is dropped (it fails to render, never the run).
+  The client resolves each step number to its plan title at render time, so
+  the event stays small and cannot drift from the drafted plan.
 - **Streaming snapshots.** Like the planner's partial plans, the executor
   forwards grow-only snapshots to an optional `onPartial` callback: events
   are only appended, and only the last event still changes (a text event
@@ -737,6 +751,10 @@ Out of the box, `@devteam <prompt>`:
    file (and an `edit` call the first lines of its replacement text) in a
    fenced snippet under its line (`myDevTeam.chat.toolSnippetLines`,
    default 5; `0` hides it); longer content ends in an `…(truncated)` line.
+   From time to time the executor also calls its engine-only `progress` tool,
+   which renders inline as a "**Progress:**" checklist of the plan steps with
+   each one's status (done steps checked, the in-progress step noted); it only
+   prints, so the loop keeps working without pausing between steps.
 7. A `run` call still asks first: when the loop reaches one the `ChatApprover`
    renders the command into the chat, followed by Approve and Decline buttons,
    and waits for the click. A cancelled request declines pending approvals

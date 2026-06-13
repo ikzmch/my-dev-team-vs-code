@@ -15,6 +15,7 @@ import {
   loadTools,
   toolConfigs,
   toolNames,
+  plannableToolNames,
   renderToolsSection,
 } from '../src/engine/config/tools';
 import { clientTools, clientToolNames } from '../src/protocol/toolContract';
@@ -443,9 +444,26 @@ describe('environment', () => {
 });
 
 describe('tool configs', () => {
-  it('discovers the five workspace tools', () => {
+  it('discovers the five workspace tools plus the engine-only progress tool', () => {
     // Order follows the config filenames, so compare as a sorted set.
-    expect([...toolNames].sort()).toEqual(['edit', 'read', 'run', 'search', 'write']);
+    expect([...toolNames].sort()).toEqual([
+      'edit',
+      'progress',
+      'read',
+      'run',
+      'search',
+      'write',
+    ]);
+    // The planner may only draft with the workspace tools; progress is
+    // executor-only (plannable: false) so it never enters a plan step.
+    expect([...plannableToolNames].sort()).toEqual([
+      'edit',
+      'read',
+      'run',
+      'search',
+      'write',
+    ]);
+    expect(toolConfigs.progress.plannable).toBe(false);
   });
 
   it('marks only run as side-effecting; read, search, write, and edit are not', () => {
@@ -459,10 +477,12 @@ describe('tool configs', () => {
   });
 
   it('agrees with the protocol contract on the tool vocabulary', () => {
-    // The engine's tool configs (model-facing) and the protocol's client
-    // tools (ids, display names, input schemas) describe the same five
-    // tools; a tool added on one side only would silently break the other.
-    expect([...toolNames].sort()).toEqual([...clientToolNames].sort());
+    // The engine's plannable tool configs (model-facing) and the protocol's
+    // client tools (ids, display names, input schemas) describe the same five
+    // workspace tools; a tool added on one side only would silently break the
+    // other. The engine-only progress tool has no client contract.
+    expect([...plannableToolNames].sort()).toEqual([...clientToolNames].sort());
+    expect(clientToolNames).not.toContain('progress');
     for (const name of clientToolNames) {
       expect(clientTools[name].lmToolId).toBe(`devteam__${name}`);
       expect(clientTools[name].displayName).toBeTruthy();
@@ -571,13 +591,17 @@ describe('agent configs', () => {
     expect(agents.executor.capabilities.coding).toBe(1);
   });
 
-  it('keeps the executor contract: all five tools, decline handling, a report', () => {
+  it('keeps the executor contract: all tools, decline handling, a report', () => {
+    // The executor carries every tool, including the engine-only progress tool.
     expect([...agents.executor.tools].sort()).toEqual([...toolNames].sort());
     const p = agents.executor.instructions;
     expect(p).not.toContain('{{tools}}');
-    expect(p).toContain('You have exactly 5 tools available:');
+    expect(p).toContain('You have exactly 6 tools available:');
     expect(p).toContain('not approved');
     expect(p).toMatch(/report/i);
+    // It is told to print a progress checklist from time to time.
+    expect(p).toContain('"progress"');
+    expect(p).toMatch(/from time to time/i);
   });
 
   it('tells the run-capable agents which OS and shell they work on', () => {
@@ -638,8 +662,11 @@ describe('agent configs', () => {
     expect(p).toContain('create a python script');
   });
 
-  it('keeps the planner contract: all five tools, the step cap, and JSON output', () => {
-    expect([...agents.planner.tools].sort()).toEqual([...toolNames].sort());
+  it('keeps the planner contract: the five plannable tools, the step cap, and JSON output', () => {
+    // The planner plans only with the workspace tools; the engine-only
+    // progress tool must not be in its vocabulary.
+    expect([...agents.planner.tools].sort()).toEqual([...plannableToolNames].sort());
+    expect(agents.planner.tools).not.toContain('progress');
     const p = agents.planner.instructions;
     expect(p).toContain('never more than 8');
     expect(p).toMatch(/JSON object/i);
@@ -661,9 +688,11 @@ describe('agent configs', () => {
     const p = agents.planner.instructions;
     expect(p).not.toContain('{{tools}}');
     expect(p).toContain('You have exactly 5 tools available:');
-    for (const name of toolNames) {
+    for (const name of plannableToolNames) {
       expect(p).toContain(`- "${name}": ${toolConfigs[name].description}`);
     }
+    // The engine-only progress tool is never advertised to the planner.
+    expect(p).not.toContain(`- "progress":`);
     // The placeholder position is honoured: tools come before the rules.
     expect(p.indexOf('tools available')).toBeLessThan(p.indexOf('Rules:'));
   });

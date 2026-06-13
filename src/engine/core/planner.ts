@@ -4,7 +4,7 @@ import { resolveModel } from './models';
 import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
 import { selectModel } from '../config/models';
-import { toolNames } from '../config/tools';
+import { plannableToolNames } from '../config/tools';
 import { PartialPlan, Plan } from '../../protocol/types';
 
 export type { PartialPlan, PartialPlanStep } from '../../protocol/types';
@@ -16,14 +16,15 @@ export type { PartialPlan, PartialPlanStep } from '../../protocol/types';
  * (./executor.ts) then walks these steps and drives the tool-calling loop.
  *
  * This is the generation schema: its describe() strings steer the model and
- * its `tool` hint enum is derived from the tool configs in ../config/tools
- * (the same registry the planner's prompt section is rendered from), plus
- * "none" for a step that is pure reasoning. The protocol's PlanSchema
- * (src/protocol/types.ts) is the wire shape of the same data, without the
- * prompt material; anything this schema accepts the protocol schema accepts.
+ * its `tool` hint enum is derived from the plannable tool configs in
+ * ../config/tools (the same registry the planner's prompt section is rendered
+ * from, minus engine-only tools like `progress`), plus "none" for a step that
+ * is pure reasoning. The protocol's PlanSchema (src/protocol/types.ts) is the
+ * wire shape of the same data, without the prompt material; anything this
+ * schema accepts the protocol schema accepts.
  */
 // "none" leads so the enum stays well-formed even with an empty tool registry.
-const planTools: [string, ...string[]] = ['none', ...toolNames];
+const planTools: [string, ...string[]] = ['none', ...plannableToolNames];
 
 export const PlanStepSchema = z.object({
   title: z

@@ -4,6 +4,14 @@ The deliverable is a multi-file or workspace-aware change. A good plan here
 starts with exploration steps (search/read) before any edit or command, and
 may use most of the 8-step budget.
 
+On runs this long the agent prints a **Progress** checklist from time to time
+as it works: the plan steps with each one's status, the done ones ticked off
+and the current one marked in progress. It shows up inline in the execution
+output, so you can glance at where things stand without reading every tool
+call. The agent decides when to show it - it does not pause the work or add
+steps, it just reports. The examples below are the kind of multi-step request
+where you will see it update a few times before the run finishes.
+
 ## Multi-file project from scratch
 
 ```

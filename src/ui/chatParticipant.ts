@@ -346,11 +346,24 @@ function toolDisplayName(tool: string): string {
  * snippet (e.g. the first lines of a written file) is held back with the
  * result so it can render beneath the completed line.
  */
-function formatExecution(execution: PartialExecution, done: boolean): string {
+function formatExecution(
+  execution: PartialExecution,
+  plan: PartialPlan | undefined,
+  done: boolean
+): string {
   let text = messages.execution.header;
   for (const event of execution.events) {
     if (event.kind === 'text') {
       text += '\n\n' + event.text;
+    } else if (event.kind === 'progress') {
+      // Resolve each reported step number to its plan title (the event carries
+      // only the number, so the checklist cannot drift from the plan); an
+      // out-of-range number falls back to a bare "Step N" label.
+      const items = event.items.map((item) => ({
+        title: plan?.steps?.[item.step - 1]?.title ?? `Step ${item.step}`,
+        status: item.status,
+      }));
+      text += messages.execution.progress(items);
     } else {
       text += messages.execution.call(toolDisplayName(event.tool), inlinePreview(event.input));
       if (event.result !== undefined) {
@@ -378,7 +391,7 @@ export function renderReply(reply: ReplyProgress | Reply, done: boolean): string
     // can be rendered unconservatively even while the run is still going.
     text += formatPlan(reply.plan, done || reply.execution !== undefined);
     if (reply.execution) {
-      text += '\n\n' + formatExecution(reply.execution, done);
+      text += '\n\n' + formatExecution(reply.execution, reply.plan, done);
     } else if (done) {
       // A finished run whose reply holds a plan but no transcript is the
       // /plan command's plan-only path; in-flight snapshots (`done` false)

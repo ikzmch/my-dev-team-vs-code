@@ -227,6 +227,61 @@ describe('Executor', () => {
     });
   });
 
+  it('turns a progress tool call into a progress event and drops its result', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: {
+            toolCallId: 'p1',
+            toolName: 'progress',
+            args: { items: [{ step: 1, status: 'done' }, { step: 2, status: 'in_progress' }] },
+          },
+        },
+        // The engine-only progress tool still returns an ack; it must not show
+        // up as a tool result in the transcript.
+        {
+          type: 'tool-result',
+          payload: { toolCallId: 'p1', toolName: 'progress', result: 'Progress shown to the user.' },
+        },
+        { type: 'text-delta', payload: { id: 't1', text: 'Working.' } },
+      ])
+    );
+
+    await expect(new Executor(toolHostStub).execute('do it')).resolves.toEqual({
+      events: [
+        {
+          kind: 'progress',
+          items: [
+            { step: 1, status: 'done' },
+            { step: 2, status: 'in_progress' },
+          ],
+        },
+        { kind: 'text', text: 'Working.' },
+      ],
+    });
+  });
+
+  it('drops a malformed or empty progress report instead of failing the run', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        {
+          type: 'tool-call',
+          payload: { toolCallId: 'p1', toolName: 'progress', args: { items: [] } },
+        },
+        {
+          type: 'tool-call',
+          payload: { toolCallId: 'p2', toolName: 'progress', args: { wrong: true } },
+        },
+        { type: 'text-delta', payload: { id: 't1', text: 'Done.' } },
+      ])
+    );
+
+    await expect(new Executor(toolHostStub).execute('do it')).resolves.toEqual({
+      events: [{ kind: 'text', text: 'Done.' }],
+    });
+  });
+
   it('forwards grow-only snapshots to the callback in order', async () => {
     streamMock.mockResolvedValue(fakeChunkOutput(toolLoop));
 
@@ -296,7 +351,7 @@ describe('Executor', () => {
     });
   });
 
-  it('is configured with executor instructions and the five workspace tools', () => {
+  it('is configured with executor instructions, the workspace tools, and progress', () => {
     new Executor(toolHostStub);
     const config = agentCtor.mock.calls[0][0] as {
       id: string;
@@ -307,6 +362,7 @@ describe('Executor', () => {
     expect(config.instructions).toContain('executor');
     expect(Object.keys(config.tools).sort()).toEqual([
       'edit',
+      'progress',
       'read',
       'run',
       'search',

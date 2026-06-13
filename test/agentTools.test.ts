@@ -25,14 +25,32 @@ function invoke(tool: { execute?: Function }, input: unknown): Promise<unknown> 
 }
 
 describe('buildAgentTools', () => {
-  it('exposes the five workspace tools under their config names', () => {
+  it('exposes the five workspace tools plus the engine-only progress tool', () => {
     const tools = buildAgentTools(makeHost());
-    expect(Object.keys(tools).sort()).toEqual(['edit', 'read', 'run', 'search', 'write']);
+    expect(Object.keys(tools).sort()).toEqual([
+      'edit',
+      'progress',
+      'read',
+      'run',
+      'search',
+      'write',
+    ]);
     for (const [name, tool] of Object.entries(tools)) {
       expect(tool.id).toBe(toolConfigs[name].name);
       expect(tool.description).toBe(toolConfigs[name].description);
       expect(tool.inputSchema).toBeDefined();
     }
+  });
+
+  it('builds progress as a local tool that acknowledges without a host call', async () => {
+    const host = makeHost();
+    const tools = buildAgentTools(host);
+    const result = await invoke(tools.progress, {
+      items: [{ step: 1, status: 'done' }],
+    });
+    expect(result).toBe('Progress shown to the user.');
+    // The progress tool never delegates to the ToolHost.
+    expect(host.calls).toHaveLength(0);
   });
 
   it('delegates each call to the ToolHost with the tool name and args', async () => {

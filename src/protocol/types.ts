@@ -159,9 +159,34 @@ export const ToolEventSchema = z.object({
   failed: z.boolean().optional(),
 });
 
+/**
+ * A self-reported checklist snapshot the executor prints from time to time
+ * while it works (via the engine-only `progress` tool): the status of the
+ * plan steps it chooses to show. It carries the plan step numbers, not their
+ * titles - the client already has the plan and resolves the titles at render
+ * time, so the event stays small and cannot drift from the drafted plan. The
+ * model decides when to emit one; it never breaks the run between steps.
+ */
+export const ProgressStatusSchema = z.enum(['pending', 'in_progress', 'done']);
+export type ProgressStatus = z.infer<typeof ProgressStatusSchema>;
+
+export const ProgressItemSchema = z.object({
+  /** 1-based index into the drafted plan's steps. */
+  step: z.number().int().min(1),
+  status: ProgressStatusSchema,
+});
+export type ProgressItem = z.infer<typeof ProgressItemSchema>;
+
+export const ProgressEventSchema = z.object({
+  kind: z.literal('progress'),
+  /** The reported steps, in the order the model listed them. */
+  items: z.array(ProgressItemSchema),
+});
+
 export const ExecutionEventSchema = z.discriminatedUnion('kind', [
   TextEventSchema,
   ToolEventSchema,
+  ProgressEventSchema,
 ]);
 
 export const ExecutionSchema = z.object({
