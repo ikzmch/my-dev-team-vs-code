@@ -36,28 +36,13 @@ export const messages = {
   ollamaHint: (endpoint: string, model: string) =>
     `Is Ollama running on ${endpoint} with \`${model}\` pulled?\n\n`,
 
-  /** Copy for the side-effecting tools' approval gate. */
+  /**
+   * Copy for the `run` tool's approval gate. Only `run` is gated; `write` and
+   * `edit` are not (the workspace is git-backed, so their changes are
+   * recoverable - see DESIGN.md).
+   */
   approval: {
     runCommandTitle: 'Run command',
-    writeFileTitle: 'Write file',
-    editFileTitle: 'Edit file',
-    /**
-     * Preview of a pending write shown in the approval question: the target
-     * path above the leading new contents (already capped by the caller, see
-     * settings.writeApprovalPreviewMaxChars).
-     */
-    writeFileDetail: (path: string, preview: string) => `${path}\n\n${preview}`,
-    /**
-     * Preview of a pending edit shown in the approval question: the target
-     * path above a diff-style old/new pair, each side's lines prefixed so the
-     * user sees exactly what is removed and what replaces it (both sides
-     * already capped by the caller).
-     */
-    editFileDetail: (path: string, oldText: string, newText: string) => {
-      const prefix = (mark: string, text: string) =>
-        text.split('\n').map((line) => `${mark} ${line}`).join('\n');
-      return `${path}\n\n${prefix('-', oldText)}\n${prefix('+', newText)}`;
-    },
     /** The in-chat approval question: the action title plus its preview. */
     block: (title: string, detail: string) =>
       `\n\n**${title}?**\n\n${fence(detail, 3)}\n`,
@@ -66,16 +51,15 @@ export const messages = {
     decline: 'Decline',
   },
 
-  /** Returned to the model when the user declines a side-effecting tool. */
+  /** Returned to the model when the user declines the (gated) run tool. */
   notApproved: {
     run: 'Command was not approved by the user.',
-    write: 'Write was not approved by the user; the file was not changed.',
-    edit: 'Edit was not approved by the user; the file was not changed.',
   },
 
   /**
-   * Returned to the model when the request was cancelled before a
-   * side-effecting tool applied, so it can note the skip in its report.
+   * Returned to the model when the request was cancelled before a tool
+   * applied, so it can note the skip in its report. `run` is the only gated
+   * tool, but `write`/`edit` are still cancellable mid-run by the stop button.
    */
   cancelled: {
     run: 'Command was cancelled before running.',

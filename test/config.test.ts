@@ -66,30 +66,11 @@ describe('messages templates', () => {
     expect(messages.notApproved.run).toMatch(/not.*approved/i);
   });
 
-  it('provides an approval title and decline reply for the write tool', () => {
-    expect(messages.approval.writeFileTitle).toBeTruthy();
-    expect(messages.notApproved.write).toMatch(/not.*approved/i);
-    // The model is told the file was untouched, so it can report the skip.
-    expect(messages.notApproved.write).toMatch(/not changed/i);
-  });
-
-  it('renders the write approval detail as the path above the contents', () => {
-    expect(messages.approval.writeFileDetail('src/a.ts', 'const a = 1;')).toBe(
-      'src/a.ts\n\nconst a = 1;'
-    );
-  });
-
-  it('provides an approval title and decline reply for the edit tool', () => {
-    expect(messages.approval.editFileTitle).toBeTruthy();
-    expect(messages.notApproved.edit).toMatch(/not.*approved/i);
-    // The model is told the file was untouched, so it can report the skip.
-    expect(messages.notApproved.edit).toMatch(/not changed/i);
-  });
-
-  it('renders the edit approval detail as a diff-style old/new pair', () => {
-    expect(
-      messages.approval.editFileDetail('src/a.ts', 'old1\nold2', 'new1')
-    ).toBe('src/a.ts\n\n- old1\n- old2\n+ new1');
+  it('still reports a cancelled write or edit, the only ungated side effects', () => {
+    // write/edit are not gated, but a mid-run stop still cancels them, so the
+    // model can note the skip in its report.
+    expect(messages.cancelled.write).toMatch(/not changed/i);
+    expect(messages.cancelled.edit).toMatch(/not changed/i);
   });
 
   it('renders the read range header with a continue hint only mid-file', () => {
@@ -191,7 +172,6 @@ describe('settings', () => {
   it('exposes the tool hardening limits', () => {
     expect(settings.read.maxLines).toBeGreaterThan(0);
     expect(settings.read.maxChars).toBeGreaterThan(0);
-    expect(settings.writeApprovalPreviewMaxChars).toBeGreaterThan(0);
     expect(settings.runCommandMaxBufferBytes).toBeGreaterThan(0);
     expect(settings.search.maxFileSizeBytes).toBeGreaterThan(0);
     // The exclude glob replaces VS Code's defaults, so it must at least keep
@@ -468,12 +448,14 @@ describe('tool configs', () => {
     expect([...toolNames].sort()).toEqual(['edit', 'read', 'run', 'search', 'write']);
   });
 
-  it('marks run, write, and edit as side-effecting; read and search are not', () => {
+  it('marks only run as side-effecting; read, search, write, and edit are not', () => {
+    // write/edit are not gated - the workspace is git-backed, so their changes
+    // are recoverable; only run still asks before acting.
     expect(toolConfigs.read.sideEffecting).toBe(false);
     expect(toolConfigs.search.sideEffecting).toBe(false);
+    expect(toolConfigs.write.sideEffecting).toBe(false);
+    expect(toolConfigs.edit.sideEffecting).toBe(false);
     expect(toolConfigs.run.sideEffecting).toBe(true);
-    expect(toolConfigs.write.sideEffecting).toBe(true);
-    expect(toolConfigs.edit.sideEffecting).toBe(true);
   });
 
   it('agrees with the protocol contract on the tool vocabulary', () => {
@@ -525,12 +507,12 @@ describe('tool configs', () => {
     expect(section).toContain('Requires user approval.');
   });
 
-  it('flags the write tool as needing approval', () => {
-    // The prompts must announce the gate, so a model treats "not approved"
-    // as a user decision to skip, not as a tool failure to retry.
+  it('does not flag the write tool as needing approval', () => {
+    // write is not gated, so its rendered description must not claim approval -
+    // that would mislead the model into treating a write as a user decision.
     const section = renderToolsSection(['write']);
     expect(section).toContain('- "write": Create or overwrite a file.');
-    expect(section).toContain('Requires user approval.');
+    expect(section).not.toContain('Requires user approval.');
   });
 
   it('rejects an unknown tool name', () => {

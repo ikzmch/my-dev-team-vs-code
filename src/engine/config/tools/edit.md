@@ -1,6 +1,6 @@
 ---
 name: edit
-sideEffecting: true
+sideEffecting: false
 previewArg: path
 snippetArg: newText
 ---

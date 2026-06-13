@@ -290,36 +290,23 @@ function combineOutput(stdout: string, stderr: string): string {
 }
 
 /**
- * Create or overwrite a file. SIDE-EFFECTING: gated by the Approver. An
- * in-workspace overwrite is destructive (source, configs, dotfiles) and has
- * no undo, so the user approves the target path and a capped preview of the
- * new contents before anything lands on disk.
+ * Create or overwrite a file. Not gated by the Approver: the workspace is
+ * git-backed, so a clobbered file is recoverable, and writing is the
+ * executor's core job - prompting on every file would make a routine
+ * multi-file change unusable. The safety that matters here is still enforced:
+ * path traversal and symlink targets are rejected outright, and a cancelled
+ * request never lands a file. See the "Approvals" section in DESIGN.md for why
+ * write/edit are intentionally ungated while `run` still asks.
  */
 export async function writeFile(
   relPath: string,
   contents: string,
-  approver: Approver,
   signal?: AbortSignal
 ): Promise<string> {
   // Resolve (and so validate) the path first: a traversal or symlink target
-  // is rejected outright and never reaches the approval prompt.
+  // is rejected outright before anything touches disk.
   const uri = await resolveWorkspaceUri(relPath);
-  // A request cancelled before (or during) the approval prompt must not land
-  // a file on disk.
-  if (signal?.aborted) {
-    return messages.cancelled.write;
-  }
-  const preview =
-    contents.length > settings.writeApprovalPreviewMaxChars
-      ? contents.slice(0, settings.writeApprovalPreviewMaxChars) + '\n…(truncated)'
-      : contents;
-  const ok = await approver.confirm(
-    messages.approval.writeFileTitle,
-    messages.approval.writeFileDetail(relPath, preview)
-  );
-  if (!ok) {
-    return messages.notApproved.write;
-  }
+  // A cancelled request (the chat stop button) must not land a file on disk.
   if (signal?.aborted) {
     return messages.cancelled.write;
   }
@@ -341,13 +328,6 @@ function matchLineEndings(fileText: string, snippet: string): string {
 
 function countOccurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
-}
-
-/** Cap one side of the edit approval preview. */
-function editPreview(text: string): string {
-  return text.length > settings.writeApprovalPreviewMaxChars
-    ? text.slice(0, settings.writeApprovalPreviewMaxChars) + '\n…(truncated)'
-    : text;
 }
 
 /**
@@ -380,31 +360,30 @@ function locateEdit(
 }
 
 /**
- * Replace text in an existing file. SIDE-EFFECTING: gated by the Approver
- * with a diff-style old/new preview. The replaced text must match exactly one
- * place in the file - zero or multiple matches return a recovery instruction
- * to the model instead of touching the file, so a misremembered snippet can
- * never corrupt it. Creating files stays the write tool's job: a missing
- * target is an error here, not an empty file to fill.
- *
- * The file is re-read and the match re-verified after approval: the prompt
- * can stay open for a while, and applying a replacement computed from the
- * pre-approval snapshot would silently revert whatever changed the file in
- * the meantime (the user typing, a formatter, another tool call). A match
- * that no longer holds returns the usual recovery message instead of writing.
+ * Replace text in an existing file. Not gated by the Approver (see
+ * `writeFile`): the workspace is git-backed, so the change is recoverable. The
+ * replaced text must match exactly one place in the file - zero or multiple
+ * matches return a recovery instruction to the model instead of touching the
+ * file, so a misremembered snippet can never corrupt it. Creating files stays
+ * the write tool's job: a missing target is an error here, not an empty file
+ * to fill. The replacement is read, located, and written back-to-back with no
+ * pause in between, so no re-verification step is needed.
  */
 export async function editFile(
   relPath: string,
   oldText: string,
   newText: string,
-  approver: Approver,
   signal?: AbortSignal
 ): Promise<string> {
   // Resolve (and so validate) the path first: a traversal or symlink target
-  // is rejected outright and never reaches the approval prompt.
+  // is rejected outright before anything touches disk.
   const uri = await resolveWorkspaceUri(relPath);
   if (oldText === newText) {
     return messages.editFailed.identical;
+  }
+  // A cancelled request (the chat stop button) must not land an edit on disk.
+  if (signal?.aborted) {
+    return messages.cancelled.edit;
   }
   let bytes: Uint8Array;
   try {
@@ -417,44 +396,9 @@ export async function editFile(
   if ('failure' in located) {
     return located.failure;
   }
-
-  // A request cancelled before (or during) the approval prompt must not land
-  // an edit on disk.
-  if (signal?.aborted) {
-    return messages.cancelled.edit;
-  }
-  const ok = await approver.confirm(
-    messages.approval.editFileTitle,
-    messages.approval.editFileDetail(
-      relPath,
-      editPreview(located.needle),
-      editPreview(located.replacement)
-    )
-  );
-  if (!ok) {
-    return messages.notApproved.edit;
-  }
-  if (signal?.aborted) {
-    return messages.cancelled.edit;
-  }
-
-  // Re-read and re-verify: the edit applies to the file as it is now, not as
-  // it was when the prompt opened, so a concurrent change elsewhere in the
-  // file survives and a vanished or ambiguous match aborts cleanly.
-  let freshBytes: Uint8Array;
-  try {
-    freshBytes = await vscode.workspace.fs.readFile(uri);
-  } catch {
-    return messages.editFailed.missingFile(relPath);
-  }
-  const fresh = Buffer.from(freshBytes).toString('utf8');
-  const verified = locateEdit(fresh, relPath, oldText, newText);
-  if ('failure' in verified) {
-    return verified.failure;
-  }
   // The replacement goes through a function so replace() cannot interpret
   // `$&`-style patterns inside model-written code as substitutions.
-  const updated = fresh.replace(verified.needle, () => verified.replacement);
+  const updated = text.replace(located.needle, () => located.replacement);
   await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
   return `Edited ${relPath} (1 replacement).`;
 }

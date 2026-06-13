@@ -164,9 +164,9 @@ describe('ChatApprover', () => {
   it('renders the question with Approve/Decline buttons into the chat', async () => {
     const { approver, stream, click } = wiredApprover();
 
-    const pending = approver.confirm('Write file', 'preview body');
+    const pending = approver.confirm('Run command', 'preview body');
     expect(stream.markdown).toHaveBeenCalledOnce();
-    expect(stream.markdown.mock.calls[0][0]).toContain('**Write file?**');
+    expect(stream.markdown.mock.calls[0][0]).toContain('**Run command?**');
     expect(stream.markdown.mock.calls[0][0]).toContain('preview body');
     expect(stream.button).toHaveBeenCalledTimes(2);
     expect(stream.button.mock.calls[0][0]).toMatchObject({
@@ -193,7 +193,7 @@ describe('ChatApprover', () => {
   it('settles concurrent approvals independently by id', async () => {
     const { approver, stream, click } = wiredApprover();
 
-    const first = approver.confirm('Write file', 'one');
+    const first = approver.confirm('Run command', 'one');
     const second = approver.confirm('Run command', 'two');
     expect(stream.button).toHaveBeenCalledTimes(4);
 
@@ -215,7 +215,7 @@ describe('ChatApprover', () => {
   it('declines whatever is still pending when its session is disposed', async () => {
     const { approver, session } = wiredApprover();
 
-    const pending = approver.confirm('Write file', 'preview');
+    const pending = approver.confirm('Run command', 'preview');
     session.dispose(); // request ended or was cancelled
     await expect(pending).resolves.toBe(false);
   });
@@ -262,7 +262,7 @@ describe('ChatApprover', () => {
 
     const streamA = fakeStream();
     const sessionA = approver.openSession(streamA as any);
-    const pendingA = approver.confirm('Write file', 'a'); // rendered into A
+    const pendingA = approver.confirm('Run command', 'a'); // rendered into A
 
     const streamB = fakeStream();
     const sessionB = approver.openSession(streamB as any);
@@ -283,7 +283,7 @@ describe('ChatApprover', () => {
 
   it('disposing a session twice is a harmless no-op', async () => {
     const { approver, session } = wiredApprover();
-    const pending = approver.confirm('Write file', 'preview');
+    const pending = approver.confirm('Run command', 'preview');
     session.dispose();
     expect(() => session.dispose()).not.toThrow();
     await expect(pending).resolves.toBe(false);

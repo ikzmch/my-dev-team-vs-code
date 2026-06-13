@@ -128,7 +128,7 @@ describe('registerTools', () => {
     expect(entries).toEqual(['begin:echo hi', 'end:(command completed)']);
   });
 
-  it('write tool persists the file when the approver approves', async () => {
+  it('write tool persists the file (no approval gate)', async () => {
     registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(true)));
     const out = await invokeTool('devteam__write', {
       path: 'out.ts',
@@ -138,7 +138,7 @@ describe('registerTools', () => {
     expect(__state.files.get('/ws/out.ts')).toBe('hello');
   });
 
-  it('edit tool replaces the matched text when the approver approves', async () => {
+  it('edit tool replaces the matched text (no approval gate)', async () => {
     __setFile('a.ts', 'const a = 1;');
     registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(true)));
     const out = await invokeTool('devteam__edit', {
@@ -148,30 +148,6 @@ describe('registerTools', () => {
     });
     expect(out).toBe('Edited a.ts (1 replacement).');
     expect(__state.files.get('/ws/a.ts')).toBe('const a = 2;');
-  });
-
-  it('edit tool respects a declining approver', async () => {
-    __setFile('a.ts', 'const a = 1;');
-    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(false)));
-    const out = await invokeTool('devteam__edit', {
-      path: 'a.ts',
-      oldText: 'a = 1',
-      newText: 'a = 2',
-    });
-    expect(out).toBe('Edit was not approved by the user; the file was not changed.');
-    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
-  });
-
-  it('write tool respects a declining approver', async () => {
-    // The editor-wide registration goes through the same gate as the engine's
-    // executor loop: a decline leaves the workspace untouched.
-    registerTools(fakeContext() as any, new WorkspaceToolHost(makeApprover(false)));
-    const out = await invokeTool('devteam__write', {
-      path: 'out.ts',
-      contents: 'hello',
-    });
-    expect(out).toBe('Write was not approved by the user; the file was not changed.');
-    expect(__state.files.has('/ws/out.ts')).toBe(false);
   });
 
   it('bridges the invocation cancellation token onto the host abort signal', async () => {

@@ -1,6 +1,6 @@
 ---
 name: write
-sideEffecting: true
+sideEffecting: false
 previewArg: path
 snippetArg: contents
 ---

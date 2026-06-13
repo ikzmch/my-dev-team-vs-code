@@ -3,9 +3,9 @@
 An agentic AI dev team inside VS Code's **native chat panel**. Invoke it with
 `@devteam`: it answers questions, drafts step-by-step plans, and carries them
 out - reading, searching, creating, and editing files in your workspace and
-running shell commands - while **every side effect asks you first**. It runs
-entirely on **local models** via [Ollama](https://ollama.com); nothing leaves
-your machine.
+running shell commands - while **shell commands ask you first** (file changes
+apply directly to your Git-backed workspace). It runs entirely on **local
+models** via [Ollama](https://ollama.com); nothing leaves your machine.
 
 ## Highlights
 
@@ -22,10 +22,11 @@ your machine.
   weighted capability requirements, and a router picks the best match from a
   registry of scored models. Agents, models, tools, and commands are plain
   `.md` config files - drop a file in to register one, no code change.
-- **You stay in control.** Running a command, writing a file, or editing one
-  always asks first - with the command echo, a content preview, or a
-  diff-style before/after - and approved commands stream live into a
-  read-only "Dev Team" terminal.
+- **You stay in control.** Running a shell command always asks first - it
+  shows the exact command and waits for your Approve/Decline - and approved
+  commands stream live into a read-only "Dev Team" terminal. File writes and
+  edits apply directly (your Git-backed workspace makes them easy to review
+  and revert), and the agent can only touch files inside your workspace.
 - **Built to split.** The whole pipeline sits behind a wire-shaped engine
   protocol: today an in-process engine, later a remote backend speaking the
   same contract - without touching the UI or the tools.

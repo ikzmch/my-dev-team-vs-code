@@ -3,9 +3,11 @@
 My Dev Team is an AI chat participant for VS Code. You talk to it as
 `@devteam` in the normal chat panel, and it can answer questions, draft
 step-by-step plans, and carry them out: reading, searching, creating, and
-editing files in your workspace and running shell commands - always asking
-you first before it changes anything. Everything runs locally against your
-own [Ollama](https://ollama.com) server; nothing leaves your machine.
+editing files in your workspace and running shell commands - asking you first
+before it runs a command (file changes apply directly to your Git-backed
+workspace, where they are easy to review and revert). Everything runs locally
+against your own [Ollama](https://ollama.com) server; nothing leaves your
+machine.
 
 ## 1. What you need
 
@@ -114,20 +116,22 @@ succeeded.
 
 ## 5. Approvals: you stay in control
 
-Reading and searching files never asks. Anything that changes your machine
-stops and asks you first, right in the chat:
+Running a shell command stops and asks you first, right in the chat: a
+**Run Command** prompt shows the exact command, and you click **Approve** to
+let it run or **Decline** to skip it. Declining does not abort the run: the
+agent is told the command was not approved, carries on with the rest of the
+plan, and notes the skip in its report.
 
-- **Run Command** shows the exact shell command.
-- **Write File** shows the target path and a preview of the new contents.
-- **Edit File** shows the path and a diff-style before/after of the change.
+Reading, searching, writing, and editing files do not ask - they apply
+directly. Writing and editing are safe to run unprompted because your
+workspace is backed by Git: if the agent changes a file you did not want
+changed, you can see it in your source-control view and revert it like any
+other edit. (Commit or stash work you want to be sure of first; Git cannot
+restore changes that were never committed.) The agent only edits files inside
+your workspace folder - it cannot reach outside it.
 
-Click **Approve** to let it happen or **Decline** to skip it. Declining does
-not abort the run: the agent is told the action was not approved, carries on
-with the rest of the plan, and notes the skip in its report. Cancelling the
-chat request (the stop button) cancels everything, including a command
-already running. And if a file changed while an edit's approval was waiting
-(you kept typing, say), the edit is re-checked against the current file
-before it applies - your newer changes are never silently overwritten.
+Cancelling the chat request (the stop button) cancels everything, including a
+command already running and any file change still in flight.
 
 Every approved command's full live output also appears in a read-only
 **"Dev Team" terminal** in the terminal panel - open that tab to watch

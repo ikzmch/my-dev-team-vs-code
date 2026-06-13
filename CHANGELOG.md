@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-06-13
+
+### Changed
+
+- **Writing and editing files no longer asks for approval.** The `write` and
+  `edit` tools now apply directly instead of prompting Approve/Decline; only
+  `run` (shell commands) still asks first. The workspace is git-backed, so a
+  file the agent changes is reviewable and revertible in source control, and
+  prompting on every file made routine multi-file changes tedious. The
+  workspace path and symlink checks still apply (a write can never escape the
+  workspace), a cancelled request still lands nothing, and the chat transcript
+  still shows the first lines of each change (`myDevTeam.chat.toolSnippetLines`,
+  default 5).
+
 ## [0.22.0] - 2026-06-12
 
 ### Added

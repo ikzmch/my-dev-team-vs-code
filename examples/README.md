@@ -8,7 +8,7 @@ file targets one of the paths the triage agent routes to:
 | [oneshot.md](oneshot.md) | `oneshot` | Direct streamed answer, no tools |
 | [planning-simple.md](planning-simple.md) | `planning` | A short plan plus execution, little or no workspace exploration |
 | [planning-advanced.md](planning-advanced.md) | `planning` | Multi-step plans that need exploration (search/read) before edits |
-| [editing.md](editing.md) | `planning` | Changes to existing files via the `edit` tool (read first, replace an exact match, diff-style approval) |
+| [editing.md](editing.md) | `planning` | Changes to existing files via the `edit` tool (read first, replace an exact match; applied directly, not gated) |
 
 The deciding question for triage is what you want to receive: text in the
 chat (`oneshot`) or a change in your workspace (`planning`). Anything that

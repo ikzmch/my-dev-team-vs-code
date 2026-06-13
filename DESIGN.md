@@ -12,10 +12,11 @@ The agent routes each request through a **local triage agent** (Ollama via
 the Vercel AI SDK + Mastra) before deciding how to respond. Agents don't name
 models: each declares **weighted capability requirements**, and a router picks
 the best match from a **registry of models scored per capability**, discovered
-from `.md` config files at build time. The side-effecting
-actions - running a command and writing or editing a file - are gated by an
+from `.md` config files at build time. Running a command is gated by an
 **approval seam**, so the chat confirmation can later be swapped for a rich
-Webview dialog **without touching the agent core**.
+Webview dialog **without touching the agent core**; writing and editing files
+are deliberately not gated (the workspace is git-backed, so their changes are
+recoverable - see [Tools](#tools-tools)).
 
 The whole agent pipeline sits behind an **engine protocol**
 (`src/protocol/`): the UI starts a run, receives a stream of typed events,
@@ -29,7 +30,7 @@ contract (see [The engine protocol](#the-engine-protocol-srcprotocol)). A
 > classifies your request, answers `oneshot` questions directly, and for
 > `planning` requests drafts a step-by-step plan and then **executes it**: the
 > executor's capability-routed model drives a tool-calling loop over the five
-> workspace tools, with side effects gated by the approval seam. Every turn
+> workspace tools, with the `run` tool gated by the approval seam. Every turn
 > carries the **conversation history** (size-capped), so follow-ups like
 > "now rename it too" resolve against the earlier exchanges. Seven engine
 > **slash commands** (`/explain`, `/review`, `/plan`, `/do`, `/fix`, `/test`,
@@ -178,7 +179,7 @@ engine/core/workflow.ts        Mastra workflow (createWorkflow + createStep)
         │                         project instructions + conversation + prompt
         │                         + attachment text + the numbered plan;
         │                         Mastra runs the tool-calling loop over the five
-        │                         workspace tools (run/write/edit Approver-gated);
+        │                         workspace tools (run Approver-gated);
         │                         → { events[] } transcript (capability-routed model);
         │                         pushes every transcript snapshot to the sink
         └─▶ deliver-answer     ── pass-through for the oneshot path, so a oneshot
@@ -219,9 +220,10 @@ without the client changing:
   its Mastra tools are proxies that delegate to the client's **`ToolHost`**
   (`tools/toolHost.ts`), which validates the arguments against the
   protocol's input schemas and runs the implementations - including the
-  approval gate. A compromised or buggy engine can request a command or a
-  file write, but it cannot land either without the user's click, and it
-  never learns how approval happened. The tool contract (`protocol/toolContract.ts`) carries the
+  run tool's approval gate. A compromised or buggy engine can request a
+  command, but it cannot run one without the user's click, and it never learns
+  how approval happened. (File writes are not gated; the path and symlink
+  checks still keep them inside the workspace.) The tool contract (`protocol/toolContract.ts`) carries the
   client-facing half of each tool (input schema, `devteam__*` id, display
   name); the engine's configs keep the model-facing half (description,
   preview hints).
@@ -546,12 +548,11 @@ decisions, in the order they matter:
   as `(no output)`.
 - **Approvals live in the host, not the engine.** The proxies delegate to
   the same `WorkspaceToolHost` the editor-wide registrations use, so `run`
-  invokes the same `Approver` with the same command echo, `write` with the
-  same path + contents preview, and `edit` with the same path + diff-style
-  old/new preview - and the engine never learns how the
-  decision was made. A decline is not an error: the tool returns the "not
-  approved" message and the system prompt tells the model to skip that
-  action and note it in the report.
+  invokes the same `Approver` with the same command echo - and the engine
+  never learns how the decision was made. A decline is not an error: the tool
+  returns the "not approved" message and the system prompt tells the model to
+  skip that action and note it in the report. `write` and `edit` are not
+  gated, so they apply through the host without a prompt.
 
 ### Tools (`tools/`)
 
@@ -564,15 +565,29 @@ input schemas and dispatches: `registerTools.ts` registers each tool with
 the Language Model Tools API delegating to the host (so any tool-calling
 chat model in the editor can invoke them), and the engine's executor loop
 reaches the same host through its tool proxies (`engine/core/agentTools.ts`).
-Either way the same Approver gates the same side effects.
+Either way the same Approver gates the one gated tool, `run`.
 
 | Tool                   | Effect                          | Approval        |
 | ---------------------- | ------------------------------- | --------------- |
 | `devteam__read`        | Read a file's text, whole or a line range | none (read-only)|
 | `devteam__search`      | Glob file names or grep content | none (read-only)|
 | `devteam__run`         | Run a shell command (configurable timeout, 60s default) | **Approver** |
-| `devteam__write`       | Create/overwrite a file         | **Approver**    |
-| `devteam__edit`        | Replace text in an existing file | **Approver**   |
+| `devteam__write`       | Create/overwrite a file         | none (git-backed) |
+| `devteam__edit`        | Replace text in an existing file | none (git-backed) |
+
+**Why `write`/`edit` are not gated.** The extension targets a git-backed
+workspace, so a file the agent overwrites or edits is recoverable from version
+control, and writing files is the executor's core job - prompting on every
+file would make a routine multi-file change unusable. Git is not a complete
+safety net (it does not cover uncommitted edits, untracked files, or
+`.gitignore`d paths), so the decision is intentional rather than a claim that
+nothing can be lost: the protection that remains is the path/symlink rejection
+(a write can never escape the workspace) and run-cancellation (a stopped
+request lands nothing). `run` stays gated because a shell command can reach
+outside the workspace and is not git-recoverable. If finer-grained
+reversibility is ever wanted, the natural step is to route writes through
+VS Code's workspace-edit/undo API rather than to reinstate a per-write prompt.
+This is a settled design decision; please do not re-file it as a bug.
 
 The tools treat their inputs as untrusted (they are callable by any
 tool-calling chat model in the editor, not just `@devteam`):
@@ -595,10 +610,9 @@ tool-calling chat model in the editor, not just `@devteam`):
   LF/CRLF mismatch between the model's snippet and the file is bridged by
   adapting the snippet, never by rewriting the file's line endings. The
   replacement is literal: `$&`-style substitution patterns in code are not
-  interpreted. After approval the file is **re-read and the match
-  re-verified**, so an edit applies to the file as it is then - a change made
-  while the prompt was open survives, and a vanished or no-longer-unique
-  match returns the recovery message instead of writing a stale snapshot.
+  interpreted. The file is read, the match located, and the replacement
+  written back-to-back with no pause in between, so the snapshot the match was
+  computed against is the one the write lands on.
 - `search` never scans `node_modules`, `.git`, `dist`, `out`, or `coverage`,
   and content mode skips binary and oversized files (see
   `config/settings.ts` for the limits; the result/scan caps are user-tunable
@@ -626,24 +640,21 @@ tool-calling chat model in the editor, not just `@devteam`):
   visible whenever the user looks. Declined commands never ran, so they
   never appear.
 
-The side-effecting tools call `approver.confirm(title, detail)`: `run` with
-the command echo, `write` with the target path above a capped preview of the
-new contents (`settings.writeApprovalPreviewMaxChars`), and `edit` with the
-target path above a diff-style pair (the matched text prefixed `-`, its
-replacement prefixed `+`, each side capped), so an in-workspace
-change - itself destructive, with no undo - never lands silently. The
-Phase-1 `ChatApprover` renders the proposed action into the chat panel
-followed by **Approve / Decline buttons** (wired through the
-`myDevTeam.approval` command) and blocks the tool until one is clicked. Each
-request opens its own **approval session** for its stream; a finished or
-cancelled request closes its session, declining only its own still-pending
-approvals - so a run can never hang on an unanswered question, and
-concurrent chat turns cannot settle (or write into the stream of) one
-another's approvals. When a tool is invoked outside a `@devteam` turn (they
-are registered editor-wide, so any chat model can call them) there is no
-session to ask in, and the approver falls back to a modal dialog. A declined
-`write` or `edit` returns "not approved" to the model and leaves the file
-untouched.
+The only gated tool, `run`, calls `approver.confirm(title, detail)` with the
+command echo, so a shell command - which can reach outside the workspace and
+is not git-recoverable - never runs silently. The Phase-1 `ChatApprover`
+renders the proposed command into the chat panel followed by **Approve /
+Decline buttons** (wired through the `myDevTeam.approval` command) and blocks
+the tool until one is clicked. Each request opens its own **approval session**
+for its stream; a finished or cancelled request closes its session, declining
+only its own still-pending approvals - so a run can never hang on an
+unanswered question, and concurrent chat turns cannot settle (or write into
+the stream of) one another's approvals. When the tool is invoked outside a
+`@devteam` turn (the tools are registered editor-wide, so any chat model can
+call them) there is no session to ask in, and the approver falls back to a
+modal dialog. A declined `run` returns "not approved" to the model, which is
+told to skip the command. `write` and `edit` are not gated and apply without a
+prompt (see [Tools](#tools-tools) for the rationale).
 
 ## Current behavior
 
@@ -726,17 +737,15 @@ Out of the box, `@devteam <prompt>`:
    file (and an `edit` call the first lines of its replacement text) in a
    fenced snippet under its line (`myDevTeam.chat.toolSnippetLines`,
    default 5; `0` hides it); longer content ends in an `…(truncated)` line.
-7. Side effects still ask first: when the loop reaches a `run` call the
-   `ChatApprover` renders the command into the chat, and when it reaches a
-   `write` call it renders the target path above a capped preview of the new
-   contents (`settings.writeApprovalPreviewMaxChars`); an `edit` call renders
-   the path above a diff-style old/new pair. Each is followed by
-   Approve and Decline buttons, and waits for the click. A cancelled request
-   declines pending approvals automatically, and a tool invoked outside a
-   `@devteam` turn falls back to a modal dialog. Declining does not abort the
-   run - the tool returns "not approved" to the model, which is instructed to
-   skip that action and carry on, noting the skip in its report; a declined
-   `write` or `edit` leaves the file untouched.
+7. A `run` call still asks first: when the loop reaches one the `ChatApprover`
+   renders the command into the chat, followed by Approve and Decline buttons,
+   and waits for the click. A cancelled request declines pending approvals
+   automatically, and a `run` invoked outside a `@devteam` turn falls back to a
+   modal dialog. Declining does not abort the run - the tool returns "not
+   approved" to the model, which is instructed to skip that command and carry
+   on, noting the skip in its report. `write` and `edit` are not gated: they
+   apply directly (the workspace is git-backed - see [Tools](#tools-tools)),
+   so the loop never pauses on a file change.
 8. Every approved command's real output also streams into the **"Dev Team"
    terminal** in the terminal panel: open the tab to watch commands run live,
    or later to read the session log of everything the agent executed
@@ -745,7 +754,8 @@ Out of the box, `@devteam <prompt>`:
 
 The five workspace tools also stay registered with `vscode.lm`, callable by
 any VS Code chat model that supports tool calling - every call goes through
-the same `WorkspaceToolHost` validation and approval gate the engine uses.
+the same `WorkspaceToolHost` validation (and, for `run`, the approval gate)
+the engine uses.
 
 Each step's model call also emits a protocol `usage` event (model + token
 counts when the SDK reports them); the chat handler logs them to the console
@@ -826,7 +836,7 @@ copy-pasteable prompts per pipeline path, each targeting one triage route:
 | [`oneshot.md`](examples/oneshot.md) | `oneshot` | The answerer: a direct streamed answer, no tools |
 | [`planning-simple.md`](examples/planning-simple.md) | `planning` | Plan + execution with little or no workspace exploration |
 | [`planning-advanced.md`](examples/planning-advanced.md) | `planning` | Multi-step plans that must search/read before editing |
-| [`editing.md`](examples/editing.md) | `planning` | The `edit` tool: read first, exact-match replacement, diff-style approval |
+| [`editing.md`](examples/editing.md) | `planning` | The `edit` tool: read first, exact-match replacement (applied directly, not gated) |
 
 After touching a routing-relevant surface, run a few prompts from each file
 in the Extension Development Host and check that triage picks the expected

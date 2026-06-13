@@ -2,9 +2,10 @@
 
 The deliverable is a change to a file that already exists. These exercise the
 `edit` tool: the executor reads the file first, then replaces an exact text
-match (approved as a `- old` / `+ new` diff preview) instead of rewriting the
-whole file. A change that grows beyond a targeted replacement falls back to
-`write` with the complete new contents.
+match instead of rewriting the whole file. A change that grows beyond a
+targeted replacement falls back to `write` with the complete new contents.
+Neither `write` nor `edit` asks for approval - the workspace is git-backed, so
+the changes are recoverable; only `run` commands prompt first.
 
 Most prompts below assume a file from [planning-simple.md](planning-simple.md)
 exists; run that example first, or aim the prompt at any file of your own.

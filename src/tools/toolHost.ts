@@ -23,8 +23,8 @@ export class WorkspaceToolHost implements ToolHost {
    * then run the workspace implementation. Inputs are untrusted twice over -
    * they come from a model, possibly relayed by a remote engine - so an
    * unknown tool or malformed arguments throw before anything touches the
-   * workspace; the path and approval checks inside the implementations then
-   * still apply.
+   * workspace; the path checks (and, for `run`, the approval gate) inside the
+   * implementations then still apply.
    */
   async execute(tool: string, args: unknown, signal?: AbortSignal): Promise<string> {
     switch (tool) {
@@ -43,11 +43,11 @@ export class WorkspaceToolHost implements ToolHost {
       }
       case 'write': {
         const { path, contents } = clientTools.write.inputSchema.parse(args);
-        return writeFile(path, contents, this.approver, signal);
+        return writeFile(path, contents, signal);
       }
       case 'edit': {
         const { path, oldText, newText } = clientTools.edit.inputSchema.parse(args);
-        return editFile(path, oldText, newText, this.approver, signal);
+        return editFile(path, oldText, newText, signal);
       }
       default:
         throw new Error(`Unknown tool "${tool}".`);
