@@ -129,6 +129,14 @@ describe('runSetApiKeyCommand', () => {
     expect(window.showInformationMessage).toHaveBeenCalled();
   });
 
+  it('stores the entered key for Groq', async () => {
+    __setQuickPickResponse(2); // Groq
+    __setInputBoxResponse('gsk-test');
+    await runSetApiKeyCommand(secrets);
+    expect(__state.secrets.get('myDevTeam.groq.apiKey')).toBe('gsk-test');
+    expect(window.showInformationMessage).toHaveBeenCalled();
+  });
+
   it('does nothing when the provider pick is dismissed', async () => {
     __setQuickPickResponse(undefined);
     await runSetApiKeyCommand(secrets);

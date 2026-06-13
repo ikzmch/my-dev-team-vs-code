@@ -6,7 +6,7 @@ out - reading, searching, creating, and editing files in your workspace and
 running shell commands - while **shell commands ask you first** (file changes
 apply directly to your Git-backed workspace). It runs on **local models** via
 [Ollama](https://ollama.com) by default - nothing leaves your machine - and can
-optionally use **cloud models** (OpenAI, Anthropic) when you add an API key.
+optionally use **cloud models** (OpenAI, Anthropic, Groq) when you add an API key.
 
 ## Highlights
 
@@ -16,7 +16,7 @@ optionally use **cloud models** (OpenAI, Anthropic) when you add an API key.
   work the way the rest of VS Code chat does. Your project's `AGENTS.md` or
   `CLAUDE.md` is respected as standing instructions on every request.
 - **Pick a model, or let Auto choose.** Run on local Ollama models or cloud
-  models (OpenAI, Anthropic) - choose one with `/model`, or leave it on **Auto**
+  models (OpenAI, Anthropic, Groq) - choose one with `/model`, or leave it on **Auto**
   to route by capability among the models available to you. Every reply shows
   which model answered. Cloud keys are stored securely, never in settings.
 - **A real multi-agent pipeline on local models.** A triage agent routes each
@@ -64,8 +64,8 @@ In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 
 - **[Mastra](https://mastra.ai)** - agents and the orchestrating workflow
 - **[Vercel AI SDK](https://sdk.vercel.ai)** + `ollama-ai-provider-v2`,
-  `@ai-sdk/openai`, `@ai-sdk/anthropic` - model interface to local Ollama and
-  cloud (OpenAI, Anthropic) models
+  `@ai-sdk/openai`, `@ai-sdk/anthropic`, `@ai-sdk/groq` - model interface to
+  local Ollama and cloud (OpenAI, Anthropic, Groq) models
 - **`zod`** - structured-output, protocol, and config validation
 - **VS Code Chat + Language Model Tools APIs** - the front end and tool
   surface

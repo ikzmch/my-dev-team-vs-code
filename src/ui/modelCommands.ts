@@ -120,6 +120,7 @@ export async function handleModelChatCommand(
 const PROVIDER_LABELS: Record<CloudProvider, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
+  groq: 'Groq',
 };
 
 /**

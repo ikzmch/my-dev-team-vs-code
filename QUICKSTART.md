@@ -8,7 +8,7 @@ before it runs a command (file changes apply directly to your Git-backed
 workspace, where they are easy to review and revert). Out of the box everything
 runs locally against your own [Ollama](https://ollama.com) server and nothing
 leaves your machine; if you prefer, you can also point it at a cloud model
-(OpenAI or Anthropic) by adding an API key - see
+(OpenAI, Anthropic, or Groq) by adding an API key - see
 [Choosing a model](#4-choosing-a-model).
 
 ## 1. What you need
@@ -28,8 +28,8 @@ leaves your machine; if you prefer, you can also point it at a cloud model
   If your Ollama server listens somewhere else, set the
   `myDevTeam.ollama.endpoint` setting (see [Settings](#7-settings)).
 
-  Cloud models (OpenAI, Anthropic) are optional and need only an API key, no
-  Ollama pull - see [Choosing a model](#4-choosing-a-model).
+  Cloud models (OpenAI, Anthropic, Groq) are optional and need only an API key,
+  no Ollama pull - see [Choosing a model](#4-choosing-a-model).
 
 ## 2. Build and launch
 
@@ -126,9 +126,10 @@ The list offers three kinds of choice:
 Out of the box the list is your local Ollama models. To use a cloud model:
 
 1. Run the **"My Dev Team: Set API Key"** command (Ctrl+Shift+P) and paste your
-   OpenAI or Anthropic key. It is stored securely and never written to your
-   settings file. (Alternatively, set the `OPENAI_API_KEY` or
-   `ANTHROPIC_API_KEY` environment variable before launching VS Code.)
+   OpenAI, Anthropic, or Groq key. It is stored securely and never written to
+   your settings file. (Alternatively, set the `OPENAI_API_KEY`,
+   `ANTHROPIC_API_KEY`, or `GROQ_API_KEY` environment variable before launching
+   VS Code.)
 2. Pick the model with `/model` - cloud models you have a key for become
    selectable; the rest show as unavailable.
 
@@ -142,8 +143,9 @@ Notes:
   stronger cloud model on its own.
 - Using a cloud model sends your request to that provider. Local Ollama models
   keep everything on your machine.
-- For Azure or another gateway, set `myDevTeam.openai.baseUrl` or
-  `myDevTeam.anthropic.baseUrl` to its URL (see [Settings](#7-settings)).
+- For Azure or another gateway, set `myDevTeam.openai.baseUrl`,
+  `myDevTeam.anthropic.baseUrl`, or `myDevTeam.groq.baseUrl` to its URL (see
+  [Settings](#7-settings)).
 
 ## 5. Slash commands
 
@@ -211,6 +213,7 @@ likely to touch:
 | `myDevTeam.ollama.endpoint`      | `http://localhost:11434` | Where your Ollama server listens                  |
 | `myDevTeam.openai.baseUrl`       | `""`                     | Custom OpenAI endpoint (Azure / compatible gateway); empty uses OpenAI's default |
 | `myDevTeam.anthropic.baseUrl`    | `""`                     | Custom Anthropic endpoint (a proxy/gateway); empty uses Anthropic's default |
+| `myDevTeam.groq.baseUrl`         | `""`                     | Custom Groq endpoint (a proxy/gateway); empty uses Groq's default |
 | `myDevTeam.run.commandTimeoutMs` | `60000`                  | How long a shell command may run before it is killed |
 | `myDevTeam.chat.toolSnippetLines`| `5`                      | Lines of a written file previewed in the chat transcript (`0` hides the preview) |
 | `myDevTeam.usage.showInChat`     | `true`                   | Show the **Tokens** line under each reply; the status-bar counter and the usage report stay regardless |

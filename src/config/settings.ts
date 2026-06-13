@@ -141,6 +141,15 @@ export const settings = {
     return userBaseUrl('anthropic.baseUrl');
   },
 
+  /**
+   * Optional custom base URL for the Groq provider
+   * (`myDevTeam.groq.baseUrl`): a proxy or gateway. Undefined uses the Groq
+   * default endpoint.
+   */
+  get groqBaseUrl(): string | undefined {
+    return userBaseUrl('groq.baseUrl');
+  },
+
   /** Shell command timeout for the `run` tool, in milliseconds (`myDevTeam.run.commandTimeoutMs`). */
   get runCommandTimeoutMs(): number {
     return userLimit('run.commandTimeoutMs', defaults.runCommandTimeoutMs);

@@ -46,8 +46,12 @@ export const messages = {
    * applies. Travels to the UI as the protocol error's `hint`, like the Ollama
    * one.
    */
-  cloudKeyHint: (label: string, provider: 'openai' | 'anthropic') => {
-    const envVar = provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
+  cloudKeyHint: (label: string, provider: 'openai' | 'anthropic' | 'groq') => {
+    const envVar = {
+      openai: 'OPENAI_API_KEY',
+      anthropic: 'ANTHROPIC_API_KEY',
+      groq: 'GROQ_API_KEY',
+    }[provider];
     return (
       `\`${label}\` needs an API key. Run the "My Dev Team: Set API Key" command ` +
       `(or set the ${envVar} environment variable), then try again.\n\n`

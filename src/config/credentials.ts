@@ -4,7 +4,8 @@
  * `loadStoredApiKeys` reads them once at activation into the in-memory cache
  * below, and the `Set API Key` command writes them and refreshes the cache.
  * An environment variable is the fallback, so a key in `OPENAI_API_KEY` /
- * `ANTHROPIC_API_KEY` works with no setup (and tests need no SecretStorage).
+ * `ANTHROPIC_API_KEY` / `GROQ_API_KEY` works with no setup (and tests need no
+ * SecretStorage).
  *
  * The provider wiring (engine/core/models.ts) reads these the same "single
  * source of truth, read live" way it reads the Ollama endpoint. Phase C moves
@@ -14,18 +15,20 @@
 import * as vscode from 'vscode';
 
 /** The cloud providers that take an API key (Ollama is keyless and local). */
-export type CloudProvider = 'openai' | 'anthropic';
+export type CloudProvider = 'openai' | 'anthropic' | 'groq';
 
 /** SecretStorage keys the editor stores the API keys under. */
 const SECRET_KEYS: Record<CloudProvider, string> = {
   openai: 'myDevTeam.openai.apiKey',
   anthropic: 'myDevTeam.anthropic.apiKey',
+  groq: 'myDevTeam.groq.apiKey',
 };
 
 /** Environment-variable fallbacks, used when SecretStorage holds no key. */
 const ENV_KEYS: Record<CloudProvider, string> = {
   openai: 'OPENAI_API_KEY',
   anthropic: 'ANTHROPIC_API_KEY',
+  groq: 'GROQ_API_KEY',
 };
 
 const stored: Partial<Record<CloudProvider, string>> = {};
@@ -79,6 +82,10 @@ export const credentials = {
   /** The Anthropic API key (SecretStorage first, then `ANTHROPIC_API_KEY`). */
   get anthropicApiKey(): string | undefined {
     return keyFor('anthropic');
+  },
+  /** The Groq API key (SecretStorage first, then `GROQ_API_KEY`). */
+  get groqApiKey(): string | undefined {
+    return keyFor('groq');
   },
   /** Whether a usable key exists for the given cloud provider. */
   has(provider: CloudProvider): boolean {

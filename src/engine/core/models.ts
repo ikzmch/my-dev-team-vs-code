@@ -6,10 +6,11 @@
  * needs its API key), and turning the winning registry entry into an AI SDK
  * model instance for the configured endpoint/key.
  *
- * Three providers are wired:
+ * Four providers are wired:
  *   - ollama:    local, keyless, from `settings.ollamaEndpoint`.
  *   - openai:    needs `credentials.openaiApiKey`; optional `settings.openaiBaseUrl`.
  *   - anthropic: needs `credentials.anthropicApiKey`; optional `settings.anthropicBaseUrl`.
+ *   - groq:      needs `credentials.groqApiKey`; optional `settings.groqBaseUrl`.
  * Each provider is built lazily and rebuilt when its configuration (endpoint,
  * key, or base URL) changes, dropping the memoised model instances so the next
  * request talks to the new configuration without a reload.
@@ -17,6 +18,7 @@
 import { createOllama } from 'ollama-ai-provider-v2';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
+import { createGroq } from '@ai-sdk/groq';
 import {
   CapabilityScores,
   ModelInfo,
@@ -73,6 +75,16 @@ const providers: Record<ProviderName, ProviderCache> = {
       return (model) => anthropic(model) as RoutedModel;
     },
   },
+  groq: {
+    signature: () => `${credentials.groqApiKey ?? ''}::${settings.groqBaseUrl ?? ''}`,
+    build: () => {
+      const groq = createGroq({
+        apiKey: credentials.groqApiKey,
+        ...(settings.groqBaseUrl ? { baseURL: settings.groqBaseUrl } : {}),
+      });
+      return (model) => groq(model) as RoutedModel;
+    },
+  },
 };
 
 /** The provider factory for `name`, rebuilt when its configuration changed. */
@@ -97,6 +109,8 @@ export function isModelAvailable(info: ModelInfo): boolean {
       return credentials.has('openai');
     case 'anthropic':
       return credentials.has('anthropic');
+    case 'groq':
+      return credentials.has('groq');
   }
 }
 

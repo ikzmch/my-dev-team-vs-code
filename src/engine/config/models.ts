@@ -54,7 +54,7 @@ const ModelFrontmatterSchema = z.object({
    */
   label: z.string(),
   /** Which provider hosts the model (see the factories in core/models.ts). */
-  provider: z.enum(['ollama', 'openai', 'anthropic']),
+  provider: z.enum(['ollama', 'openai', 'anthropic', 'groq']),
   /** Provider-specific model name, e.g. the Ollama tag or the API model id. */
   model: z.string(),
   /** How good this model is at each capability, 0–1. */
@@ -113,6 +113,7 @@ export const providerLabels: Record<ProviderName, string> = {
   ollama: 'Ollama',
   openai: 'OpenAI',
   anthropic: 'Anthropic',
+  groq: 'Groq',
 };
 
 /** The registered model with this id, or undefined for "auto"/unknown ids. */

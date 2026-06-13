@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-06-13
+
+### Added
+
+- **Groq provider.** Added Groq (groq.com) as a fourth model provider alongside
+  Ollama, OpenAI, and Anthropic, with two registered models served on Groq's
+  fast inference: GPT-OSS 120B (`openai/gpt-oss-120b`) and Qwen3 32B
+  (`qwen/qwen3-32b`). Set the key with the "My Dev Team: Set API Key" command or
+  the `GROQ_API_KEY` environment variable, then pick a model (or the "Groq (best
+  available)" provider choice) with `/model`. An optional `myDevTeam.groq.baseUrl`
+  points the provider at a proxy or gateway.
+
 ## [0.28.0] - 2026-06-13
 
 ### Added

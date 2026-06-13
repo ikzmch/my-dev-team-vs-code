@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -52,6 +52,11 @@
           "type": "string",
           "default": "",
           "description": "Optional custom base URL for the Anthropic provider (a proxy or gateway). Leave empty to use Anthropic's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
+        },
+        "myDevTeam.groq.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom base URL for the Groq provider (a proxy or gateway). Leave empty to use Groq's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
         },
         "myDevTeam.run.commandTimeoutMs": {
           "type": "number",
@@ -338,6 +343,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.84",
+    "@ai-sdk/groq": "^3.0.41",
     "@ai-sdk/openai": "^3.0.71",
     "@mastra/core": "^1.41.0",
     "ai": "^6.0.198",

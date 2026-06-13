@@ -12,13 +12,16 @@ beforeEach(async () => {
   // (the in-memory cache is module state that persists across tests).
   delete process.env.OPENAI_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.GROQ_API_KEY;
   await setApiKey(secrets, 'openai', '');
   await setApiKey(secrets, 'anthropic', '');
+  await setApiKey(secrets, 'groq', '');
 });
 
 afterEach(() => {
   delete process.env.OPENAI_API_KEY;
   delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.GROQ_API_KEY;
   vi.restoreAllMocks();
 });
 

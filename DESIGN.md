@@ -57,7 +57,7 @@ src/
     localEngine.ts        in-process Engine: runs the workflow, translates progress into protocol events
     core/
       workflow.ts         Mastra workflow: triage -> plan -> execute | answer; per-run progress + usage sinks
-      models.ts           provider wiring (ollama/openai/anthropic): availability + pin-aware routing into an AI SDK model
+      models.ts           provider wiring (ollama/openai/anthropic/groq): availability + pin-aware routing into an AI SDK model
       triage.ts           Mastra agent: triage request as oneshot | planning
       planner.ts          Mastra agent: draft an ordered plan of titled steps, streamed as partial snapshots
       answerer.ts         Mastra agent: answer a oneshot request directly, streamed as accumulated text
@@ -363,7 +363,7 @@ never carry literals inline.
 | File                            | Holds                                                          |
 | ------------------------------- | ------------------------------------------------------------- |
 | `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
-| `engine/config/models/*.md`     | One registered model per file: frontmatter (id, user-facing label, provider `ollama`/`openai`/`anthropic`, model name, capability scores) + a note on its strengths |
+| `engine/config/models/*.md`     | One registered model per file: frontmatter (id, user-facing label, provider `ollama`/`openai`/`anthropic`/`groq`, model name, capability scores) + a note on its strengths |
 | `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` tool has no client half |
 | `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
@@ -372,8 +372,8 @@ never carry literals inline.
 | `engine/config/commands.ts`     | Discovers the command files, exports `commandConfigs`/`commandNames` and the pinned-route reason |
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
-| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), the in-chat token-line toggle (`usage.showInChat`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, the model choice (`model`), Ollama endpoint, the cloud-provider base URLs (`openaiBaseUrl`/`anthropicBaseUrl`), run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
-| `config/credentials.ts`         | Cloud-provider API keys (OpenAI, Anthropic): an in-memory cache loaded from VS Code SecretStorage on activation (set/cleared by the "Set API Key" command), with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` as fallbacks. Kept out of settings.json on purpose; read live by the provider wiring. Phase C moves keys server-side behind the AuthProvider seam |
+| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), the in-chat token-line toggle (`usage.showInChat`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, the model choice (`model`), Ollama endpoint, the cloud-provider base URLs (`openaiBaseUrl`/`anthropicBaseUrl`/`groqBaseUrl`), run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/credentials.ts`         | Cloud-provider API keys (OpenAI, Anthropic, Groq): an in-memory cache loaded from VS Code SecretStorage on activation (set/cleared by the "Set API Key" command), with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GROQ_API_KEY` as fallbacks. Kept out of settings.json on purpose; read live by the provider wiring. Phase C moves keys server-side behind the AuthProvider seam |
 | `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker and Set API Key prompts), the token-usage copy (the **Tokens:** line, the status-bar counter, the usage report), and the run-mirror terminal's copy. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
 | `config/clientCommands.ts`      | The client-handled commands (`/clear` and `/model`, with their autocomplete descriptions) plus the `/compact` marker name the history collection watches for - client-side because conversation history and the model choice are client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
@@ -420,6 +420,7 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | `myDevTeam.ollama.endpoint`          | `http://localhost:11434` | Ollama server origin (no `/api` suffix)   |
 | `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
 | `myDevTeam.anthropic.baseUrl`        | `""`                     | Optional custom base URL for Anthropic (a proxy/gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
+| `myDevTeam.groq.baseUrl`             | `""`                     | Optional custom base URL for Groq (a proxy/gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
 | `myDevTeam.run.commandTimeoutMs`     | `60000`                  | `run` tool shell-command timeout (ms)     |
 | `myDevTeam.read.maxLines`            | `200`                    | Max lines one `read` call returns; partial results name the range and total so the model continues |
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
@@ -453,7 +454,7 @@ pulled - instead of letting the first chat request be the thing that fails.
 Agents never name a concrete model. Instead:
 
 - **Registered models** (`engine/config/models/*.md`) carry an `id`, a
-  user-facing `label`, a `provider` (`ollama` | `openai` | `anthropic`), the
+  user-facing `label`, a `provider` (`ollama` | `openai` | `anthropic` | `groq`), the
   provider-specific `model` name, and scores for how good the model is at a set
   of capabilities - `reasoning`, `coding`, `classification`, `planning`,
   `speed`, `structured-output` - each 0-1.
@@ -468,13 +469,14 @@ Agents never name a concrete model. Instead:
   the pin + candidates and wire the winner onto an [AI SDK](https://sdk.vercel.ai)
   provider instance).
 
-**Three providers.** Ollama is local and keyless, built from
-`myDevTeam.ollama.endpoint`. OpenAI and Anthropic need an API key
+**Four providers.** Ollama is local and keyless, built from
+`myDevTeam.ollama.endpoint`. OpenAI, Anthropic, and Groq need an API key
 (`config/credentials.ts`: SecretStorage, set via the "My Dev Team: Set API Key"
-command, with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` as fallbacks) and accept an
-optional custom base URL (`myDevTeam.openai.baseUrl` / `anthropic.baseUrl`) for
-Azure or an OpenAI-compatible/Anthropic gateway. Each provider is built lazily
-and rebuilt when its endpoint, key, or base URL changes, dropping the memoised
+command, with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GROQ_API_KEY` as fallbacks)
+and accept an optional custom base URL (`myDevTeam.openai.baseUrl` /
+`anthropic.baseUrl` / `groq.baseUrl`) for Azure or an
+OpenAI-compatible/Anthropic/Groq gateway. Each provider is built lazily and
+rebuilt when its endpoint, key, or base URL changes, dropping the memoised
 model instances so the next request uses the new configuration.
 
 **User selection: Auto, a model, or a provider.** The user picks with `/model`
@@ -1001,12 +1003,13 @@ model the router selected for that agent pulled.
   If your server listens elsewhere, set `myDevTeam.ollama.endpoint`; the
   activation health check will tell you if the endpoint or a routed model is
   missing.
-- **Cloud models (optional).** To use OpenAI or Anthropic models, set the key
-  with the **"My Dev Team: Set API Key"** command (stored in SecretStorage) or
-  via the `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` environment variables. For
-  Azure or another gateway, point `myDevTeam.openai.baseUrl` /
-  `myDevTeam.anthropic.baseUrl` at it. Then pick the model with `/model`; with
-  no key set, those models show as unavailable and `Auto` stays on Ollama.
+- **Cloud models (optional).** To use OpenAI, Anthropic, or Groq models, set the
+  key with the **"My Dev Team: Set API Key"** command (stored in SecretStorage)
+  or via the `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY` environment
+  variables. For Azure or another gateway, point `myDevTeam.openai.baseUrl` /
+  `myDevTeam.anthropic.baseUrl` / `myDevTeam.groq.baseUrl` at it. Then pick the
+  model with `/model`; with no key set, those models show as unavailable and
+  `Auto` stays on Ollama.
 
 ## Run it
 
