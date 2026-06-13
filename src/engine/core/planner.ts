@@ -4,7 +4,6 @@ import { resolveModel } from './models';
 import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
 import { selectModel } from '../config/models';
-import { plannableToolNames } from '../config/tools';
 import { PartialPlan, Plan } from '../../protocol/types';
 
 export type { PartialPlan, PartialPlanStep } from '../../protocol/types';
@@ -15,24 +14,15 @@ export type { PartialPlan, PartialPlanStep } from '../../protocol/types';
  * each optionally hinting which workspace tool it will use. The Executor
  * (./executor.ts) then walks these steps and drives the tool-calling loop.
  *
- * This is the generation schema: its describe() strings steer the model and
- * its `tool` hint enum is derived from the plannable tool configs in
- * ../config/tools (the same registry the planner's prompt section is rendered
- * from, minus engine-only tools like `progress`), plus "none" for a step that
- * is pure reasoning. The protocol's PlanSchema (src/protocol/types.ts) is the
- * wire shape of the same data, without the prompt material; anything this
- * schema accepts the protocol schema accepts.
+ * This is the generation schema: its describe() strings steer the model. The
+ * protocol's PlanSchema (src/protocol/types.ts) is the wire shape of the same
+ * data, without the prompt material; anything this schema accepts the protocol
+ * schema accepts.
  */
-// "none" leads so the enum stays well-formed even with an empty tool registry.
-const planTools: [string, ...string[]] = ['none', ...plannableToolNames];
-
 export const PlanStepSchema = z.object({
   title: z
     .string()
     .describe('Short imperative description of the step, e.g. "Read package.json".'),
-  tool: z
-    .enum(planTools)
-    .describe('The workspace tool this step will likely use, or "none" for pure reasoning.'),
   detail: z
     .string()
     .describe(

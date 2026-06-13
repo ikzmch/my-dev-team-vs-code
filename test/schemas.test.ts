@@ -36,14 +36,16 @@ describe('TriageSchema', () => {
 });
 
 describe('PlanStepSchema', () => {
-  it.each(['read', 'search', 'run', 'write', 'none'] as const)(
-    'accepts the "%s" tool',
-    (tool) => {
-      expect(
-        PlanStepSchema.safeParse({ title: 't', tool, detail: 'd' }).success
-      ).toBe(true);
-    }
-  );
+  it('accepts a step with a title and detail', () => {
+    // Plan steps no longer carry a tool label: which tool a step needs is the
+    // executor's decision at run time.
+    expect(PlanStepSchema.safeParse({ title: 't', detail: 'd' }).success).toBe(true);
+  });
+
+  it('requires both a title and a detail', () => {
+    expect(PlanStepSchema.safeParse({ title: 't' }).success).toBe(false);
+    expect(PlanStepSchema.safeParse({ detail: 'd' }).success).toBe(false);
+  });
 
   it('describes detail as plain prose, never code', () => {
     // The description is part of what the model sees in structured-output
@@ -52,16 +54,10 @@ describe('PlanStepSchema', () => {
     expect(description).toContain('Never any code');
     expect(description).toContain('executor writes the code');
   });
-
-  it('rejects an unknown tool', () => {
-    expect(
-      PlanStepSchema.safeParse({ title: 't', tool: 'delete', detail: 'd' }).success
-    ).toBe(false);
-  });
 });
 
 describe('PlanSchema', () => {
-  const step = { title: 't', tool: 'none' as const, detail: 'd' };
+  const step = { title: 't', detail: 'd' };
 
   it('accepts a minimal one-step plan', () => {
     expect(

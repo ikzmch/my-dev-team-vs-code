@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-06-13
+
+### Changed
+
+- **Plans no longer label each step with a tool.** A drafted plan step is now
+  just a title and a one-sentence detail; which tool (if any) a step needs is
+  the executor's decision when it carries the step out, not something the plan
+  commits to up front. The per-step tool badge is gone from the plan display
+  and the executor briefing. The planner still knows what the executor can do,
+  so it keeps planning only doable work. The protocol version is bumped to 2
+  because the plan step shape changed.
+
 ## [0.24.0] - 2026-06-13
 
 ### Added

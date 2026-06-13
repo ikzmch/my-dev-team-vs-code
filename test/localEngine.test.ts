@@ -29,7 +29,7 @@ const hostStub: ToolHost = {
 
 const aPlan = {
   summary: 'Add a feature',
-  steps: [{ title: 'Find the file', tool: 'search', detail: 'locate it' }],
+  steps: [{ title: 'Find the file', detail: 'locate it' }],
 };
 
 const anExecution = {

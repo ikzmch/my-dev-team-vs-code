@@ -59,8 +59,8 @@ function fakeToken(cancelled = false) {
 const aPlan: PlanResult = {
   summary: 'Add a feature',
   steps: [
-    { title: 'Find the file', tool: 'search', detail: 'locate it' },
-    { title: 'Think', tool: 'none', detail: 'reason about it' },
+    { title: 'Find the file', detail: 'locate it' },
+    { title: 'Think', detail: 'reason about it' },
   ],
 };
 
@@ -331,7 +331,7 @@ describe('createHandler', () => {
     const text = emitted(stream);
     expect(text).toContain('**Detected intent:** `planning`');
     expect(text).toContain('**Plan:** Add a feature');
-    expect(text).toContain('1. **Find the file** _(search)_ - locate it');
+    expect(text).toContain('1. **Find the file** - locate it');
     // tool "none" must not render a tool suffix.
     expect(text).toContain('2. **Think** - reason about it');
     expect(text).not.toContain('Think** _(none)_');
@@ -371,7 +371,7 @@ describe('createHandler', () => {
 
     expect(seen.executor).toContain('add a feature');
     expect(seen.executor).toContain('--- Drafted plan ---');
-    expect(seen.executor).toContain('1. Find the file (tool: search) - locate it');
+    expect(seen.executor).toContain('1. Find the file - locate it');
   });
 
   it('relays the slash command so the engine pins the route without triage', async () => {
@@ -1115,17 +1115,17 @@ describe('createHandler streaming', () => {
     { summary: 'Add a feature', steps: [{ title: 'Find the' }] },
     {
       summary: 'Add a feature',
-      steps: [{ title: 'Find the file', tool: 'sea' }],
+      steps: [{ title: 'Find the file' }],
     },
     {
       summary: 'Add a feature',
-      steps: [{ title: 'Find the file', tool: 'search', detail: 'locate it' }],
+      steps: [{ title: 'Find the file', detail: 'locate it' }],
     },
     {
       summary: 'Add a feature',
       steps: [
-        { title: 'Find the file', tool: 'search', detail: 'locate it' },
-        { title: 'Think', tool: 'none', detail: 'reason about it' },
+        { title: 'Find the file', detail: 'locate it' },
+        { title: 'Think', detail: 'reason about it' },
       ],
     },
   ];
@@ -1304,7 +1304,7 @@ describe('createHandler streaming', () => {
     // The full reply is still rendered after the stale streamed prefix.
     const text = emitted(stream);
     expect(text).toContain('**Plan:** Add a feature');
-    expect(text).toContain('1. **Find the file** _(search)_ - locate it');
+    expect(text).toContain('1. **Find the file** - locate it');
   });
 
   it('separates a planner failure from already-streamed output', async () => {
@@ -1371,16 +1371,16 @@ describe('renderReply', () => {
       { summary: 'Add a feature' },
       { summary: 'Add a feature', steps: [] },
       { summary: 'Add a feature', steps: [{ title: 'Find' }] },
-      { summary: 'Add a feature', steps: [{ title: 'Find the file', tool: 'sea' }] },
+      { summary: 'Add a feature', steps: [{ title: 'Find the file' }] },
       {
         summary: 'Add a feature',
-        steps: [{ title: 'Find the file', tool: 'search', detail: 'locate' }],
+        steps: [{ title: 'Find the file', detail: 'locate' }],
       },
       {
         summary: 'Add a feature',
         steps: [
-          { title: 'Find the file', tool: 'search', detail: 'locate it' },
-          { title: 'Think', tool: 'none', detail: 'reason about it' },
+          { title: 'Find the file', detail: 'locate it' },
+          { title: 'Think', detail: 'reason about it' },
         ],
       },
     ];
@@ -1395,13 +1395,15 @@ describe('renderReply', () => {
     expect(final.startsWith(previous)).toBe(true);
   });
 
-  it('withholds the tool suffix until the detail field starts', () => {
+  it('withholds the closing bold and detail until the detail field starts', () => {
+    // A complete title with no detail yet renders without the closing bold and
+    // without the " - " separator, so streamed renders stay prefix-extensions.
     const mid = renderReply(
-      progress({ summary: 's', steps: [{ title: 'Find', tool: 'sea' }] }),
+      progress({ summary: 's', steps: [{ title: 'Find the file' }] }),
       false
     );
-    expect(mid).toContain('1. **Find**');
-    expect(mid).not.toContain('sea');
+    expect(mid.endsWith('1. **Find the file')).toBe(true);
+    expect(mid).not.toContain('Find the file**');
   });
 
   it('withholds the closing bold marker while the title still streams', () => {
@@ -1735,7 +1737,7 @@ describe('createHandler protocol envelope', () => {
     );
 
     expect(captured).toMatchObject({
-      protocolVersion: 1,
+      protocolVersion: 2,
       prompt: 'hi',
       offeredTools: ['read', 'search', 'run', 'write', 'edit'],
     });

@@ -10,7 +10,7 @@ import { clientTools, clientToolNames } from '../src/protocol/toolContract';
 
 describe('protocol schemas', () => {
   it('pins the protocol version', () => {
-    expect(PROTOCOL_VERSION).toBe(1);
+    expect(PROTOCOL_VERSION).toBe(2);
   });
 
   it('accepts a minimal run request and rejects a malformed one', () => {
@@ -63,7 +63,7 @@ describe('protocol schemas', () => {
     const planning: Reply = {
       intent: 'planning',
       reason: 'r',
-      plan: { summary: 's', steps: [{ title: 't', tool: 'read', detail: 'd' }] },
+      plan: { summary: 's', steps: [{ title: 't', detail: 'd' }] },
       execution: {
         events: [
           { kind: 'text', text: 'hi' },

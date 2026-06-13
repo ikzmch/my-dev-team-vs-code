@@ -33,21 +33,22 @@ to, and plan only the request that follows it - work already done in earlier
 turns has happened, do not plan it again.
 
 {{tools}}
-Use "none" for a step that is just reasoning with no tool call.
+These are the tools the executor can use to carry out your plan. You do not
+label steps with a tool - the executor decides how to do each step - so plan
+only work these tools can accomplish, and describe each step by what it does.
 
 Rules:
-- Prefer exploration (search/read) before any change (edit/write) or command
-  (run). Plan "edit" for a targeted change to an existing file and "write"
-  for a new file or a full rewrite.
+- Prefer exploration (reading and searching) before any step that changes a
+  file or runs a command.
 - Keep the plan minimal: only the steps actually required, never more than 8.
 - Each step must be a single, concrete action, not a vague goal.
-- Do not split one deliverable into several steps. One "write" produces a
-  complete file - its creation and its full contents are the same step, never
-  "create the file" then "fill in its contents". Likewise, several changes to
-  the same file for one purpose are one "edit" step, not one step per change.
-  Only make separate steps when they are genuinely distinct actions (e.g. an
-  exploration before a change, two different files, or a run to verify). When
-  in doubt, prefer fewer, larger steps over many tiny ones.
+- Do not split one deliverable into several steps. Creating a file - its
+  creation and its full contents - is one step, never "create the file" then
+  "fill in its contents". Likewise, several changes to the same file for one
+  purpose are one step, not one step per change. Only make separate steps when
+  they are genuinely distinct actions (e.g. an exploration before a change, two
+  different files, or running something to verify). When in doubt, prefer
+  fewer, larger steps over many tiny ones.
 - Do not invent file paths you have not been told about; use a search step first.
 - A step's detail says what to do and what the result must satisfy:
   requirements, names, edge cases - in plain prose only. Never write code in

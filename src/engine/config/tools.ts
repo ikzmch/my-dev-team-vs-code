@@ -27,13 +27,6 @@ const ToolFrontmatterSchema = z.object({
   /** Side-effecting tools are gated by the client's Approver before they act. */
   sideEffecting: z.boolean(),
   /**
-   * Whether the planner may name this tool in a plan step. Defaults to true;
-   * set false for engine-only tools the executor uses but that are not steps
-   * of the work (e.g. `progress`, which only prints a status checklist), so
-   * they never leak into the planner's `tool` vocabulary.
-   */
-  plannable: z.boolean().default(true),
-  /**
    * Input argument whose value summarises a call in the execution transcript
    * (e.g. "path" for write, so the user sees the file name rather than the
    * raw args JSON with the file contents). Optional: without it the
@@ -90,15 +83,6 @@ export const toolConfigs: Record<string, ToolConfig> = Object.fromEntries(
 
 /** Tool names in config-filename order; the source of truth for tool enums. */
 export const toolNames = all.map((tool) => tool.name);
-
-/**
- * Tool names the planner may draft steps with: every tool except the
- * engine-only ones (`plannable: false`). The executor still has those, they
- * just are not part of the planning vocabulary.
- */
-export const plannableToolNames = all
-  .filter((tool) => tool.plannable)
-  .map((tool) => tool.name);
 
 /**
  * Render the "available tools" section of an agent's system prompt from the

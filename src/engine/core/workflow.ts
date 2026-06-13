@@ -149,16 +149,12 @@ export function fullPrompt(input: RequestInput): string {
 /**
  * The prompt the executor sees: the full request (prompt + attachment text,
  * same as the planner saw) plus the plan it is asked to carry out, rendered
- * as a numbered list with the tool hints.
+ * as a numbered list of titles and details. Steps name no tool - the executor
+ * chooses how to carry each one out.
  */
 export function executionPrompt(input: RequestInput, plan: Plan): string {
   const steps = plan.steps
-    .map(
-      (step, i) =>
-        `${i + 1}. ${step.title}` +
-        (step.tool !== 'none' ? ` (tool: ${step.tool})` : '') +
-        ` - ${step.detail}`
-    )
+    .map((step, i) => `${i + 1}. ${step.title} - ${step.detail}`)
     .join('\n');
   return `${fullPrompt(input)}\n\n--- Drafted plan ---\n${plan.summary}\n${steps}`;
 }

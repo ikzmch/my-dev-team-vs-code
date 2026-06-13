@@ -63,7 +63,7 @@ function fakeExecutor(
 
 const aPlan: PlanResult = {
   summary: 'Add a feature',
-  steps: [{ title: 'Find the file', tool: 'search', detail: 'locate it' }],
+  steps: [{ title: 'Find the file', detail: 'locate it' }],
 };
 
 const anExecution: ExecutionResult = {
@@ -172,7 +172,7 @@ describe('dev-team workflow routing', () => {
     expect(seen.executor).toContain('refactor the module');
     expect(seen.executor).toContain('--- Drafted plan ---');
     expect(seen.executor).toContain('Add a feature');
-    expect(seen.executor).toContain('1. Find the file (tool: search) - locate it');
+    expect(seen.executor).toContain('1. Find the file - locate it');
   });
 
   it('hands the original prompt to the answerer on the oneshot path', async () => {
@@ -743,7 +743,7 @@ describe('prompt assembly', () => {
   it('carries the project instructions into the execution prompt', () => {
     const plan: PlanResult = {
       summary: 'Do it',
-      steps: [{ title: 'Edit', tool: 'edit', detail: 'change it' }],
+      steps: [{ title: 'Edit', detail: 'change it' }],
     };
     const prompt = executionPrompt({ prompt: 'refactor', instructions }, plan);
     expect(prompt).toContain('--- Project instructions (AGENTS.md) ---');
@@ -755,7 +755,7 @@ describe('prompt assembly', () => {
   it('includes the conversation section in the execution prompt', () => {
     const plan: PlanResult = {
       summary: 'Rename it',
-      steps: [{ title: 'Rename', tool: 'write', detail: 'rename the file' }],
+      steps: [{ title: 'Rename', detail: 'rename the file' }],
     };
     const prompt = executionPrompt({ prompt: 'now rename it', history }, plan);
     expect(prompt).toContain('--- Conversation so far ---');
@@ -765,12 +765,12 @@ describe('prompt assembly', () => {
     );
   });
 
-  it('appends the numbered plan with tool hints to the execution prompt', () => {
+  it('appends the numbered plan of titles and details to the execution prompt', () => {
     const plan: PlanResult = {
       summary: 'Do the work',
       steps: [
-        { title: 'Find the file', tool: 'search', detail: 'locate it' },
-        { title: 'Think', tool: 'none', detail: 'reason about it' },
+        { title: 'Find the file', detail: 'locate it' },
+        { title: 'Think', detail: 'reason about it' },
       ],
     };
     const prompt = executionPrompt({ prompt: 'refactor', attachments }, plan);
@@ -778,10 +778,10 @@ describe('prompt assembly', () => {
     expect(prompt).toContain('--- Attached context ---');
     expect(prompt).toContain('const a = 1;');
     expect(prompt).toContain('--- Drafted plan ---\nDo the work\n');
-    expect(prompt).toContain('1. Find the file (tool: search) - locate it');
-    // "none" is a schema artifact, not a real tool; the executor must not see it.
+    // Steps render as "N. title - detail", with no tool annotation.
+    expect(prompt).toContain('1. Find the file - locate it');
     expect(prompt).toContain('2. Think - reason about it');
-    expect(prompt).not.toContain('(tool: none)');
+    expect(prompt).not.toContain('(tool:');
   });
 });
 

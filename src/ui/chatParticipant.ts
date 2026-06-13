@@ -300,19 +300,12 @@ function formatPlan(plan: PartialPlan, done: boolean): string {
       return text;
     }
     text += `${i + 1}. **${step.title}`;
-    // The title is complete once the tool field has started.
-    if (step.tool === undefined && !done) {
-      return text;
-    }
-    text += '**';
-    // The tool enum value is complete once the detail field has started.
+    // The title is complete once the detail field has started; withhold the
+    // closing bold marker until then so streamed renders stay prefix-extensions.
     if (step.detail === undefined && !done) {
       return text;
     }
-    if (step.tool && step.tool !== 'none') {
-      text += ` _(${step.tool})_`;
-    }
-    text += ` - ${step.detail ?? ''}`;
+    text += `** - ${step.detail ?? ''}`;
     // The detail keeps streaming until the next step begins.
     if (steps[i + 1] === undefined && !done) {
       return text;

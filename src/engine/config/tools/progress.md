@@ -1,7 +1,6 @@
 ---
 name: progress
 sideEffecting: false
-plannable: false
 ---
 
 Print a status checklist of the plan to the user. Call it from time to time as

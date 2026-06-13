@@ -19,7 +19,7 @@ import { z } from 'zod';
  * or field changes meaning - adding a new event type is backwards-compatible
  * and needs no bump.
  */
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 /** One attached file/selection: a short label naming it plus its (already truncated) text. */
 export const AttachmentSchema = z.object({
@@ -92,13 +92,12 @@ export const IntentSchema = z.enum(['oneshot', 'planning']);
 export type Intent = z.infer<typeof IntentSchema>;
 
 /**
- * A drafted plan step. `tool` is a tool name from the run's offered tools, or
- * "none" for a pure-reasoning step. The wire keeps it a plain string: which
- * names are valid is the engine's business, and a client only displays it.
+ * A drafted plan step: a short title and one sentence of detail. Steps carry
+ * no tool label - which tool (if any) a step needs is the executor's call at
+ * run time, not something the plan commits to.
  */
 export const PlanStepSchema = z.object({
   title: z.string(),
-  tool: z.string(),
   detail: z.string(),
 });
 export type PlanStep = z.infer<typeof PlanStepSchema>;
@@ -112,12 +111,11 @@ export type Plan = z.infer<typeof PlanSchema>;
 /**
  * A snapshot of the plan while the engine is still drafting it. Field values
  * arrive incrementally: strings grow over time and later fields are missing
- * until the model reaches them, so everything is optional and `tool` may hold
- * a not-yet-complete value.
+ * until the model reaches them, so everything is optional and a title or
+ * detail may still be only partly streamed.
  */
 export type PartialPlanStep = {
   title?: string;
-  tool?: string;
   detail?: string;
 };
 export type PartialPlan = {

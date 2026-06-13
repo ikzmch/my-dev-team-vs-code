@@ -15,7 +15,6 @@ import {
   loadTools,
   toolConfigs,
   toolNames,
-  plannableToolNames,
   renderToolsSection,
 } from '../src/engine/config/tools';
 import { clientTools, clientToolNames } from '../src/protocol/toolContract';
@@ -24,7 +23,6 @@ import {
   environment,
   renderEnvironmentSection,
 } from '../src/config/environment';
-import { PlanStepSchema } from '../src/engine/core/planner';
 
 beforeEach(() => {
   __reset();
@@ -454,16 +452,10 @@ describe('tool configs', () => {
       'search',
       'write',
     ]);
-    // The planner may only draft with the workspace tools; progress is
-    // executor-only (plannable: false) so it never enters a plan step.
-    expect([...plannableToolNames].sort()).toEqual([
-      'edit',
-      'read',
-      'run',
-      'search',
-      'write',
-    ]);
-    expect(toolConfigs.progress.plannable).toBe(false);
+    // progress is engine-only: the executor carries it, the planner never
+    // lists it (plan steps no longer name a tool at all).
+    expect(agents.executor.tools).toContain('progress');
+    expect(agents.planner.tools).not.toContain('progress');
   });
 
   it('marks only run as side-effecting; read, search, write, and edit are not', () => {
@@ -477,11 +469,12 @@ describe('tool configs', () => {
   });
 
   it('agrees with the protocol contract on the tool vocabulary', () => {
-    // The engine's plannable tool configs (model-facing) and the protocol's
+    // The engine's workspace tool configs (model-facing) and the protocol's
     // client tools (ids, display names, input schemas) describe the same five
-    // workspace tools; a tool added on one side only would silently break the
-    // other. The engine-only progress tool has no client contract.
-    expect([...plannableToolNames].sort()).toEqual([...clientToolNames].sort());
+    // tools; a tool added on one side only would silently break the other. The
+    // engine-only progress tool has no client contract.
+    const workspaceTools = toolNames.filter((name) => name !== 'progress');
+    expect([...workspaceTools].sort()).toEqual([...clientToolNames].sort());
     expect(clientToolNames).not.toContain('progress');
     for (const name of clientToolNames) {
       expect(clientTools[name].lmToolId).toBe(`devteam__${name}`);
@@ -662,10 +655,16 @@ describe('agent configs', () => {
     expect(p).toContain('create a python script');
   });
 
-  it('keeps the planner contract: the five plannable tools, the step cap, and JSON output', () => {
-    // The planner plans only with the workspace tools; the engine-only
-    // progress tool must not be in its vocabulary.
-    expect([...agents.planner.tools].sort()).toEqual([...plannableToolNames].sort());
+  it('keeps the planner contract: the five workspace tools, the step cap, and JSON output', () => {
+    // The planner is grounded in the workspace tools (so it plans only doable
+    // work); the engine-only progress tool is never offered to it.
+    expect([...agents.planner.tools].sort()).toEqual([
+      'edit',
+      'read',
+      'run',
+      'search',
+      'write',
+    ]);
     expect(agents.planner.tools).not.toContain('progress');
     const p = agents.planner.instructions;
     expect(p).toContain('never more than 8');
@@ -688,21 +687,12 @@ describe('agent configs', () => {
     const p = agents.planner.instructions;
     expect(p).not.toContain('{{tools}}');
     expect(p).toContain('You have exactly 5 tools available:');
-    for (const name of plannableToolNames) {
+    for (const name of agents.planner.tools) {
       expect(p).toContain(`- "${name}": ${toolConfigs[name].description}`);
     }
     // The engine-only progress tool is never advertised to the planner.
     expect(p).not.toContain(`- "progress":`);
     // The placeholder position is honoured: tools come before the rules.
     expect(p.indexOf('tools available')).toBeLessThan(p.indexOf('Rules:'));
-  });
-
-  it('matches the tool enum the planner schema actually accepts', () => {
-    // The prompt advertises a tool vocabulary; keep it aligned with the schema
-    // the model must satisfy so it can never name a tool the schema rejects.
-    for (const tool of PlanStepSchema.shape.tool.options) {
-      if (tool === 'none') continue;
-      expect(agents.planner.instructions).toContain(`"${tool}"`);
-    }
   });
 });

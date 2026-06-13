@@ -122,7 +122,7 @@ describe('Triage', () => {
 describe('Planner', () => {
   const plan = {
     summary: 'do the thing',
-    steps: [{ title: 'Read it', tool: 'read', detail: 'because' }],
+    steps: [{ title: 'Read it', detail: 'because' }],
   };
 
   it('returns the final structured plan from the stream', async () => {
@@ -618,7 +618,7 @@ describe('usage reporting', () => {
   const counts = { inputTokens: 11, outputTokens: 7 };
   const plan = {
     summary: 'do the thing',
-    steps: [{ title: 'Read it', tool: 'read', detail: 'because' }],
+    steps: [{ title: 'Read it', detail: 'because' }],
   };
 
   it('Triage reports the routed model and the generate result counts', async () => {

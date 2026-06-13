@@ -59,7 +59,7 @@ src/
       workflow.ts         Mastra workflow: triage -> plan -> execute | answer; per-run progress + usage sinks
       models.ts           provider wiring: turns the selected registry entry into an AI SDK model
       triage.ts           Mastra agent: triage request as oneshot | planning
-      planner.ts          Mastra agent: draft an ordered, tool-aware plan, streamed as partial snapshots
+      planner.ts          Mastra agent: draft an ordered plan of titled steps, streamed as partial snapshots
       answerer.ts         Mastra agent: answer a oneshot request directly, streamed as accumulated text
       executor.ts         Mastra agent: walk the plan in a tool-calling loop, streamed as a transcript
       agentTools.ts       the executor's tool proxies: every call delegates to the client's ToolHost
@@ -303,7 +303,7 @@ never carry literals inline.
 | ------------------------------- | ------------------------------------------------------------- |
 | `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
 | `engine/config/models/*.md`     | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
-| `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, `plannable` - default true; false for engine-only tools like `progress` that the executor uses but the planner must not plan with, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` tool has no client half |
+| `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` tool has no client half |
 | `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
 | `engine/config/models.ts`       | Discovers the model files, exports the registry and the capability-based `selectModel` |
@@ -329,12 +329,12 @@ statically typed keys used across the code.
 
 The frontmatter carries everything an agent needs besides its prose: its `id`,
 `name`, `description`, the weighted **capability requirements** that drive
-model selection, and the list of **tools** it may plan with. Prompts never
+model selection, and the list of **tools** it works with. Prompts never
 hardcode tool descriptions - the `{{tools}}` placeholder in the prompt body is
 replaced with a section rendered from the tool configs, so adding a tool to an
-agent is a one-line frontmatter change. The planner's `tool` enum in its output
-schema is derived from the same registry, so the prompt and the schema can
-never drift apart.
+agent is a one-line frontmatter change. The planner's tool list only grounds
+its prompt (so it plans doable work); plan steps name no tool, the executor
+chooses how to carry each one out at run time.
 
 Prompts never hardcode a platform either. The planner and executor prompts
 carry an `{{environment}}` placeholder, and the `run` tool's description
@@ -509,11 +509,11 @@ decisions, in the order they matter:
 - **Briefing.** The executor's prompt (`executionPrompt` in
   `engine/core/workflow.ts`) is the full request - the conversation so far, the
   prompt, and the inlined attachment text, exactly what the planner saw -
-  followed by a `--- Drafted plan ---` section: the plan summary and the numbered steps with their tool hints
-  (`1. Find the file (tool: search) - locate it`; a `none` hint is a schema
-  artifact and is omitted). The plan is guidance, not a script: the system
-  prompt tells the model to follow it in order but skip steps already covered
-  by earlier results.
+  followed by a `--- Drafted plan ---` section: the plan summary and the
+  numbered steps as `title - detail` (`1. Find the file - locate it`). Steps
+  name no tool; the executor decides how to carry each one out. The plan is
+  guidance, not a script: the system prompt tells the model to follow it in
+  order but skip steps already covered by earlier results.
 - **The product is a transcript.** `Executor.execute` drains the run's
   `fullStream` of chunks and folds them into an ordered list of events
   (`ExecutionSchema`): `text` events (the model's commentary and final
@@ -533,8 +533,9 @@ decisions, in the order they matter:
   transcript only shows the user what happened. A run-level `error` chunk throws, failing the workflow step so
   the UI renders the executor error with the Ollama hint.
 - **Progress checklists.** The executor also carries one engine-only tool,
-  `progress` (`config/tools/progress.md`, `plannable: false` so it never
-  enters a plan step, no client implementation, no approval gate). The system
+  `progress` (`config/tools/progress.md`, no client implementation, no
+  approval gate, and not in the planner's tool list so plans never mention it).
+  The system
   prompt tells the model to call it from time to time - when it starts a step
   and as steps complete - passing the plan steps it wants to show by their
   1-based numbers with a status (`pending`/`in_progress`/`done`). The executor
@@ -721,8 +722,8 @@ Out of the box, `@devteam <prompt>`:
    write files and suggests rephrasing (e.g. "create the file X that ..."),
    while still showing the would-be content in a fenced block.
 5. For `planning` requests, **streams the
-   plan itself** - an ordered, tool-aware checklist (`summary` + at most 8
-   numbered steps, each hinting which workspace tool it would use) appears
+   plan itself** - an ordered checklist (`summary` + at most 8 numbered steps,
+   each a title and a one-sentence detail) appears
    incrementally while the planner's routed model (currently `qwen3:14b`)
    writes it. Plan steps describe the work and its requirements in plain
    prose; they never carry code of any kind (no file contents, no snippets) -
@@ -858,7 +859,7 @@ copy-pasteable prompts per pipeline path, each targeting one triage route:
 
 After touching a routing-relevant surface, run a few prompts from each file
 in the Extension Development Host and check that triage picks the expected
-route, the plan uses sensible tools, and the execution lands. With
+route, the plan reads sensibly, and the execution lands. With
 `myDevTeam.telemetry.evalLog` enabled, each run's route and outcome land in
 the eval log, so a prompt or weight change can be compared before/after on
 the same prompts. When a change adds a new pipeline path or a new tool
