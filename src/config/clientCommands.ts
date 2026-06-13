@@ -18,10 +18,17 @@ export const clientCommands = [
     name: 'clear',
     description: 'Start fresh: drop the conversation so far from future requests.',
   },
+  {
+    name: 'model',
+    description: 'Choose the model @devteam uses (or Auto to route by capability).',
+  },
 ] as const;
 
 /** The /clear command: later turns drop all history before its marker. */
 export const CLEAR_COMMAND = clientCommands[0].name;
+
+/** The /model command: pick the model (or set it from an argument); starts no run. */
+export const MODEL_COMMAND = clientCommands[1].name;
 
 /**
  * Name of the engine command whose successful reply (the summary) replaces

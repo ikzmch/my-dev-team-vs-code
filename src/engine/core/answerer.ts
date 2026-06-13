@@ -1,8 +1,7 @@
 import { Agent } from '@mastra/core/agent';
-import { resolveModel } from './models';
+import { resolveModel, routeModel } from './models';
 import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
-import { selectModel } from '../config/models';
 
 /**
  * Receives the answer-so-far as the model streams it. Each call carries the
@@ -18,14 +17,24 @@ export type AnswerProgress = (textSoFar: string) => void;
  * product is the prose itself.
  */
 export class Answerer {
-  private readonly modelName = selectModel(agents.answerer.capabilities).model;
-  private readonly agent = new Agent({
-    id: agents.answerer.id,
-    name: agents.answerer.name,
-    description: agents.answerer.description,
-    instructions: agents.answerer.instructions,
-    model: resolveModel(agents.answerer.capabilities),
-  });
+  private readonly modelName: string;
+  private readonly agent: Agent;
+
+  /**
+   * `modelPin` is the user's per-run model choice (a registry id, or "auto"/
+   * undefined for the capability router). The LocalEngine builds a fresh
+   * Answerer per run with the run request's choice.
+   */
+  constructor(modelPin?: string) {
+    this.modelName = routeModel(agents.answerer.capabilities, modelPin).model;
+    this.agent = new Agent({
+      id: agents.answerer.id,
+      name: agents.answerer.name,
+      description: agents.answerer.description,
+      instructions: agents.answerer.instructions,
+      model: resolveModel(agents.answerer.capabilities, modelPin),
+    });
+  }
 
   async answer(
     prompt: string,

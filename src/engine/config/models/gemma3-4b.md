@@ -1,5 +1,6 @@
 ---
 id: gemma3-4b
+label: Gemma 3 4B (Ollama)
 provider: ollama
 model: gemma3:4b
 capabilities:

@@ -24,7 +24,7 @@ import { Answerer } from '../src/engine/core/answerer';
 import { Executor, PartialExecution } from '../src/engine/core/executor';
 import { AgentUsage } from '../src/engine/core/usage';
 import { agents } from '../src/engine/config/agents';
-import { selectModel } from '../src/engine/config/models';
+import { routeModel, localModels } from '../src/engine/core/models';
 import { ToolHost } from '../src/protocol/toolContract';
 import { settings } from '../src/config/settings';
 import { __state } from './mocks/vscode';
@@ -629,7 +629,10 @@ describe('usage reporting', () => {
     const seen: AgentUsage[] = [];
     await new Triage().classify('q', (usage) => seen.push(usage));
     expect(seen).toEqual([
-      { model: selectModel(agents.triage.capabilities).model, ...counts },
+      {
+        model: routeModel(agents.triage.capabilities, undefined, localModels()).model,
+        ...counts,
+      },
     ]);
   });
 
@@ -649,7 +652,7 @@ describe('usage reporting', () => {
     await new Triage().classify('q', (usage) => seen.push(usage));
     expect(seen).toEqual([
       {
-        model: selectModel(agents.triage.capabilities).model,
+        model: routeModel(agents.triage.capabilities, undefined, localModels()).model,
         inputTokens: 3,
         outputTokens: 5,
       },
@@ -664,7 +667,7 @@ describe('usage reporting', () => {
     const seen: AgentUsage[] = [];
     await new Planner().plan('p', undefined, (usage) => seen.push(usage));
     expect(seen).toEqual([
-      { model: selectModel(agents.planner.capabilities).model, ...counts },
+      { model: routeModel(agents.planner.capabilities).model, ...counts },
     ]);
   });
 
@@ -673,7 +676,7 @@ describe('usage reporting', () => {
     const seen: AgentUsage[] = [];
     await new Answerer().answer('q', undefined, (usage) => seen.push(usage));
     expect(seen).toEqual([
-      { model: selectModel(agents.answerer.capabilities).model, ...counts },
+      { model: routeModel(agents.answerer.capabilities).model, ...counts },
     ]);
   });
 
@@ -687,7 +690,7 @@ describe('usage reporting', () => {
       seen.push(usage)
     );
     expect(seen).toEqual([
-      { model: selectModel(agents.executor.capabilities).model, ...counts },
+      { model: routeModel(agents.executor.capabilities).model, ...counts },
     ]);
   });
 

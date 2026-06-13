@@ -11,6 +11,14 @@ import {
 } from './ui/chatParticipant';
 import { TerminalRunMirror } from './ui/runTerminal';
 import { checkEngineAtStartup } from './ui/startupCheck';
+import {
+  ModelStatusBar,
+  pickModel,
+  runSetApiKeyCommand,
+  SELECT_MODEL_COMMAND_ID,
+  SET_API_KEY_COMMAND_ID,
+} from './ui/modelCommands';
+import { loadStoredApiKeys } from './config/credentials';
 
 export function activate(context: vscode.ExtensionContext) {
   // --- Approval seam: Phase 1 uses the chat-based approver ---
@@ -42,6 +50,31 @@ export function activate(context: vscode.ExtensionContext) {
   // request be the thing that fails. Never blocks activation.
   const getEngine = createEngineProvider();
   void checkEngineAtStartup(getEngine());
+
+  // --- Model selection ---
+  // Load any cloud-provider API keys from SecretStorage into the in-memory
+  // cache (env vars are the fallback), then wire the picker, the "Set API Key"
+  // command, and a status-bar item showing the active model. The chosen model
+  // travels on every run request via the myDevTeam.model setting; the engine
+  // routes by capability when it is "auto".
+  void loadStoredApiKeys(context.secrets);
+  const modelStatusBar = new ModelStatusBar(getEngine(), SELECT_MODEL_COMMAND_ID);
+  context.subscriptions.push(modelStatusBar);
+  void modelStatusBar.refresh();
+  context.subscriptions.push(
+    vscode.commands.registerCommand(SELECT_MODEL_COMMAND_ID, async () => {
+      await pickModel(getEngine());
+      void modelStatusBar.refresh();
+    }),
+    vscode.commands.registerCommand(SET_API_KEY_COMMAND_ID, () =>
+      runSetApiKeyCommand(context.secrets)
+    ),
+    vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('myDevTeam.model')) {
+        void modelStatusBar.refresh();
+      }
+    })
+  );
 
   // --- Telemetry/eval seam: the local, opt-in eval log ---
   // Run records (route, per-step usage, outcome) and 👍/👎 feedback land in

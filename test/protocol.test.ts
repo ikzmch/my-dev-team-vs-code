@@ -170,6 +170,20 @@ describe('ReplyFolder', () => {
     });
   });
 
+  it('folds the model-selected event onto the snapshot selection', () => {
+    const folder = new ReplyFolder();
+    folder.apply({ type: 'triaged', intent: 'oneshot', reason: 'r' });
+    const selection = {
+      mode: 'auto' as const,
+      models: [{ step: 'answer', id: 'qwen3-8b', label: 'Qwen3 8B (Ollama)' }],
+    };
+    expect(folder.apply({ type: 'model-selected', selection })).toEqual({
+      intent: 'oneshot',
+      reason: 'r',
+      selection,
+    });
+  });
+
   it('ignores events arriving before the triage decision', () => {
     const folder = new ReplyFolder();
     expect(folder.apply({ type: 'answer-delta', text: 'stray' })).toBeUndefined();

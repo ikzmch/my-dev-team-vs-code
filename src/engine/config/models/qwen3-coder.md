@@ -1,5 +1,6 @@
 ---
 id: qwen3-coder
+label: Qwen3 Coder (Ollama)
 provider: ollama
 model: qwen3-coder:latest
 capabilities:

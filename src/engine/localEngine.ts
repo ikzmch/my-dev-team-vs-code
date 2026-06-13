@@ -25,11 +25,24 @@ import {
   StepUsage,
 } from './core/workflow';
 import { agents, AgentName } from './config/agents';
-import { selectModel } from './config/models';
+import {
+  AUTO_MODEL,
+  PROVIDER_PIN_PREFIX,
+  modelById,
+  modelRegistry,
+  providerLabels,
+  providerPinOf,
+  ModelInfo,
+  ProviderName,
+} from './config/models';
+import { routeModel, localModels, isModelAvailable } from './core/models';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 import {
   ExecutionEvent,
+  Intent,
+  ModelChoice,
+  ModelSelection,
   PROTOCOL_VERSION,
   Reply,
   ReplySchema,
@@ -46,13 +59,58 @@ import {
   RunFailedError,
 } from '../protocol/engine';
 
-/** The models the router selects for the registered agents, deduplicated. */
+/**
+ * The Ollama models the router selects for the registered agents under Auto
+ * routing, deduplicated - the set the startup probe checks are pulled. Triage
+ * always routes among the local models; the other agents route among the
+ * available models, so a cloud model they pick (when its key is set) is simply
+ * not an Ollama tag to check and is left out.
+ */
 export function routedModels(): string[] {
   const names = new Set<string>();
-  for (const agent of Object.values(agents)) {
-    names.add(selectModel(agent.capabilities).model);
+  names.add(routeModel(agents.triage.capabilities, undefined, localModels()).model);
+  for (const name of ['planner', 'answerer', 'executor'] as const) {
+    const info = routeModel(agents[name].capabilities);
+    if (info.provider === 'ollama') {
+      names.add(info.model);
+    }
   }
   return [...names];
+}
+
+/**
+ * Which model each step will use for this run, for the protocol's
+ * `model-selected` event and the reply's `selection`. Deterministic from the
+ * route and the user's pin, so the streamed event and the final reply always
+ * agree. Triage is always a local Ollama model; the work agents honour the
+ * pin (or, in Auto, the best available model). Only the steps the route will
+ * run are listed: triage always, then plan+execute, or answer.
+ */
+export function modelSelection(intent: Intent, modelPin?: string): ModelSelection {
+  // pinned (a model id) > provider (a "provider:<name>" pin) > auto.
+  const providerPin = providerPinOf(modelPin);
+  const mode: ModelSelection['mode'] = modelById(modelPin)
+    ? 'pinned'
+    : providerPin
+    ? 'provider'
+    : 'auto';
+  const entry = (step: string, info: ModelInfo) => ({
+    step,
+    id: info.id,
+    label: info.label,
+  });
+  const models = [
+    entry('triage', routeModel(agents.triage.capabilities, undefined, localModels())),
+  ];
+  if (intent === 'planning') {
+    models.push(entry('plan', routeModel(agents.planner.capabilities, modelPin)));
+    models.push(entry('execute', routeModel(agents.executor.capabilities, modelPin)));
+  } else {
+    models.push(entry('answer', routeModel(agents.answerer.capabilities, modelPin)));
+  }
+  return providerPin
+    ? { mode, provider: providerLabels[providerPin], models }
+    : { mode, models };
 }
 
 /**
@@ -68,12 +126,26 @@ export class ProgressTranslator {
   private answerChars = 0;
   private executionSeen: ExecutionEvent[] = [];
 
-  constructor(private readonly emit: (event: RunEvent) => void) {}
+  /**
+   * `selectionFor` (when given) maps the decided route to the run's model
+   * selection, so the translator can emit `model-selected` right after the
+   * first `triaged` - the route is what decides which steps run.
+   */
+  constructor(
+    private readonly emit: (event: RunEvent) => void,
+    private readonly selectionFor?: (intent: Intent) => ModelSelection
+  ) {}
 
   push(progress: ReplyProgress): void {
     if (!this.triaged) {
       this.triaged = true;
       this.emit({ type: 'triaged', intent: progress.intent, reason: progress.reason });
+      if (this.selectionFor) {
+        this.emit({
+          type: 'model-selected',
+          selection: this.selectionFor(progress.intent),
+        });
+      }
     }
     // Plans stream as snapshots while they are being drafted; once execution
     // output exists the plan is final and already emitted.
@@ -124,22 +196,33 @@ function failureDetail(error: unknown): string {
     : String(error);
 }
 
-function ollamaHint(agent: AgentName): string {
-  const { model } = selectModel(agents[agent].capabilities);
-  return messages.ollamaHint(settings.ollamaEndpoint, model);
+/**
+ * The troubleshooting hint for a failed agent, naming the model it actually
+ * used. An Ollama model points at the server + tag to pull; a cloud model
+ * points at its missing/invalid API key. Triage always uses a local model.
+ */
+function failureHint(agent: AgentName, modelPin?: string): string {
+  const info =
+    agent === 'triage'
+      ? routeModel(agents.triage.capabilities, undefined, localModels())
+      : routeModel(agents[agent].capabilities, modelPin);
+  return info.provider === 'ollama'
+    ? messages.ollamaHint(settings.ollamaEndpoint, info.model)
+    : messages.cloudKeyHint(info.label, info.provider);
 }
 
 function mapFailure(
   error: unknown,
-  steps: Record<string, { status: string }>
+  steps: Record<string, { status: string }>,
+  modelPin?: string
 ): RunFailedError {
   const detail = failureDetail(error);
   for (const { stepId, step, agent } of failureMap) {
     if (steps[stepId]?.status === 'failed') {
-      return new RunFailedError(step, detail, ollamaHint(agent));
+      return new RunFailedError(step, detail, failureHint(agent, modelPin));
     }
   }
-  return new RunFailedError('triage', detail, ollamaHint('triage'));
+  return new RunFailedError('triage', detail, failureHint('triage', modelPin));
 }
 
 /** Shape of the Ollama `GET /api/tags` response, as far as the probe reads it. */
@@ -153,18 +236,20 @@ interface TagsResponse {
  * agents. The executor is a factory because it is bound to the run's ToolHost.
  */
 export interface LocalEngineAgents {
+  /** Triage is shared across runs - it never honours the model pin. */
   triage: Triage;
-  planner: Planner;
-  answerer: Answerer;
-  createExecutor: (toolHost: ToolHost) => Executor;
+  /** Built per run with the request's model pin (planner/answerer/executor honour it). */
+  createPlanner: (modelPin?: string) => Planner;
+  createAnswerer: (modelPin?: string) => Answerer;
+  createExecutor: (toolHost: ToolHost, modelPin?: string) => Executor;
 }
 
 function defaultAgents(): LocalEngineAgents {
   return {
     triage: new Triage(),
-    planner: new Planner(),
-    answerer: new Answerer(),
-    createExecutor: (toolHost) => new Executor(toolHost),
+    createPlanner: (modelPin) => new Planner(modelPin),
+    createAnswerer: (modelPin) => new Answerer(modelPin),
+    createExecutor: (toolHost, modelPin) => new Executor(toolHost, modelPin),
   };
 }
 
@@ -200,13 +285,19 @@ export class LocalEngine implements Engine {
         );
       }
 
-      // The executor is bound to this run's ToolHost; everything else is
-      // shared. Workflow assembly is plain object composition, cheap per run.
+      // The user's per-run model choice ("auto"/absent lets the router pick).
+      // Triage ignores it (always local); the work agents are built per run
+      // with it, since the pin changes which model they wire.
+      const modelPin = input.model;
+      const selectionFor = (intent: Intent) => modelSelection(intent, modelPin);
+
+      // The work agents are bound to this run's pin; the executor also to its
+      // ToolHost. Workflow assembly is plain object composition, cheap per run.
       const workflow = createDevTeamWorkflow(
         this.agents.triage,
-        this.agents.planner,
-        this.agents.answerer,
-        this.agents.createExecutor(client.toolHost)
+        this.agents.createPlanner(modelPin),
+        this.agents.createAnswerer(modelPin),
+        this.agents.createExecutor(client.toolHost, modelPin)
       );
       const run = await workflow.createRun();
       activeRun = run;
@@ -214,7 +305,7 @@ export class LocalEngine implements Engine {
         throw new RunCancelledError();
       }
 
-      const translator = new ProgressTranslator(emit);
+      const translator = new ProgressTranslator(emit, selectionFor);
       const requestContext = new RequestContext();
       requestContext.set(abortSignalKey, abort.signal);
       requestContext.set(replyProgressKey, (progress: ReplyProgress) =>
@@ -248,11 +339,14 @@ export class LocalEngine implements Engine {
       }
       if (outcome.status === 'success') {
         // Parse rather than cast: the protocol schema is the promise the
-        // engine makes to every client, local or remote.
-        return ReplySchema.parse(outcome.result);
+        // engine makes to every client, local or remote. The selection is
+        // attached here (deterministic from the route), matching the
+        // model-selected event the translator already emitted.
+        const reply = ReplySchema.parse(outcome.result);
+        return { ...reply, selection: selectionFor(reply.intent) };
       }
       if (outcome.status === 'failed') {
-        throw mapFailure(outcome.error, outcome.steps);
+        throw mapFailure(outcome.error, outcome.steps, modelPin);
       }
       throw new RunFailedError(
         undefined,
@@ -290,35 +384,85 @@ export class LocalEngine implements Engine {
   }
 
   /**
-   * Ping the configured Ollama endpoint and report (never show - surfacing is
-   * the UI's job) whether the server is unreachable or any router-selected
-   * model is not pulled, instead of letting the first run be what fails.
+   * The set of Ollama tags installed on the configured server, or undefined
+   * when the server could not be reached. Ollama reports untagged pulls as
+   * "<model>:latest", so both the tag and its `:latest` alias are stored.
    */
-  async startupWarnings(): Promise<string[]> {
-    const endpoint = settings.ollamaEndpoint;
-
-    let installed: Set<string>;
+  private async installedOllamaTags(): Promise<Set<string> | undefined> {
     try {
-      const res = await fetch(`${endpoint}/api/tags`, {
+      const res = await fetch(`${settings.ollamaEndpoint}/api/tags`, {
         signal: AbortSignal.timeout(settings.startupProbeTimeoutMs),
       });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);
       }
       const tags = (await res.json()) as TagsResponse;
-      installed = new Set(
+      return new Set(
         (tags.models ?? [])
           .flatMap((m) => [m.name, m.model])
           .filter((n): n is string => typeof n === 'string')
       );
     } catch {
-      return [messages.startup.unreachable(endpoint)];
+      return undefined;
     }
+  }
 
-    // Ollama reports untagged pulls as "<model>:latest", so accept that alias.
+  /** Whether `model` (or its ":latest" alias) is in the installed tag set. */
+  private static ollamaInstalled(model: string, installed: Set<string>): boolean {
+    return installed.has(model) || installed.has(`${model}:latest`);
+  }
+
+  /**
+   * Ping the configured Ollama endpoint and report (never show - surfacing is
+   * the UI's job) whether the server is unreachable or any Auto-routed local
+   * model is not pulled, instead of letting the first run be what fails. Cloud
+   * models are not Ollama tags, so they are not probed here.
+   */
+  async startupWarnings(): Promise<string[]> {
+    const installed = await this.installedOllamaTags();
+    if (!installed) {
+      return [messages.startup.unreachable(settings.ollamaEndpoint)];
+    }
     const missing = routedModels().filter(
-      (model) => !installed.has(model) && !installed.has(`${model}:latest`)
+      (model) => !LocalEngine.ollamaInstalled(model, installed)
     );
     return missing.length > 0 ? [messages.startup.missingModels(missing)] : [];
+  }
+
+  /**
+   * The models the `/model` picker offers: "Auto" first, then every registered
+   * model with whether it can run now. An Ollama model is available when it is
+   * pulled (probed once here; if the server is unreachable we cannot tell, so
+   * we report it available rather than hide it); a cloud model when its API
+   * key is set.
+   */
+  async listModels(): Promise<ModelChoice[]> {
+    const installed = await this.installedOllamaTags();
+    const auto: ModelChoice = {
+      id: AUTO_MODEL,
+      label: messages.model.autoLabel,
+      description: messages.model.autoDescription,
+      available: true,
+    };
+    const available = (info: ModelInfo): boolean =>
+      info.provider === 'ollama'
+        ? installed === undefined || LocalEngine.ollamaInstalled(info.model, installed)
+        : isModelAvailable(info);
+    // One "best available within this provider" choice per provider that has
+    // registered models, available when any of its models can run now.
+    const providers = [...new Set(modelRegistry.map((m) => m.provider))];
+    const providerChoices: ModelChoice[] = providers.map((provider: ProviderName) => ({
+      id: `${PROVIDER_PIN_PREFIX}${provider}`,
+      label: messages.model.providerLabel(providerLabels[provider]),
+      description: messages.model.providerDescription(providerLabels[provider]),
+      available: modelRegistry.some((m) => m.provider === provider && available(m)),
+    }));
+    const models = modelRegistry.map((info) => ({
+      id: info.id,
+      label: info.label,
+      description: info.description,
+      available: available(info),
+    }));
+    return [auto, ...providerChoices, ...models];
   }
 }

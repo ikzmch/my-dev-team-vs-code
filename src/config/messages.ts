@@ -4,12 +4,15 @@
  * without editing control flow. Functions take only the dynamic bits; static
  * prose lives here.
  *
- * Deliberately knows nothing about agents or models: the error templates
- * render a detail the protocol delivered, and the Ollama troubleshooting
- * hint is a template the LocalEngine fills in - which model is routed where
- * is engine knowledge the client no longer has.
+ * Knows nothing about agents and almost nothing about models: the error
+ * templates render a detail the protocol delivered, and the troubleshooting
+ * hints are templates the LocalEngine fills in - which model is routed where
+ * is engine knowledge the client does not have. The exception is the `model`
+ * section: model selection is a user-facing choice (the user picks one and is
+ * told which ran), so those labels travel on the protocol and this copy frames
+ * them.
  */
-import type { ProgressStatus } from '../protocol/types';
+import type { ModelSelection, ProgressStatus } from '../protocol/types';
 
 /**
  * Wrap untrusted content (a command, a file path, a written-file snippet) in a
@@ -36,6 +39,82 @@ export const messages = {
    */
   ollamaHint: (endpoint: string, model: string) =>
     `Is Ollama running on ${endpoint} with \`${model}\` pulled?\n\n`,
+
+  /**
+   * Hint appended to a step failure whose agent used a cloud model: the model
+   * needs an API key. The provider names which environment-variable fallback
+   * applies. Travels to the UI as the protocol error's `hint`, like the Ollama
+   * one.
+   */
+  cloudKeyHint: (label: string, provider: 'openai' | 'anthropic') => {
+    const envVar = provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
+    return (
+      `\`${label}\` needs an API key. Run the "My Dev Team: Set API Key" command ` +
+      `(or set the ${envVar} environment variable), then try again.\n\n`
+    );
+  },
+
+  /**
+   * Copy for model selection: the "which model ran" line in the reply, and the
+   * `/model` picker. This is the one place the UI names a concrete model - the
+   * user chose it (or asked what Auto picked), so the identity is deliberately
+   * surfaced here rather than hidden like the rest of the engine internals.
+   */
+  model: {
+    /** The "Auto" choice shown first in the picker. */
+    autoLabel: 'Auto',
+    autoDescription: 'Let My Dev Team pick the best available model for each step.',
+    /** A "best model within this provider" choice in the picker. */
+    providerLabel: (provider: string) => `${provider} (best available)`,
+    providerDescription: (provider: string) =>
+      `Use ${provider} models; the best one is picked per task.`,
+    /** Suffix marking the model that is currently selected, in the picker. */
+    currentSuffix: ' (current)',
+    /** Detail shown on a picker entry whose model cannot run yet. */
+    unavailableDetail: 'Not available - set its API key or pull the model first.',
+    /** Placeholder in the `/model` quick pick. */
+    pickerPlaceholder: 'Choose the model for @devteam (Auto routes by capability)',
+    /** The whole reply to a `/model` turn that set the choice. */
+    confirmation: (label: string) =>
+      `Model set to **${label}**. It applies to your next @devteam request.`,
+    /** The reply when `/model <name>` named something not in the catalogue. */
+    unknown: (name: string) =>
+      `No model "${name}". Run /model with no argument to pick from the list.`,
+    /** Status-bar item text (a short prefix plus the current label). */
+    statusBar: (label: string) => `$(sparkle) ${label}`,
+    statusBarTooltip: 'My Dev Team model - click to change',
+    /**
+     * The "which model ran" line under the triage block. In pinned mode it
+     * names the chosen model; in Auto mode it lists the work agents' models so
+     * the user sees what Auto picked (triage is always a fast local model and
+     * is omitted to keep the line short).
+     */
+    block: (selection: ModelSelection): string => {
+      const roleNames: Record<string, string> = {
+        plan: 'Planner',
+        execute: 'Executor',
+        answer: 'Answerer',
+        triage: 'Triage',
+      };
+      const work = selection.models.filter((m) => m.step !== 'triage');
+      if (selection.mode === 'pinned') {
+        const label = (work[0] ?? selection.models[0])?.label ?? '';
+        return `**Model:** ${label} _(pinned)_\n\n`;
+      }
+      const parts = work.map((m) => `${roleNames[m.step] ?? m.step}: ${m.label}`);
+      if (selection.mode === 'provider') {
+        return `**Model:** ${selection.provider ?? 'Provider'} - ${parts.join(', ')} _(provider)_\n\n`;
+      }
+      return `**Model:** Auto - ${parts.join(', ')}\n\n`;
+    },
+    /** Prompt for the Set API Key command's provider pick. */
+    setKeyProviderPlaceholder: 'Which provider is the API key for?',
+    /** Prompt for the Set API Key command's key input. */
+    setKeyInputPrompt: (provider: string) => `Paste your ${provider} API key (stored securely; leave empty to clear)`,
+    /** Confirmation toast after a key is stored or cleared. */
+    keyStored: (provider: string) => `My Dev Team: ${provider} API key stored.`,
+    keyCleared: (provider: string) => `My Dev Team: ${provider} API key cleared.`,
+  },
 
   /**
    * Copy for the `run` tool's approval gate. Only `run` is gated; `write` and

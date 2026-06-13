@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.26.0",
+  "version": "0.27.0",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
@@ -33,10 +33,25 @@
           ],
           "description": "Which engine handles @devteam requests. Read live; switching takes effect on the next request."
         },
+        "myDevTeam.model": {
+          "type": "string",
+          "default": "auto",
+          "description": "What @devteam uses for the planner, answerer, and executor: a model id, a \"provider:<name>\" to route among one provider's models (best per task), or \"auto\" to let the router pick the best available model per agent. Triage always uses a local Ollama model. Use the /model command or the status-bar item to change it from a list."
+        },
         "myDevTeam.ollama.endpoint": {
           "type": "string",
           "default": "http://localhost:11434",
           "description": "Base URL of the Ollama server (origin only, no /api suffix). Model calls, error hints, and the startup health check all use this value."
+        },
+        "myDevTeam.openai.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom base URL for the OpenAI provider (an Azure or OpenAI-compatible gateway). Leave empty to use OpenAI's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
+        },
+        "myDevTeam.anthropic.baseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Optional custom base URL for the Anthropic provider (a proxy or gateway). Leave empty to use Anthropic's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
         },
         "myDevTeam.run.commandTimeoutMs": {
           "type": "number",
@@ -92,6 +107,18 @@
         }
       }
     },
+    "commands": [
+      {
+        "command": "myDevTeam.selectModel",
+        "title": "Select Model",
+        "category": "My Dev Team"
+      },
+      {
+        "command": "myDevTeam.setApiKey",
+        "title": "Set API Key",
+        "category": "My Dev Team"
+      }
+    ],
     "chatParticipants": [
       {
         "id": "myDevTeam.agent",
@@ -103,6 +130,10 @@
           {
             "name": "clear",
             "description": "Start fresh: drop the conversation so far from future requests."
+          },
+          {
+            "name": "model",
+            "description": "Choose the model @devteam uses (or Auto to route by capability)."
           },
           {
             "name": "compact",
@@ -291,6 +322,8 @@
     "vitest": "^4.1.8"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.84",
+    "@ai-sdk/openai": "^3.0.71",
     "@mastra/core": "^1.41.0",
     "ai": "^6.0.198",
     "ollama-ai-provider-v2": "^3.5.1",

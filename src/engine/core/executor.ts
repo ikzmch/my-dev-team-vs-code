@@ -1,9 +1,8 @@
 import { Agent } from '@mastra/core/agent';
-import { resolveModel } from './models';
+import { resolveModel, routeModel } from './models';
 import { buildAgentTools, PROGRESS_TOOL, ProgressReportSchema } from './agentTools';
 import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
-import { selectModel } from '../config/models';
 import { toolConfigs } from '../config/tools';
 import { settings } from '../../config/settings';
 import {
@@ -96,7 +95,7 @@ function resultPreview(result: unknown): string {
  * approval gate, the engine only decides what to call.
  */
 export class Executor {
-  private readonly modelName = selectModel(agents.executor.capabilities).model;
+  private readonly modelName: string;
   private readonly agent: Agent;
   /**
    * The current run's cancellation signal, set for the duration of `execute`.
@@ -106,13 +105,19 @@ export class Executor {
    */
   private currentSignal: AbortSignal | undefined;
 
-  constructor(toolHost: ToolHost) {
+  /**
+   * `modelPin` is the user's per-run model choice (a registry id, or "auto"/
+   * undefined for the capability router). The executor is already built per
+   * run (it is bound to the run's ToolHost), so the choice is resolved here.
+   */
+  constructor(toolHost: ToolHost, modelPin?: string) {
+    this.modelName = routeModel(agents.executor.capabilities, modelPin).model;
     this.agent = new Agent({
       id: agents.executor.id,
       name: agents.executor.name,
       description: agents.executor.description,
       instructions: agents.executor.instructions,
-      model: resolveModel(agents.executor.capabilities),
+      model: resolveModel(agents.executor.capabilities, modelPin),
       tools: buildAgentTools(toolHost, () => this.currentSignal),
     });
   }

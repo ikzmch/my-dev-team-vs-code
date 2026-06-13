@@ -57,7 +57,7 @@ src/
     localEngine.ts        in-process Engine: runs the workflow, translates progress into protocol events
     core/
       workflow.ts         Mastra workflow: triage -> plan -> execute | answer; per-run progress + usage sinks
-      models.ts           provider wiring: turns the selected registry entry into an AI SDK model
+      models.ts           provider wiring (ollama/openai/anthropic): availability + pin-aware routing into an AI SDK model
       triage.ts           Mastra agent: triage request as oneshot | planning
       planner.ts          Mastra agent: draft an ordered plan of titled steps, streamed as partial snapshots
       answerer.ts         Mastra agent: answer a oneshot request directly, streamed as accumulated text
@@ -82,10 +82,11 @@ src/
     references.ts         resolves a request's references into attachments: files/selections/symbols + inline #codebase/#changes
     evalLog.ts            opt-in local JSONL eval store: per-run route/usage/outcome records + 👍/👎 feedback
   config/                 client-side configuration, kept out of the logic (see below)
-    settings.ts           operational limits; engine/endpoint/timeout/search caps read live from VS Code settings
-    messages.ts           user-facing chat copy (errors, warnings, templates)
+    settings.ts           operational limits; engine/model/endpoint/baseURL/timeout/search caps read live from VS Code settings
+    credentials.ts        cloud-provider API keys: SecretStorage cache + env-var fallback (never in settings.json)
+    messages.ts           user-facing chat copy (errors, warnings, templates, the model-selection copy)
     environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
-    clientCommands.ts     the client-handled /clear command + the /compact history-replacement marker
+    clientCommands.ts     the client-handled /clear and /model commands + the /compact history-replacement marker
   tools/                  the client's hands - these never move to a backend
     workspaceTools.ts     read / search / run / write / edit implementations (UI-agnostic)
     toolHost.ts           WorkspaceToolHost: validates + dispatches every tool call (engine or editor)
@@ -93,6 +94,7 @@ src/
     types.ts              the client seams: Approver (approval) + RunMirror (run-command transparency)
   ui/
     chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover
+    modelCommands.ts      model selection UI: the /model picker, status-bar item, and Set API Key command
     runTerminal.ts        Phase-1 RunMirror: a read-only "Dev Team" terminal logging every run command live
     startupCheck.ts       activation health check: surfaces the selected engine's startup warnings
 test/                     Vitest unit tests + an in-memory `vscode` mock
@@ -208,11 +210,15 @@ port, designed wire-shaped from day one so a remote backend can implement it
 without the client changing:
 
 - **`Engine.startRun(request, client)`** takes a versioned `RunRequest`
-  (prompt, project instructions, attachments, history, the client's OS/shell
-  facts, and the names of the tools the client offers) plus a `RunClient` (an
-  event sink and the ToolHost) and returns a `RunHandle` (`result` promise +
-  `cancel()`).
+  (prompt, the user's `model` choice, project instructions, attachments,
+  history, the client's OS/shell facts, and the names of the tools the client
+  offers) plus a `RunClient` (an event sink and the ToolHost) and returns a
+  `RunHandle` (`result` promise + `cancel()`). **`Engine.listModels()`**
+  returns the picker's catalogue (Auto first, then each registered model with
+  its label and whether it can run now) - the one place the otherwise-hidden
+  model registry is exposed, as user-facing choices.
 - **Events, not callbacks**, carry the streaming reply: `triaged`,
+  `model-selected` (which model each step uses; emitted right after `triaged`),
   `plan-snapshot` (plans are small), `answer-delta`, `execution-event`
   (indexed, since only the transcript's last event ever changes), `usage`,
   and `done`/`error`. The client folds them back into grow-only snapshots
@@ -341,7 +347,7 @@ never carry literals inline.
 | File                            | Holds                                                          |
 | ------------------------------- | ------------------------------------------------------------- |
 | `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
-| `engine/config/models/*.md`     | One registered model per file: frontmatter (id, provider, model name, capability scores) + a note on its strengths |
+| `engine/config/models/*.md`     | One registered model per file: frontmatter (id, user-facing label, provider `ollama`/`openai`/`anthropic`, model name, capability scores) + a note on its strengths |
 | `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` tool has no client half |
 | `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
@@ -350,9 +356,10 @@ never carry literals inline.
 | `engine/config/commands.ts`     | Discovers the command files, exports `commandConfigs`/`commandNames` and the pinned-route reason |
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
-| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
-| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama-hint template the LocalEngine fills in, the /clear confirmation, and the run-mirror terminal's copy (tab name, command header, outcome note). Knows nothing about agents or models - which model is routed where is engine knowledge that reaches the UI only as a protocol error's `hint` |
-| `config/clientCommands.ts`      | The client-handled commands (`/clear`, with its autocomplete description) plus the `/compact` marker name the history collection watches for - client-side because conversation history is client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
+| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, the model choice (`model`), Ollama endpoint, the cloud-provider base URLs (`openaiBaseUrl`/`anthropicBaseUrl`), run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/credentials.ts`         | Cloud-provider API keys (OpenAI, Anthropic): an in-memory cache loaded from VS Code SecretStorage on activation (set/cleared by the "Set API Key" command), with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` as fallbacks. Kept out of settings.json on purpose; read live by the provider wiring. Phase C moves keys server-side behind the AuthProvider seam |
+| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker and Set API Key prompts), and the run-mirror terminal's copy. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
+| `config/clientCommands.ts`      | The client-handled commands (`/clear` and `/model`, with their autocomplete descriptions) plus the `/compact` marker name the history collection watches for - client-side because conversation history and the model choice are client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
 text loader inlines them into the bundle at build time (see `esbuild.mjs`), so
@@ -393,7 +400,10 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | Setting                              | Default                  | Controls                                  |
 | ------------------------------------ | ------------------------ | ----------------------------------------- |
 | `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process) or `remote` (Phase B; warns and falls back to local until it exists) |
+| `myDevTeam.model`                    | `auto`                   | What the planner/answerer/executor use: a model id, a `provider:<name>` to route within one provider, or `auto` to route by capability among the available models. Triage always uses a local Ollama model. Set it with `/model` or the status-bar item |
 | `myDevTeam.ollama.endpoint`          | `http://localhost:11434` | Ollama server origin (no `/api` suffix)   |
+| `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
+| `myDevTeam.anthropic.baseUrl`        | `""`                     | Optional custom base URL for Anthropic (a proxy/gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
 | `myDevTeam.run.commandTimeoutMs`     | `60000`                  | `run` tool shell-command timeout (ms)     |
 | `myDevTeam.read.maxLines`            | `200`                    | Max lines one `read` call returns; partial results name the range and total so the model continues |
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
@@ -424,23 +434,68 @@ pulled - instead of letting the first chat request be the thing that fails.
 
 Agents never name a concrete model. Instead:
 
-- **Registered models** (`engine/config/models/*.md`) score how good each model is at
-  a set of capabilities - `reasoning`, `coding`, `classification`, `planning`,
+- **Registered models** (`engine/config/models/*.md`) carry an `id`, a
+  user-facing `label`, a `provider` (`ollama` | `openai` | `anthropic`), the
+  provider-specific `model` name, and scores for how good the model is at a set
+  of capabilities - `reasoning`, `coding`, `classification`, `planning`,
   `speed`, `structured-output` - each 0-1.
 - **Agents** (`engine/config/agents/*.md`) declare the same capabilities as
   *weights*: how much each one matters to that agent.
-- `selectModel` (`engine/config/models.ts`) picks the registered model with
-  the highest weighted score (Σ weight × score; an unscored capability counts
-  as 0), and `resolveModel` (`engine/core/models.ts`) wires the winner onto an
-  [AI SDK](https://sdk.vercel.ai) provider instance built from the configured
-  `myDevTeam.ollama.endpoint`, memoised per model and endpoint.
+- `selectModel` (`engine/config/models.ts`) is pure config logic: given a
+  requirement profile, an optional pin, and a candidate list, it returns the
+  pinned model outright or the highest weighted score (Σ weight × score) among
+  the candidates. `engine/core/models.ts` adds the runtime: `availableModels()`
+  (every Ollama model, assumed pulled, plus any cloud model whose API key is
+  set), `localModels()` (the Ollama subset), `routeModel`/`resolveModel` (apply
+  the pin + candidates and wire the winner onto an [AI SDK](https://sdk.vercel.ai)
+  provider instance).
+
+**Three providers.** Ollama is local and keyless, built from
+`myDevTeam.ollama.endpoint`. OpenAI and Anthropic need an API key
+(`config/credentials.ts`: SecretStorage, set via the "My Dev Team: Set API Key"
+command, with `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` as fallbacks) and accept an
+optional custom base URL (`myDevTeam.openai.baseUrl` / `anthropic.baseUrl`) for
+Azure or an OpenAI-compatible/Anthropic gateway. Each provider is built lazily
+and rebuilt when its endpoint, key, or base URL changes, dropping the memoised
+model instances so the next request uses the new configuration.
+
+**User selection: Auto, a model, or a provider.** The user picks with `/model`
+(or the status-bar item / "My Dev Team: Select Model" command); the choice is
+stored in `myDevTeam.model` and travels on every `RunRequest.model`. Three
+kinds of choice, all decided in `selectModel`:
+
+- **Auto** (the default, or any id the engine does not know) routes each work
+  agent to the best fit among the *available* models, so Auto never picks a
+  cloud model whose key is not set, and a user who adds a key gets the stronger
+  model automatically.
+- A choice naming a **registered model** pins it: the planner, answerer, and
+  executor all use that one model.
+- A **`provider:<name>`** choice pins the *provider*: the work agents route by
+  capability among that provider's models (the best per agent), not one fixed
+  model. The catalogue offers one such choice per provider.
+
+A model or provider pin bypasses the availability gate (the user asked for it),
+so a pinned cloud model/provider with no key still runs and fails with a hint
+to set the key, rather than being silently ignored. **Triage always routes
+among the local Ollama models only** - never a pinned/provider/Auto-selected
+cloud model - because it is a cheap, invisible classification that should stay
+fast and free.
+
+**Surfacing the choice.** The engine emits a `model-selected` event right after
+`triaged` and attaches the same `selection` to the reply (mode
+`pinned`/`provider`/`auto`, the provider label in provider mode, plus the model
+each step used), and the chat renders a `**Model:** …` line under the triage
+block - so the user always knows which model answered, especially when Auto or
+a provider pin chose.
 
 Retune an agent by editing its weights, and upgrade the whole system by
-registering a stronger model - no agent code changes either way. Only register
-models that are actually available (pulled in Ollama): selection assumes every
-registered model can run.
+registering a stronger model - no agent code changes either way.
 
-| Agent      | Weights (what it cares about)                                | Currently selects |
+The "Auto selects" column below is the local-only default (no cloud key set);
+with a key configured, Auto prefers the higher-scoring cloud models for the
+planner/answerer/executor, and triage stays local regardless.
+
+| Agent      | Weights (what it cares about)                                | Auto selects (local-only) |
 | ---------- | ------------------------------------------------------------ | ----------------- |
 | `triage`   | classification 1, speed 0.8, structured-output 0.5           | Ollama `qwen3:8b` |
 | `planner`  | planning 1, reasoning 0.8, structured-output 0.6, speed 0.3  | Ollama `qwen3:14b`|
@@ -448,14 +503,15 @@ registered model can run.
 | `executor` | coding 1, reasoning 0.7, speed 0.3                           | Ollama `qwen3-coder` |
 
 ```yaml
-# engine/config/models/qwen3-14b.md - a registered model (scores):
-id: qwen3-14b
-provider: ollama
-model: qwen3:14b
+# engine/config/models/anthropic-opus.md - a registered model (scores):
+id: anthropic-opus
+label: Claude Opus 4.8 (Anthropic)
+provider: anthropic
+model: claude-opus-4-8
 capabilities:
-  reasoning: 0.75
-  planning: 0.8
-  speed: 0.6
+  reasoning: 0.98
+  coding: 0.97
+  planning: 0.97
   # …
 
 # engine/config/agents/planner.md - an agent's requirements (weights):
@@ -467,20 +523,16 @@ capabilities:
 ```
 
 ```ts
-// engine/core/triage.ts / engine/core/planner.ts - the dynamic wiring:
-model: resolveModel(agents.planner.capabilities),
-
-// …and how a paid provider would slot in later: add it to the registry's
-// provider enum and a factory in engine/core/models.ts:
-//   import { createAnthropic } from '@ai-sdk/anthropic';
-//   const anthropic = createAnthropic({ apiKey: /* … */ });
-//   const factories = { ollama: …, anthropic: (model) => anthropic(model) };
+// engine/core/planner.ts - the per-run wiring, honouring the user's pin:
+model: resolveModel(agents.planner.capabilities, modelPin),
+// engine/core/triage.ts - triage is pinned to the local models:
+model: resolveModel(agents.triage.capabilities, undefined, localModels()),
 ```
 
 ### Slash commands (`engine/config/commands/` + `engine/config/commands.ts`)
 
-`@devteam` offers eight slash commands - seven **engine commands** and one
-**client command** (`/clear`, see below). Each engine command is a `.md`
+`@devteam` offers nine slash commands - seven **engine commands** and two
+**client commands** (`/clear` and `/model`, see below). Each engine command is a `.md`
 config file (discovered like the models and tools - dropping a file in
 registers the command) that does exactly two things:
 
@@ -508,6 +560,7 @@ registers the command) that does exactly two things:
 | `/test`    | planning               | Write or update tests for the target code, then run them |
 | `/compact` | oneshot                | Summarize the conversation so far; once it succeeds, the summary replaces all earlier turns in future prompts (see below) |
 | `/clear`   | client-side, no run    | Drop the conversation so far from future requests; the panel still shows it, the models no longer see it |
+| `/model`   | client-side, no run    | Choose what the planner/answerer/executor use: a model, a provider (best model per task within it), or Auto. With an argument sets it directly (a model name or a bare provider name); with none opens a picker. Writes `myDevTeam.model`, starts no run |
 
 The command travels on the protocol as `RunRequest.command` - the name only.
 What a command does is the engine's business; the client just relays what the
@@ -712,9 +765,19 @@ prompt (see [Tools](#tools-tools) for the rationale).
 
 ## Current behavior
 
-On activation, the extension asks the selected engine for startup warnings;
-the local engine pings the configured Ollama endpoint and warns (once,
-non-blocking) if the server is down or a router-selected model is not pulled.
+On activation, the extension loads any stored cloud-provider API keys from
+SecretStorage, then asks the selected engine for startup warnings; the local
+engine pings the configured Ollama endpoint and warns (once, non-blocking) if
+the server is down or an Auto-routed local model is not pulled. A status-bar
+item shows the active model.
+
+You choose the model with `/model` (or the status-bar item): a registry id
+pins the planner, answerer, and executor to that model, while `Auto` (the
+default) routes each by capability among the available models - Ollama plus any
+cloud provider (OpenAI, Anthropic) whose API key you have set with the "My Dev
+Team: Set API Key" command. Triage always stays on a local Ollama model. Every
+run renders a `**Model:**` line under the triage block naming what ran, so you
+always know which model answered - especially in Auto mode.
 
 Out of the box, `@devteam <prompt>`:
 
@@ -862,6 +925,12 @@ model the router selected for that agent pulled.
   If your server listens elsewhere, set `myDevTeam.ollama.endpoint`; the
   activation health check will tell you if the endpoint or a routed model is
   missing.
+- **Cloud models (optional).** To use OpenAI or Anthropic models, set the key
+  with the **"My Dev Team: Set API Key"** command (stored in SecretStorage) or
+  via the `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` environment variables. For
+  Azure or another gateway, point `myDevTeam.openai.baseUrl` /
+  `myDevTeam.anthropic.baseUrl` at it. Then pick the model with `/model`; with
+  no key set, those models show as unavailable and `Auto` stays on Ollama.
 
 ## Run it
 
@@ -876,9 +945,9 @@ npm run build      # esbuild bundle -> dist/extension.js
 In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 Type `/` after
 `@devteam` to pick a slash command (`/explain`, `/review`, `/plan`, `/do`,
-`/fix`, `/test`, `/compact`, `/clear`): a command pins the route without a
-triage call and frames the request for the agents, and the context commands
-manage what history later requests carry - see
+`/fix`, `/test`, `/compact`, `/clear`, `/model`): a command pins the route without a
+triage call and frames the request for the agents, the context commands
+manage what history later requests carry, and `/model` chooses the model - see
 [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts).
 Commands work in follow-ups too: the conversation history gives
 "/explain what you just did" a real referent (and prior command turns keep

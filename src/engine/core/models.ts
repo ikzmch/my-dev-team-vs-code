@@ -1,74 +1,156 @@
 /**
- * Provider wiring for the capability-based model router. The *selection* —
- * which registered model best fits a set of capability weights — is pure
- * configuration logic and lives in config/models.ts; this file only turns the
- * winning registry entry into an AI SDK model instance, memoised per registry
- * id so agents sharing a model share the instance.
+ * Provider wiring for the capability-based model router. The pure *scoring* -
+ * which registered model best fits a set of capability weights - lives in
+ * config/models.ts; this file adds the parts that need the runtime: which
+ * models are actually usable (an Ollama model is assumed pulled; a cloud model
+ * needs its API key), and turning the winning registry entry into an AI SDK
+ * model instance for the configured endpoint/key.
  *
- * To plug in another provider, add it to the registry's provider enum and a
- * factory here, e.g.:
- *   import { createAnthropic } from '@ai-sdk/anthropic';
- *   const anthropic = createAnthropic({ apiKey: ... });
- *   ...factories: { ollama: ..., anthropic: (model) => anthropic(model) }
+ * Three providers are wired:
+ *   - ollama:    local, keyless, from `settings.ollamaEndpoint`.
+ *   - openai:    needs `credentials.openaiApiKey`; optional `settings.openaiBaseUrl`.
+ *   - anthropic: needs `credentials.anthropicApiKey`; optional `settings.anthropicBaseUrl`.
+ * Each provider is built lazily and rebuilt when its configuration (endpoint,
+ * key, or base URL) changes, dropping the memoised model instances so the next
+ * request talks to the new configuration without a reload.
  */
 import { createOllama } from 'ollama-ai-provider-v2';
+import { createOpenAI } from '@ai-sdk/openai';
+import { createAnthropic } from '@ai-sdk/anthropic';
 import {
   CapabilityScores,
+  ModelInfo,
+  modelRegistry,
   ProviderName,
   selectModel,
 } from '../config/models';
 import { settings } from '../../config/settings';
-
-type OllamaProvider = ReturnType<typeof createOllama>;
+import { credentials } from '../../config/credentials';
 
 /** The AI SDK model type all providers produce. */
-export type RoutedModel = ReturnType<OllamaProvider>;
+export type RoutedModel = ReturnType<ReturnType<typeof createOllama>>;
 
 const instances = new Map<string, RoutedModel>();
 
-let ollama: OllamaProvider | undefined;
-let ollamaEndpoint: string | undefined;
-
 /**
- * The Ollama provider, built lazily from the configured endpoint
- * (`settings.ollamaEndpoint`, the same value the error hints show). When the
- * user changes the setting the provider is rebuilt and the memoised model
- * instances are dropped, so the next request talks to the new endpoint
- * without a reload.
+ * A lazily-built provider plus the configuration signature it was built from.
+ * When the signature changes the provider is rebuilt and the memoised model
+ * instances are dropped, so a key or endpoint change takes effect next run.
  */
-function ollamaProvider(): OllamaProvider {
-  const endpoint = settings.ollamaEndpoint;
-  if (!ollama || ollamaEndpoint !== endpoint) {
-    ollama = createOllama({ baseURL: `${endpoint}/api` });
-    ollamaEndpoint = endpoint;
-    instances.clear();
-  }
-  return ollama;
+interface ProviderCache {
+  signature: () => string;
+  build: () => (model: string) => RoutedModel;
+  instance?: (model: string) => RoutedModel;
+  builtFrom?: string;
 }
 
-const factories: Record<ProviderName, (model: string) => RoutedModel> = {
-  ollama: (model) => ollamaProvider()(model),
+const providers: Record<ProviderName, ProviderCache> = {
+  ollama: {
+    signature: () => settings.ollamaEndpoint,
+    build: () => {
+      const ollama = createOllama({ baseURL: `${settings.ollamaEndpoint}/api` });
+      return (model) => ollama(model);
+    },
+  },
+  openai: {
+    signature: () => `${credentials.openaiApiKey ?? ''}::${settings.openaiBaseUrl ?? ''}`,
+    build: () => {
+      const openai = createOpenAI({
+        apiKey: credentials.openaiApiKey,
+        ...(settings.openaiBaseUrl ? { baseURL: settings.openaiBaseUrl } : {}),
+      });
+      return (model) => openai(model) as RoutedModel;
+    },
+  },
+  anthropic: {
+    signature: () =>
+      `${credentials.anthropicApiKey ?? ''}::${settings.anthropicBaseUrl ?? ''}`,
+    build: () => {
+      const anthropic = createAnthropic({
+        apiKey: credentials.anthropicApiKey,
+        ...(settings.anthropicBaseUrl ? { baseURL: settings.anthropicBaseUrl } : {}),
+      });
+      return (model) => anthropic(model) as RoutedModel;
+    },
+  },
 };
 
-/**
- * Memoisation key for a wired instance. The endpoint is part of the key so a
- * memoised model can never outlive an endpoint change: a new endpoint always
- * misses, runs the factory, and the factory drops the stale entries.
- */
-function instanceKey(id: string): string {
-  return `${settings.ollamaEndpoint}::${id}`;
+/** The provider factory for `name`, rebuilt when its configuration changed. */
+function providerFactory(name: ProviderName): (model: string) => RoutedModel {
+  const cache = providers[name];
+  const signature = cache.signature();
+  if (!cache.instance || cache.builtFrom !== signature) {
+    cache.instance = cache.build();
+    cache.builtFrom = signature;
+    instances.clear();
+  }
+  return cache.instance;
+}
+
+/** Whether a registered model can actually run now: Ollama always (assumed
+ * pulled), a cloud model only when its API key is configured. */
+export function isModelAvailable(info: ModelInfo): boolean {
+  switch (info.provider) {
+    case 'ollama':
+      return true;
+    case 'openai':
+      return credentials.has('openai');
+    case 'anthropic':
+      return credentials.has('anthropic');
+  }
+}
+
+/** The models Auto may route to right now (Ollama plus any keyed cloud models). */
+export function availableModels(): ModelInfo[] {
+  return modelRegistry.filter(isModelAvailable);
+}
+
+/** The local Ollama models - the only candidates triage ever routes among. */
+export function localModels(): ModelInfo[] {
+  return modelRegistry.filter((m) => m.provider === 'ollama');
 }
 
 /**
- * Resolve a capability requirement profile (an agent's `capabilities`
- * frontmatter) to a ready-to-use AI SDK model instance.
+ * The registry entry an agent will use: a `pin` naming a registered model wins
+ * outright (the user asked for it, even if its key is missing - the run then
+ * fails with a helpful hint); otherwise the best weighted fit among
+ * `candidates` (defaults to the currently-available models, so Auto never
+ * routes to a cloud model whose key is not set).
  */
-export function resolveModel(requirements: CapabilityScores): RoutedModel {
-  const info = selectModel(requirements);
-  const key = instanceKey(info.id);
+export function routeModel(
+  requirements: CapabilityScores,
+  pin?: string,
+  candidates: readonly ModelInfo[] = availableModels()
+): ModelInfo {
+  return selectModel(requirements, pin, candidates);
+}
+
+/**
+ * Memoisation key for a wired instance: the registry id plus the provider's
+ * current configuration signature, so a memoised model can never outlive a key
+ * or endpoint change (a changed signature also clears the cache in
+ * providerFactory, so this is belt-and-braces).
+ */
+function instanceKey(info: ModelInfo): string {
+  return `${providers[info.provider].builtFrom ?? ''}::${info.id}`;
+}
+
+/**
+ * Resolve a capability requirement profile to a ready-to-use AI SDK model
+ * instance, honouring an optional pin and candidate restriction (see
+ * routeModel).
+ */
+export function resolveModel(
+  requirements: CapabilityScores,
+  pin?: string,
+  candidates?: readonly ModelInfo[]
+): RoutedModel {
+  const info = routeModel(requirements, pin, candidates);
+  const factory = providerFactory(info.provider);
+  const key = instanceKey(info);
   let model = instances.get(key);
   if (!model) {
-    model = factories[info.provider](info.model);
+    model = factory(info.model);
     instances.set(key, model);
   }
   return model;

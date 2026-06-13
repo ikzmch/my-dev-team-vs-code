@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { LocalEngine, LocalEngineAgents } from '../src/engine/localEngine';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { LocalEngine, LocalEngineAgents, modelSelection } from '../src/engine/localEngine';
 import { agents } from '../src/engine/config/agents';
-import { selectModel } from '../src/engine/config/models';
+import { routeModel } from '../src/engine/core/models';
+import { credentials } from '../src/config/credentials';
 import { settings } from '../src/config/settings';
 import {
   PROTOCOL_VERSION,
@@ -44,8 +45,8 @@ function fakes(overrides: Partial<LocalEngineAgents> = {}): LocalEngineAgents {
     triage: {
       classify: async () => ({ intent: 'planning', reason: 'steps' }),
     } as any,
-    planner: { plan: async () => aPlan } as any,
-    answerer: { answer: async () => 'It is 4.' } as any,
+    createPlanner: () => ({ plan: async () => aPlan } as any),
+    createAnswerer: () => ({ answer: async () => 'It is 4.' } as any),
     createExecutor: () => ({ execute: async () => anExecution } as any),
     ...overrides,
   };
@@ -73,10 +74,16 @@ describe('LocalEngine.startRun', () => {
     expect(reply).toEqual({
       intent: 'planning',
       reason: 'steps',
+      selection: modelSelection('planning'),
       plan: aPlan,
       execution: anExecution,
     });
     expect(events[0]).toEqual({ type: 'triaged', intent: 'planning', reason: 'steps' });
+    // The model selection is emitted right after triage, in Auto mode here.
+    expect(events[1]).toEqual({
+      type: 'model-selected',
+      selection: modelSelection('planning'),
+    });
     expect(events[events.length - 1]).toEqual({ type: 'done', reply });
   });
 
@@ -99,14 +106,15 @@ describe('LocalEngine.startRun', () => {
     ];
     const engine = new LocalEngine(
       fakes({
-        planner: {
-          plan: async (_p: string, onPartial?: (p: unknown) => void) => {
-            for (const partial of planPartials) {
-              onPartial?.(partial);
-            }
-            return aPlan;
-          },
-        } as any,
+        createPlanner: () =>
+          ({
+            plan: async (_p: string, onPartial?: (p: unknown) => void) => {
+              for (const partial of planPartials) {
+                onPartial?.(partial);
+              }
+              return aPlan;
+            },
+          } as any),
         createExecutor: () =>
           ({
             execute: async (_p: string, onPartial?: (p: unknown) => void) => {
@@ -130,6 +138,7 @@ describe('LocalEngine.startRun', () => {
     expect(folded).toEqual({
       intent: 'planning',
       reason: 'steps',
+      selection: modelSelection('planning'),
       plan: aPlan,
       execution: anExecution,
     });
@@ -155,13 +164,14 @@ describe('LocalEngine.startRun', () => {
         triage: {
           classify: async () => ({ intent: 'oneshot', reason: 'simple' }),
         } as any,
-        answerer: {
-          answer: async (_p: string, onPartial?: (text: string) => void) => {
-            onPartial?.('It');
-            onPartial?.('It is 4.');
-            return 'It is 4.';
-          },
-        } as any,
+        createAnswerer: () =>
+          ({
+            answer: async (_p: string, onPartial?: (text: string) => void) => {
+              onPartial?.('It');
+              onPartial?.('It is 4.');
+              return 'It is 4.';
+            },
+          } as any),
       })
     );
 
@@ -183,7 +193,7 @@ describe('LocalEngine.startRun', () => {
             return { intent: 'oneshot', reason: 'simple' };
           },
         } as any,
-        answerer: { answer: async () => 'ok' } as any,
+        createAnswerer: () => ({ answer: async () => 'ok' } as any),
       })
     );
 
@@ -218,6 +228,7 @@ describe('LocalEngine.startRun', () => {
     expect(reply).toEqual({
       intent: 'planning',
       reason: 'Requested via /plan.',
+      selection: modelSelection('planning'),
       plan: aPlan,
     });
     expect(events[0]).toEqual({
@@ -245,11 +256,12 @@ describe('LocalEngine.startRun', () => {
   it('maps a failed step onto the protocol step with the Ollama hint', async () => {
     const engine = new LocalEngine(
       fakes({
-        planner: {
-          plan: async () => {
-            throw new Error('model not found');
-          },
-        } as any,
+        createPlanner: () =>
+          ({
+            plan: async () => {
+              throw new Error('model not found');
+            },
+          } as any),
       })
     );
 
@@ -260,7 +272,7 @@ describe('LocalEngine.startRun', () => {
     expect(error.step).toBe('plan');
     expect(error.message).toContain('model not found');
     expect(error.hint).toContain(settings.ollamaEndpoint);
-    expect(error.hint).toContain(selectModel(agents.planner.capabilities).model);
+    expect(error.hint).toContain(routeModel(agents.planner.capabilities).model);
 
     // The failure is mirrored onto the event stream for streaming consumers.
     expect(events[events.length - 1]).toMatchObject({
@@ -310,5 +322,79 @@ describe('LocalEngine.startRun', () => {
       },
     });
     await expect(handle.result).resolves.toMatchObject({ intent: 'planning' });
+  });
+
+  it('reports a pinned model for the work agents but keeps triage local', async () => {
+    const events: RunEvent[] = [];
+    const reply = await new LocalEngine(fakes())
+      .startRun(request({ model: 'anthropic-opus' }), client(events))
+      .result;
+
+    expect(reply.selection?.mode).toBe('pinned');
+    expect(reply.selection?.models.find((m) => m.step === 'plan')?.id).toBe(
+      'anthropic-opus'
+    );
+    expect(reply.selection?.models.find((m) => m.step === 'execute')?.id).toBe(
+      'anthropic-opus'
+    );
+    // The pin never reaches triage - it stays on a local Ollama model.
+    expect(reply.selection?.models.find((m) => m.step === 'triage')?.id).not.toBe(
+      'anthropic-opus'
+    );
+  });
+
+  it('reports a provider pin as provider mode and routes within it per agent', async () => {
+    const events: RunEvent[] = [];
+    const reply = await new LocalEngine(fakes())
+      .startRun(request({ model: 'provider:anthropic' }), client(events))
+      .result;
+
+    expect(reply.selection?.mode).toBe('provider');
+    expect(reply.selection?.provider).toBe('Anthropic');
+    // The plan/execute models are Anthropic ones (ids start with "anthropic-").
+    for (const step of ['plan', 'execute'] as const) {
+      expect(reply.selection?.models.find((m) => m.step === step)?.id).toMatch(
+        /^anthropic-/
+      );
+    }
+    // Triage stays local.
+    expect(reply.selection?.models.find((m) => m.step === 'triage')?.id).not.toMatch(
+      /^anthropic-/
+    );
+  });
+});
+
+describe('LocalEngine.listModels', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('lists Auto first, then every registered model with availability', async () => {
+    // Unreachable Ollama: we cannot tell what is pulled, so local models are
+    // reported available rather than hidden.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('down');
+      })
+    );
+    const choices = await new LocalEngine(fakes()).listModels();
+
+    expect(choices[0].id).toBe('auto');
+    expect(choices[0].available).toBe(true);
+    // One "best available" entry per provider, available when any of its
+    // models can run now (Ollama always; cloud when keyed).
+    expect(choices.find((c) => c.id === 'provider:ollama')?.available).toBe(true);
+    expect(choices.find((c) => c.id === 'provider:anthropic')?.available).toBe(
+      credentials.has('anthropic')
+    );
+    expect(choices.find((c) => c.id === 'qwen3-coder')?.available).toBe(true);
+    // A cloud model is available exactly when its key is configured.
+    expect(choices.find((c) => c.id === 'anthropic-opus')?.available).toBe(
+      credentials.has('anthropic')
+    );
+    expect(choices.find((c) => c.id === 'openai-gpt4o')?.available).toBe(
+      credentials.has('openai')
+    );
   });
 });

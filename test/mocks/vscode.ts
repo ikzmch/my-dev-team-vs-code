@@ -83,6 +83,17 @@ export enum ChatResultFeedbackKind {
   Helpful = 1,
 }
 
+export enum StatusBarAlignment {
+  Left = 1,
+  Right = 2,
+}
+
+export enum ConfigurationTarget {
+  Global = 1,
+  Workspace = 2,
+  WorkspaceFolder = 3,
+}
+
 /** Mirrors vscode.FileType: a bitmask, with SymbolicLink OR'd onto the base type. */
 export enum FileType {
   Unknown = 0,
@@ -136,9 +147,19 @@ interface MockState {
   registeredCommands: Map<string, (...args: unknown[]) => unknown>;
   /** User settings by `<section>.<key>` (e.g. "myDevTeam.ollama.endpoint"). */
   configuration: Map<string, unknown>;
+  /** Listeners registered via workspace.onDidChangeConfiguration. */
+  configChangeListeners: Array<(e: unknown) => void>;
   /** Terminals created via window.createTerminal, in creation order. */
   terminals: FakeTerminal[];
   terminalCloseListeners: Array<(t: FakeTerminal) => void>;
+  /** Status-bar items created via window.createStatusBarItem. */
+  statusBarItems: FakeStatusBarItem[];
+  /** What window.showQuickPick returns next (an index into items, or undefined). */
+  quickPickResponse: number | undefined;
+  /** What window.showInputBox returns next. */
+  inputBoxResponse: string | undefined;
+  /** SecretStorage values by key. */
+  secrets: Map<string, string>;
 }
 
 export const __state: MockState = {
@@ -150,8 +171,13 @@ export const __state: MockState = {
   registeredTools: new Map(),
   registeredCommands: new Map(),
   configuration: new Map(),
+  configChangeListeners: [],
   terminals: [],
   terminalCloseListeners: [],
+  statusBarItems: [],
+  quickPickResponse: undefined,
+  inputBoxResponse: undefined,
+  secrets: new Map(),
 };
 
 export function __reset(): void {
@@ -163,8 +189,43 @@ export function __reset(): void {
   __state.registeredTools = new Map();
   __state.registeredCommands = new Map();
   __state.configuration = new Map();
+  __state.configChangeListeners = [];
   __state.terminals = [];
   __state.terminalCloseListeners = [];
+  __state.statusBarItems = [];
+  __state.quickPickResponse = undefined;
+  __state.inputBoxResponse = undefined;
+  __state.secrets = new Map();
+}
+
+/** Choose which quick-pick item index showQuickPick returns next. */
+export function __setQuickPickResponse(index: number | undefined): void {
+  __state.quickPickResponse = index;
+}
+
+/** Set what showInputBox returns next. */
+export function __setInputBoxResponse(value: string | undefined): void {
+  __state.inputBoxResponse = value;
+}
+
+/** A fake SecretStorage backed by __state.secrets, for context.secrets in tests. */
+export const secrets = {
+  get: vi.fn(async (key: string): Promise<string | undefined> => __state.secrets.get(key)),
+  store: vi.fn(async (key: string, value: string): Promise<void> => {
+    __state.secrets.set(key, value);
+  }),
+  delete: vi.fn(async (key: string): Promise<void> => {
+    __state.secrets.delete(key);
+  }),
+};
+
+export interface FakeStatusBarItem {
+  text: string;
+  tooltip: string | undefined;
+  command: string | undefined;
+  show: ReturnType<typeof vi.fn>;
+  hide: ReturnType<typeof vi.fn>;
+  dispose: ReturnType<typeof vi.fn>;
 }
 
 /** Simulate the user closing a terminal tab. */
@@ -266,7 +327,21 @@ export const workspace = {
         ? (__state.configuration.get(fullKey) as T)
         : fallback;
     },
+    update: async (key: string, value: unknown): Promise<void> => {
+      __state.configuration.set(section ? `${section}.${key}` : key, value);
+    },
   })),
+
+  onDidChangeConfiguration: vi.fn((listener: (e: unknown) => void) => {
+    __state.configChangeListeners.push(listener);
+    return {
+      dispose: () => {
+        __state.configChangeListeners = __state.configChangeListeners.filter(
+          (l) => l !== listener
+        );
+      },
+    };
+  }),
 
   openTextDocument: vi.fn(async (uri: Uri) => ({
     getText: (range?: Range): string => {
@@ -309,6 +384,33 @@ export const window = {
       },
     };
   }),
+
+  showInformationMessage: vi.fn(async (..._args: unknown[]): Promise<undefined> => undefined),
+
+  createStatusBarItem: vi.fn((..._args: unknown[]): FakeStatusBarItem => {
+    const item: FakeStatusBarItem = {
+      text: '',
+      tooltip: undefined,
+      command: undefined,
+      show: vi.fn(),
+      hide: vi.fn(),
+      dispose: vi.fn(),
+    };
+    __state.statusBarItems.push(item);
+    return item;
+  }),
+
+  // Returns the item at __state.quickPickResponse (set via __setQuickPickResponse).
+  showQuickPick: vi.fn(async (items: unknown): Promise<unknown> => {
+    const resolved = await items;
+    const list = resolved as unknown[];
+    const index = __state.quickPickResponse;
+    return index === undefined ? undefined : list[index];
+  }),
+
+  showInputBox: vi.fn(
+    async (..._args: unknown[]): Promise<string | undefined> => __state.inputBoxResponse
+  ),
 };
 
 export const commands = {

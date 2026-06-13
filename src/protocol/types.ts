@@ -79,6 +79,14 @@ export const RunRequestSchema = z.object({
   protocolVersion: z.number().int().positive(),
   prompt: z.string(),
   command: z.string().optional(),
+  /**
+   * The model the user chose for the work agents (planner/answerer/executor):
+   * an engine-defined model id, or "auto"/absent to let the engine route by
+   * capability. The model identity is otherwise an engine internal; this is
+   * the one user-facing handle, chosen from `Engine.listModels`. An engine
+   * that does not know the id treats it as "auto", so version skew degrades.
+   */
+  model: z.string().optional(),
   instructions: ProjectInstructionsSchema.optional(),
   attachments: z.array(AttachmentSchema).optional(),
   history: z.array(HistoryTurnSchema).optional(),
@@ -86,6 +94,45 @@ export const RunRequestSchema = z.object({
   offeredTools: z.array(z.string()),
 });
 export type RunRequest = z.infer<typeof RunRequestSchema>;
+
+/**
+ * One model offered in the picker (`Engine.listModels`). `id` is what the
+ * client sends back on `RunRequest.model` ("auto" for the router); `available`
+ * is false when the model cannot run yet (a missing API key, or - probed at
+ * call time - an Ollama model that is not pulled), so the picker can flag it.
+ */
+export const ModelChoiceSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  description: z.string(),
+  available: z.boolean(),
+});
+export type ModelChoice = z.infer<typeof ModelChoiceSchema>;
+
+/**
+ * Which model each run step used, surfaced so the user knows what answered -
+ * especially in Auto mode, where the engine chose. `mode` is "pinned" when the
+ * user's choice named a model, "provider" when it named a provider (the router
+ * then picked the best model per agent within it - `provider` carries that
+ * provider's label), and "auto" when the router decided across all available
+ * models. One entry per step that ran (triage always; then plan+execute, or
+ * answer).
+ */
+export const ModelSelectionEntrySchema = z.object({
+  /** The run step: "triage" | "plan" | "answer" | "execute". */
+  step: z.string(),
+  /** The engine model id that ran the step. */
+  id: z.string(),
+  /** Its user-facing label. */
+  label: z.string(),
+});
+export const ModelSelectionSchema = z.object({
+  mode: z.enum(['auto', 'pinned', 'provider']),
+  /** The provider's display label, set only in "provider" mode. */
+  provider: z.string().optional(),
+  models: z.array(ModelSelectionEntrySchema),
+});
+export type ModelSelection = z.infer<typeof ModelSelectionSchema>;
 
 /** The routing decision: answer in one shot, or plan and execute. */
 export const IntentSchema = z.enum(['oneshot', 'planning']);
@@ -209,6 +256,8 @@ export type PartialExecution = Execution;
 export const ReplySchema = z.object({
   intent: IntentSchema,
   reason: z.string(),
+  /** Which model(s) ran the request, for the "which model answered" line. */
+  selection: ModelSelectionSchema.optional(),
   plan: PlanSchema.optional(),
   answer: z.string().optional(),
   execution: ExecutionSchema.optional(),
@@ -225,6 +274,7 @@ export type Reply = z.infer<typeof ReplySchema>;
 export type ReplyProgress = {
   intent: Intent;
   reason: string;
+  selection?: ModelSelection;
   plan?: PartialPlan;
   answer?: string;
   execution?: PartialExecution;

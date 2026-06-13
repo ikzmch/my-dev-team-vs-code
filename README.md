@@ -4,16 +4,21 @@ An agentic AI dev team inside VS Code's **native chat panel**. Invoke it with
 `@devteam`: it answers questions, drafts step-by-step plans, and carries them
 out - reading, searching, creating, and editing files in your workspace and
 running shell commands - while **shell commands ask you first** (file changes
-apply directly to your Git-backed workspace). It runs entirely on **local
-models** via [Ollama](https://ollama.com); nothing leaves your machine.
+apply directly to your Git-backed workspace). It runs on **local models** via
+[Ollama](https://ollama.com) by default - nothing leaves your machine - and can
+optionally use **cloud models** (OpenAI, Anthropic) when you add an API key.
 
 ## Highlights
 
 - **Native chat experience.** No custom UI to learn: attachments,
   conversation follow-ups, slash commands (`/explain`, `/review`, `/plan`,
-  `/do`, `/fix`, `/test`, `/compact`, `/clear`), and 👍/👎 feedback all work
-  the way the rest of VS Code chat does. Your project's `AGENTS.md` or
+  `/do`, `/fix`, `/test`, `/compact`, `/clear`, `/model`), and 👍/👎 feedback all
+  work the way the rest of VS Code chat does. Your project's `AGENTS.md` or
   `CLAUDE.md` is respected as standing instructions on every request.
+- **Pick a model, or let Auto choose.** Run on local Ollama models or cloud
+  models (OpenAI, Anthropic) - choose one with `/model`, or leave it on **Auto**
+  to route by capability among the models available to you. Every reply shows
+  which model answered. Cloud keys are stored securely, never in settings.
 - **A real multi-agent pipeline on local models.** A triage agent routes each
   request, a planner drafts a tool-aware checklist, an executor walks it in a
   tool-calling loop over five workspace tools, and an answerer handles plain
@@ -58,8 +63,9 @@ In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 ## Tech stack
 
 - **[Mastra](https://mastra.ai)** - agents and the orchestrating workflow
-- **[Vercel AI SDK](https://sdk.vercel.ai)** + `ollama-ai-provider-v2` -
-  model interface to local Ollama models
+- **[Vercel AI SDK](https://sdk.vercel.ai)** + `ollama-ai-provider-v2`,
+  `@ai-sdk/openai`, `@ai-sdk/anthropic` - model interface to local Ollama and
+  cloud (OpenAI, Anthropic) models
 - **`zod`** - structured-output, protocol, and config validation
 - **VS Code Chat + Language Model Tools APIs** - the front end and tool
   surface

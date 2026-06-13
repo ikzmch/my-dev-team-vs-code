@@ -1,5 +1,6 @@
 ---
 id: qwen3-8b
+label: Qwen3 8B (Ollama)
 provider: ollama
 model: qwen3:8b
 capabilities:

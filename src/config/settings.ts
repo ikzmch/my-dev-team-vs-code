@@ -21,6 +21,7 @@ const CONFIG_SECTION = 'myDevTeam';
  */
 export const defaults = {
   engine: 'local' as const,
+  model: 'auto',
   ollamaEndpoint: 'http://localhost:11434',
   runCommandTimeoutMs: 60_000,
   read: {
@@ -66,6 +67,21 @@ function userEndpoint(): string {
   return /^https?:\/\/.+/.test(trimmed) ? trimmed : defaults.ollamaEndpoint;
 }
 
+/**
+ * An optional custom base URL for a cloud provider (`myDevTeam.<provider>.baseUrl`),
+ * for Azure / OpenAI-compatible gateways or an Anthropic proxy. An http(s)
+ * origin, trailing slash trimmed; anything else (including unset) yields
+ * undefined so the SDK falls back to the provider's own default endpoint.
+ */
+function userBaseUrl(key: string): string | undefined {
+  const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<unknown>(key);
+  if (typeof value !== 'string' || !value.trim()) {
+    return undefined;
+  }
+  const trimmed = value.trim().replace(/\/+$/, '');
+  return /^https?:\/\/.+/.test(trimmed) ? trimmed : undefined;
+}
+
 export const settings = {
   /**
    * Which engine handles `@devteam` runs (`myDevTeam.engine`): the
@@ -81,6 +97,19 @@ export const settings = {
   },
 
   /**
+   * What the user chose for the planner, answerer, and executor
+   * (`myDevTeam.model`): a registry id (pin one model), a "provider:<name>"
+   * (route within one provider), or "auto" to let the capability router pick
+   * the best available model per agent. Read live and sent on every run
+   * request; triage always stays on its routed local model regardless. The
+   * `/model` command and the status-bar item write this setting.
+   */
+  get model(): string {
+    const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<unknown>('model');
+    return typeof value === 'string' && value.trim() ? value.trim() : defaults.model;
+  },
+
+  /**
    * Where the Ollama server listens (`myDevTeam.ollama.endpoint`). The
    * provider wiring (core/models.ts), the chat error hints (messages.ts), and
    * the activation health check (ui/startupCheck.ts) all derive from this one
@@ -88,6 +117,24 @@ export const settings = {
    */
   get ollamaEndpoint(): string {
     return userEndpoint();
+  },
+
+  /**
+   * Optional custom base URL for the OpenAI provider
+   * (`myDevTeam.openai.baseUrl`): an Azure / OpenAI-compatible gateway.
+   * Undefined uses the OpenAI default endpoint.
+   */
+  get openaiBaseUrl(): string | undefined {
+    return userBaseUrl('openai.baseUrl');
+  },
+
+  /**
+   * Optional custom base URL for the Anthropic provider
+   * (`myDevTeam.anthropic.baseUrl`): a proxy or gateway. Undefined uses the
+   * Anthropic default endpoint.
+   */
+  get anthropicBaseUrl(): string | undefined {
+    return userBaseUrl('anthropic.baseUrl');
   },
 
   /** Shell command timeout for the `run` tool, in milliseconds (`myDevTeam.run.commandTimeoutMs`). */

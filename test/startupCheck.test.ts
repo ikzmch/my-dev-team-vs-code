@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { checkEngineAtStartup } from '../src/ui/startupCheck';
 import { LocalEngine, routedModels } from '../src/engine/localEngine';
 import { Engine } from '../src/protocol/engine';
-import { selectModel } from '../src/engine/config/models';
+import { routeModel, localModels } from '../src/engine/core/models';
 import { agents } from '../src/engine/config/agents';
 import { defaults } from '../src/config/settings';
 import { __reset, __setConfig, window } from './mocks/vscode';
@@ -32,17 +32,24 @@ function tagsResponse(models: string[]) {
 function probeOnlyEngine(): LocalEngine {
   return new LocalEngine({
     triage: {} as any,
-    planner: {} as any,
-    answerer: {} as any,
+    createPlanner: () => ({} as any),
+    createAnswerer: () => ({} as any),
     createExecutor: () => ({} as any),
   });
 }
 
 describe('routedModels', () => {
-  it('returns the deduplicated models the router selects for the agents', () => {
-    const expected = new Set(
-      Object.values(agents).map((a) => selectModel(a.capabilities).model)
-    );
+  it('returns the deduplicated local models Auto routes the agents to', () => {
+    // Triage always routes among the local models; the others route among the
+    // available models, and only their Ollama picks are tags the probe checks.
+    const expected = new Set<string>();
+    expected.add(routeModel(agents.triage.capabilities, undefined, localModels()).model);
+    for (const name of ['planner', 'answerer', 'executor'] as const) {
+      const info = routeModel(agents[name].capabilities);
+      if (info.provider === 'ollama') {
+        expected.add(info.model);
+      }
+    }
     expect(new Set(routedModels())).toEqual(expected);
     expect(routedModels()).toHaveLength(expected.size);
   });

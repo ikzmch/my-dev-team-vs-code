@@ -16,6 +16,7 @@ import {
   __state,
   chat,
   ChatResultFeedbackKind,
+  secrets,
   Uri,
 } from './mocks/vscode';
 
@@ -36,6 +37,7 @@ function fakeContext() {
   return {
     subscriptions: [] as unknown[],
     globalStorageUri: Uri.file('/global'),
+    secrets,
   };
 }
 
@@ -50,9 +52,12 @@ describe('activate', () => {
       expect.any(Function)
     );
     // The approval command + the run-mirror terminal + five tools + the
-    // participant get pushed for disposal.
-    expect(context.subscriptions).toHaveLength(8);
+    // participant, plus the model status bar, the select-model and set-api-key
+    // commands, and the config-change listener, get pushed for disposal.
+    expect(context.subscriptions).toHaveLength(12);
     expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.selectModel')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.setApiKey')).toBe(true);
   });
 
   it('fires the Ollama health check without blocking activation', () => {

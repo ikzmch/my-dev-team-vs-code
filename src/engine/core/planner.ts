@@ -1,9 +1,8 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
-import { resolveModel } from './models';
+import { resolveModel, routeModel } from './models';
 import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
-import { selectModel } from '../config/models';
 import { PartialPlan, Plan } from '../../protocol/types';
 
 export type { PartialPlan, PartialPlanStep } from '../../protocol/types';
@@ -48,14 +47,25 @@ export type PlanResult = Plan;
 export type PlanProgress = (partial: PartialPlan) => void;
 
 export class Planner {
-  private readonly modelName = selectModel(agents.planner.capabilities).model;
-  private readonly agent = new Agent({
-    id: agents.planner.id,
-    name: agents.planner.name,
-    description: agents.planner.description,
-    instructions: agents.planner.instructions,
-    model: resolveModel(agents.planner.capabilities),
-  });
+  private readonly modelName: string;
+  private readonly agent: Agent;
+
+  /**
+   * `modelPin` is the user's per-run model choice (a registry id, or "auto"/
+   * undefined to let the capability router pick the best available model). It
+   * is resolved once here because the LocalEngine builds a fresh Planner per
+   * run with the run request's choice.
+   */
+  constructor(modelPin?: string) {
+    this.modelName = routeModel(agents.planner.capabilities, modelPin).model;
+    this.agent = new Agent({
+      id: agents.planner.id,
+      name: agents.planner.name,
+      description: agents.planner.description,
+      instructions: agents.planner.instructions,
+      model: resolveModel(agents.planner.capabilities, modelPin),
+    });
+  }
 
   async plan(
     prompt: string,

@@ -274,6 +274,7 @@ describe('model registry and selection', () => {
     expect(modelRegistry.length).toBeGreaterThan(0);
     for (const info of modelRegistry) {
       expect(info.id).toBeTruthy();
+      expect(info.label).toBeTruthy();
       expect(info.provider).toBeTruthy();
       expect(info.model).toBeTruthy();
       expect(Object.keys(info.capabilities).length).toBeGreaterThan(0);
@@ -287,7 +288,7 @@ describe('model registry and selection', () => {
 
   it('rejects two model files sharing one id', () => {
     const file =
-      '---\nid: twin\nprovider: ollama\nmodel: twin:1b\ncapabilities:\n  speed: 1\n---\nnote';
+      '---\nid: twin\nlabel: Twin\nprovider: ollama\nmodel: twin:1b\ncapabilities:\n  speed: 1\n---\nnote';
     expect(() => loadModels([file, file])).toThrow(/Duplicate model id "twin"/);
   });
 

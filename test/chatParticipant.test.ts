@@ -15,7 +15,7 @@ import {
 } from '../src/protocol/engine';
 import { ToolHost } from '../src/protocol/toolContract';
 import { EvalLog, EVAL_LOG_FILENAME } from '../src/client/evalLog';
-import { LocalEngine } from '../src/engine/localEngine';
+import { LocalEngine, modelSelection } from '../src/engine/localEngine';
 import { TriageResult } from '../src/engine/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/engine/core/planner';
 import { AnswerProgress } from '../src/engine/core/answerer';
@@ -111,18 +111,20 @@ function makeEngine(
         return classify(prompt);
       },
     } as any,
-    planner: {
-      plan: async (prompt: string, onPartial?: PlanProgress) => {
-        seen.planner = prompt;
-        return plan(prompt, onPartial);
-      },
-    } as any,
-    answerer: {
-      answer: async (prompt: string, onPartial?: AnswerProgress) => {
-        seen.answerer = prompt;
-        return answer(prompt, onPartial);
-      },
-    } as any,
+    createPlanner: () =>
+      ({
+        plan: async (prompt: string, onPartial?: PlanProgress) => {
+          seen.planner = prompt;
+          return plan(prompt, onPartial);
+        },
+      } as any),
+    createAnswerer: () =>
+      ({
+        answer: async (prompt: string, onPartial?: AnswerProgress) => {
+          seen.answerer = prompt;
+          return answer(prompt, onPartial);
+        },
+      } as any),
     createExecutor: () =>
       ({
         execute: async (prompt: string, onPartial?: ExecutionProgress) => {
@@ -1199,6 +1201,7 @@ describe('createHandler streaming', () => {
         {
           intent: 'planning',
           reason: 'needs steps',
+          selection: modelSelection('planning'),
           plan: aPlan,
           execution: anExecution,
         },
@@ -1269,6 +1272,7 @@ describe('createHandler streaming', () => {
         {
           intent: 'planning',
           reason: 'needs steps',
+          selection: modelSelection('planning'),
           plan: aPlan,
           execution: finalExecution,
         },
@@ -1312,7 +1316,15 @@ describe('createHandler streaming', () => {
     // The concatenation is exactly the final reply, with nothing duplicated.
     const text = emitted(stream);
     expect(text).toBe(
-      renderReply({ intent: 'oneshot', reason: 'simple', answer: 'It is 4.' }, true)
+      renderReply(
+        {
+          intent: 'oneshot',
+          reason: 'simple',
+          selection: modelSelection('oneshot'),
+          answer: 'It is 4.',
+        },
+        true
+      )
     );
     expect(count(text, '**Answer:**')).toBe(1);
     expect(count(text, 'It is 4.')).toBe(1);

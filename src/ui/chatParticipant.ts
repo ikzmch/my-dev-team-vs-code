@@ -16,7 +16,8 @@ import { Engine, RunCancelledError, RunFailedError } from '../protocol/engine';
 import { EvalLog, UsageEntry } from '../client/evalLog';
 import { collectInstructions } from '../client/instructions';
 import { collectReferences } from '../client/references';
-import { CLEAR_COMMAND, COMPACT_COMMAND } from '../config/clientCommands';
+import { CLEAR_COMMAND, COMPACT_COMMAND, MODEL_COMMAND } from '../config/clientCommands';
+import { handleModelChatCommand } from './modelCommands';
 import { environment } from '../config/environment';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
@@ -322,6 +323,12 @@ function formatExecution(
  */
 export function renderReply(reply: ReplyProgress | Reply, done: boolean): string {
   let text = messages.triage.block(reply.intent, reply.reason);
+  // The model line arrives just after triage (the model-selected event), so it
+  // is appended right behind the triage block - keeping streamed renders
+  // prefix-extensions of one another - and ahead of the plan/answer.
+  if (reply.selection) {
+    text += messages.model.block(reply.selection);
+  }
   if (reply.plan) {
     // Once execution output exists the plan is necessarily complete, so it
     // can be rendered unconservatively even while the run is still going.
@@ -445,6 +452,19 @@ export function createHandler(
       return { metadata };
     }
 
+    // /model is also client-side and starts no run: the model choice is a
+    // client setting sent on every run request, so picking it is a setting
+    // write plus a chat confirmation (the picker or the typed argument).
+    if (request.command === MODEL_COMMAND) {
+      await handleModelChatCommand(getEngine(), request.prompt, stream);
+      const metadata: TurnMetadata = {
+        command: MODEL_COMMAND,
+        runId: randomUUID(),
+        outcome: 'ok',
+      };
+      return { metadata };
+    }
+
     // Resolve the workspace's standing instruction file (AGENTS.md/CLAUDE.md),
     // the request's references (attached files/selections/symbols plus inline
     // #codebase/#changes markers), and the prior turns; the engine folds them
@@ -527,6 +547,9 @@ export function createHandler(
         // business, and an engine that does not know the name treats the
         // prompt as plain text.
         command: request.command,
+        // The user's model choice (a registry id, or "auto"); the engine routes
+        // by capability when it is "auto" or an id it does not know.
+        model: settings.model,
         instructions,
         attachments,
         history,

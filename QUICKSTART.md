@@ -5,9 +5,11 @@ My Dev Team is an AI chat participant for VS Code. You talk to it as
 step-by-step plans, and carry them out: reading, searching, creating, and
 editing files in your workspace and running shell commands - asking you first
 before it runs a command (file changes apply directly to your Git-backed
-workspace, where they are easy to review and revert). Everything runs locally
-against your own [Ollama](https://ollama.com) server; nothing leaves your
-machine.
+workspace, where they are easy to review and revert). Out of the box everything
+runs locally against your own [Ollama](https://ollama.com) server and nothing
+leaves your machine; if you prefer, you can also point it at a cloud model
+(OpenAI or Anthropic) by adding an API key - see
+[Choosing a model](#4-choosing-a-model).
 
 ## 1. What you need
 
@@ -24,7 +26,10 @@ machine.
   ```
 
   If your Ollama server listens somewhere else, set the
-  `myDevTeam.ollama.endpoint` setting (see [Settings](#5-settings)).
+  `myDevTeam.ollama.endpoint` setting (see [Settings](#7-settings)).
+
+  Cloud models (OpenAI, Anthropic) are optional and need only an API key, no
+  Ollama pull - see [Choosing a model](#4-choosing-a-model).
 
 ## 2. Build and launch
 
@@ -102,7 +107,45 @@ also prints a **Progress** checklist from time to time - the plan steps with
 each one ticked off as it goes - so you can see where it stands without reading
 every tool call.
 
-## 4. Slash commands
+## 4. Choosing a model
+
+By default the model is **Auto**: My Dev Team picks the best available model
+for each part of your request, and shows you what it chose on a **Model:** line
+under each reply. To change it, type **`/model`** in the chat (or click the
+model name in the status bar at the bottom of the window) and pick from the
+list - or type the name directly, e.g. `/model Claude Sonnet 4.6`.
+
+The list offers three kinds of choice:
+
+- **Auto** - the best available model for each task, across every provider.
+- **A specific model** - always use that one model.
+- **A provider** (e.g. "Anthropic (best available)") - stick to that provider
+  but let it pick the best model for each task. Type `/model anthropic` (or
+  `openai`, `ollama`) as a shortcut.
+
+Out of the box the list is your local Ollama models. To use a cloud model:
+
+1. Run the **"My Dev Team: Set API Key"** command (Ctrl+Shift+P) and paste your
+   OpenAI or Anthropic key. It is stored securely and never written to your
+   settings file. (Alternatively, set the `OPENAI_API_KEY` or
+   `ANTHROPIC_API_KEY` environment variable before launching VS Code.)
+2. Pick the model with `/model` - cloud models you have a key for become
+   selectable; the rest show as unavailable.
+
+Notes:
+
+- Picking a model uses it for the planning and the actual work. The quick
+  internal "is this a question or a task?" step always stays on a fast local
+  model, so it costs you nothing.
+- **Auto** only uses a cloud model once you have set its key; until then it
+  stays on your local models. Add a key and Auto will start preferring the
+  stronger cloud model on its own.
+- Using a cloud model sends your request to that provider. Local Ollama models
+  keep everything on your machine.
+- For Azure or another gateway, set `myDevTeam.openai.baseUrl` or
+  `myDevTeam.anthropic.baseUrl` to its URL (see [Settings](#7-settings)).
+
+## 5. Slash commands
 
 Type `/` after `@devteam` to pick a command. A command skips the automatic
 question-vs-work decision and tells the agent exactly what kind of help you
@@ -118,6 +161,7 @@ want:
 | `/test`    | Write or update tests for the target code, then run them            |
 | `/compact` | Summarize the conversation so far; the summary then stands in for it in future turns |
 | `/clear`   | Start fresh: drop the conversation so far from future requests      |
+| `/model`   | Choose the model (or Auto); see [Choosing a model](#4-choosing-a-model) |
 
 Commands work in follow-ups too: `/explain what you just did` refers back to
 the earlier turns.
@@ -131,7 +175,7 @@ change what the models receive. If a `/compact` fails (e.g. Ollama is down),
 your history is untouched - the summary only takes over once it actually
 succeeded.
 
-## 5. Approvals: you stay in control
+## 6. Approvals: you stay in control
 
 Running a shell command stops and asks you first, right in the chat: a
 **Run Command** prompt shows the exact command, and you click **Approve** to
@@ -155,7 +199,7 @@ Every approved command's full live output also appears in a read-only
 commands run or to read the session log afterwards; the chat itself only
 shows short previews.
 
-## 6. Settings
+## 7. Settings
 
 Open Settings and search for "My Dev Team" (or edit `settings.json`).
 Changes take effect immediately - no reload needed. The ones you are most
@@ -163,7 +207,10 @@ likely to touch:
 
 | Setting                          | Default                  | What it controls                                  |
 | -------------------------------- | ------------------------ | ------------------------------------------------- |
+| `myDevTeam.model`                | `auto`                   | Which model, provider (`provider:<name>`), or `auto` to use; easier to set with `/model` or the status bar |
 | `myDevTeam.ollama.endpoint`      | `http://localhost:11434` | Where your Ollama server listens                  |
+| `myDevTeam.openai.baseUrl`       | `""`                     | Custom OpenAI endpoint (Azure / compatible gateway); empty uses OpenAI's default |
+| `myDevTeam.anthropic.baseUrl`    | `""`                     | Custom Anthropic endpoint (a proxy/gateway); empty uses Anthropic's default |
 | `myDevTeam.run.commandTimeoutMs` | `60000`                  | How long a shell command may run before it is killed |
 | `myDevTeam.chat.toolSnippetLines`| `5`                      | Lines of a written file previewed in the chat transcript (`0` hides the preview) |
 | `myDevTeam.instructions.files`   | `["AGENTS.md", "CLAUDE.md"]` | Which project files in your workspace root hold standing rules for the agent; the first one found is used. An empty list turns the feature off |
@@ -173,21 +220,24 @@ There are further knobs for read/search limits (`myDevTeam.read.*`,
 `myDevTeam.search.*`) and the engine choice (`myDevTeam.engine`, leave it on
 `local` for now).
 
-## 7. Feedback
+## 8. Feedback
 
 Use the **👍 / 👎** buttons on any reply. With
 `myDevTeam.telemetry.evalLog` enabled, your votes are stored locally next to
 the run's routing and usage data, which helps tune the agents - nothing is
 ever sent anywhere.
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 - **"Ollama is unreachable" or a request fails on the first step** - make
   sure `ollama serve` is running and that `myDevTeam.ollama.endpoint`
   matches where it listens.
-- **A request fails naming a model** - pull the named model
-  (`ollama pull <model>`); the agent only routes to models listed in
-  [section 1](#1-what-you-need).
+- **A request fails naming a model** - for a local model, pull it
+  (`ollama pull <model>`); for a cloud model, the failure means its API key is
+  missing or invalid - set it with "My Dev Team: Set API Key" (see
+  [Choosing a model](#4-choosing-a-model)).
+- **A cloud model shows as unavailable in `/model`** - you have not set its API
+  key yet; run "My Dev Team: Set API Key".
 - **A command seems stuck** - long commands are killed after
   `myDevTeam.run.commandTimeoutMs` (60s by default); raise it for slow
   builds or test suites.

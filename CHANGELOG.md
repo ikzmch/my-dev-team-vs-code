@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-06-13
+
+### Added
+
+- **Choose a model, a provider, or let Auto pick.** A new `/model` command (and
+  a status-bar item) lets you select what @devteam uses: a specific model, a
+  whole provider (it then picks the best model per task within it, e.g.
+  `/model anthropic`), or **Auto** (the default) which routes each part of your
+  request to the best available model. Every reply shows which model ran on a
+  **Model:** line.
+- **Cloud models alongside local Ollama.** OpenAI (GPT-4o) and Anthropic
+  (Claude Opus 4.8, Sonnet 4.6, Haiku 4.5) join the model registry. Add a key
+  with the new "My Dev Team: Set API Key" command (stored securely in
+  SecretStorage, never in settings.json) or via `OPENAI_API_KEY` /
+  `ANTHROPIC_API_KEY`. For Azure or another gateway, set
+  `myDevTeam.openai.baseUrl` / `myDevTeam.anthropic.baseUrl`. Triage always
+  stays on a fast local model.
+
 ## [0.26.0] - 2026-06-13
 
 ### Added

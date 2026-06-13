@@ -11,6 +11,7 @@
 import {
   ExecutionEvent,
   Intent,
+  ModelSelection,
   PartialPlan,
   Reply,
   ReplyProgress,
@@ -27,6 +28,13 @@ export type RunStep = 'triage' | 'plan' | 'answer' | 'execute';
 export type RunEvent =
   /** Triage decided how to route the request. Always the first event. */
   | { type: 'triaged'; intent: Intent; reason: string }
+  /**
+   * Which model(s) the engine selected for the run, emitted right after
+   * `triaged` (the route determines which steps run). Surfaces the "which
+   * model answered" line, and tells the user when Auto picked for them. An
+   * additive event: a client that does not know it simply ignores it.
+   */
+  | { type: 'model-selected'; selection: ModelSelection }
   /**
    * The plan as drafted so far. Snapshots, not deltas: a partial plan is
    * small, and the partial-JSON stream it comes from revises fields in place.
@@ -92,6 +100,9 @@ export class ReplyFolder {
       return undefined;
     }
     switch (event.type) {
+      case 'model-selected':
+        this.progress.selection = event.selection;
+        return this.progress;
       case 'plan-snapshot':
         this.progress.plan = event.plan;
         return this.progress;

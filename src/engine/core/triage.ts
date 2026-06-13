@@ -1,9 +1,8 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
-import { resolveModel } from './models';
+import { resolveModel, routeModel, localModels } from './models';
 import { readUsage, UsageReporter } from './usage';
 import { agents } from '../config/agents';
-import { selectModel } from '../config/models';
 import { IntentSchema } from '../../protocol/types';
 
 /**
@@ -25,13 +24,21 @@ export const TriageSchema = z.object({
 export type TriageResult = z.infer<typeof TriageSchema>;
 
 export class Triage {
-  private readonly modelName = selectModel(agents.triage.capabilities).model;
+  // Triage always routes among the local Ollama models only - never a pinned
+  // cloud model. It is a cheap, invisible classification, so it stays fast and
+  // free even when the user has pinned (or Auto-routed to) a paid model for
+  // the work that follows.
+  private readonly modelName = routeModel(
+    agents.triage.capabilities,
+    undefined,
+    localModels()
+  ).model;
   private readonly agent = new Agent({
     id: agents.triage.id,
     name: agents.triage.name,
     description: agents.triage.description,
     instructions: agents.triage.instructions,
-    model: resolveModel(agents.triage.capabilities),
+    model: resolveModel(agents.triage.capabilities, undefined, localModels()),
   });
 
   async classify(prompt: string, onUsage?: UsageReporter): Promise<TriageResult> {

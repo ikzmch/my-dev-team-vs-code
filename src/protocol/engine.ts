@@ -5,7 +5,7 @@
  * contract over HTTP - and a VS Code setting switches between them, so
  * nothing above this interface may depend on which one is running.
  */
-import { Reply, RunRequest } from './types';
+import { ModelChoice, Reply, RunRequest } from './types';
 import { RunEvent, RunStep } from './events';
 import { ToolHost } from './toolContract';
 
@@ -40,6 +40,13 @@ export interface Engine {
    * Must never throw and should answer quickly - it must not delay activation.
    */
   startupWarnings(): Promise<string[]>;
+  /**
+   * The models the user may pick from in the `/model` picker, the "Auto"
+   * choice first. The model registry is otherwise an engine internal; this is
+   * the one place it is exposed, as user-facing choices (id, label, whether it
+   * can run now). Must never throw.
+   */
+  listModels(): Promise<ModelChoice[]>;
 }
 
 /**
