@@ -706,6 +706,41 @@ describe('createHandler', () => {
     expect(readPaths).not.toContain(uri.path);
   });
 
+  it('resolves a #codebase marker into context and strips it from the prompt', async () => {
+    const uri = __setFile('src/widget.ts', 'export class Widget {}');
+    __state.findFilesResult = [uri];
+    const { engine, seen } = makeEngine();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'where is the Widget class #codebase', references: [] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    // The agents get the search results as an attachment...
+    expect(seen.answerer).toContain('Codebase search: Widget');
+    expect(seen.answerer).toContain('src/widget.ts');
+    // ...and the marker itself is gone from the prompt they see.
+    expect(seen.answerer).toContain('where is the Widget class');
+    expect(seen.triage).not.toContain('#codebase');
+    expect(seen.answerer).not.toContain('#codebase');
+  });
+
+  it('keeps a label for an unsupported reference kind', async () => {
+    const { engine, seen } = makeEngine();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'q', references: [{ value: 42 }] } as any,
+      { history: [] } as any,
+      fakeStream() as any,
+      fakeToken() as any
+    );
+
+    expect(seen.triage).toContain('Unsupported reference');
+    expect(seen.answerer).toContain('unsupported type');
+  });
+
   it('does not add an attachments block when there are no references', async () => {
     const { engine, seen } = makeEngine();
 

@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-06-13
+
+### Added
+
+- **`#codebase` and `#changes` references.** Type `#codebase` in your message
+  and the agent searches your workspace for relevant code and attaches the
+  matching files (with a peek at the top ones); type `#changes` and it attaches
+  your uncommitted git changes - handy for "review what I changed" or "fix the
+  bug I just introduced". The markers are resolved into context and removed from
+  the prompt, so you no longer have to find and attach the right files yourself.
+
+### Changed
+
+- **Symbol and other references are no longer dropped.** A symbol you attach is
+  now inlined with its definition's line range, and any reference the agent
+  cannot read (e.g. an image) leaves a short "Unsupported reference" note
+  instead of vanishing, so the models always know what you pointed at.
+
 ## [0.25.0] - 2026-06-13
 
 ### Changed

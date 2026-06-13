@@ -79,6 +79,7 @@ src/
     engineFactory.ts      the myDevTeam.engine switch: LocalEngine today, RemoteEngine in Phase B
     auth.ts               AuthProvider implementations (anonymous today; real credentials in Phase B)
     instructions.ts       reads the workspace's AGENTS.md/CLAUDE.md as standing project instructions per request
+    references.ts         resolves a request's references into attachments: files/selections/symbols + inline #codebase/#changes
     evalLog.ts            opt-in local JSONL eval store: per-run route/usage/outcome records + 👍/👎 feedback
   config/                 client-side configuration, kept out of the logic (see below)
     settings.ts           operational limits; engine/endpoint/timeout/search caps read live from VS Code settings
@@ -129,9 +130,12 @@ Three layers, deliberately decoupled:
         ▼
 ui/chatParticipant.ts          resolve the workspace's instruction file
   createHandler                (AGENTS.md/CLAUDE.md, via client/instructions.ts),
-        │                      attached files/selections into labelled
-        │                      attachments, and the session's prior turns into
-        │                      capped history turns, build a protocol
+        │                      the request's references into labelled
+        │                      attachments (files/selections/symbols plus inline
+        │                      #codebase/#changes markers, via
+        │                      client/references.ts - which also strips the
+        │                      markers from the prompt), and the session's prior
+        │                      turns into capped history turns, build a protocol
         │                      RunRequest (version, prompt, instructions,
         │                      attachments, history, environment facts,
         │                      offered tools) and
@@ -290,6 +294,41 @@ engine that predates it ignores it and version skew degrades instead of
 breaking. Nested per-directory AGENTS.md files and `@import`-style includes
 are out of scope for now (see [Roadmap](#roadmap)).
 
+**References (`client/references.ts`).** A request can point the agents at
+context in two ways, and both resolve - client-side, because the engine has no
+workspace access - into the same `{ label, text }` attachments the engine
+already understands (triage sees the labels only; the planner/answerer/executor
+get the text):
+
+- **Explicit references** (`request.references`) - what VS Code attaches when
+  you use the paperclip or a `#file`/`#selection`/symbol pick. Each `value` is
+  a Uri (whole file, size-guarded against `maxAttachmentReadBytes`), a Location
+  (a selection or a symbol's definition range, labelled with its line or line
+  range), or a plain string. A value that is location-shaped but not a
+  `Location` instance (a symbol reference can arrive structurally) is still
+  read; an unrecognised kind (e.g. image/binary data) becomes a short
+  label-only "Unsupported reference" notice rather than being dropped silently,
+  so the models know something was attached.
+- **Inline markers** typed in the prompt, each resolved into an attachment and
+  then **removed from the prompt** so the agents see the request, not a stray
+  `#codebase`:
+  - **`#codebase`** derives a few distinctive search terms from the prompt,
+    greps the workspace for each (reusing the `search` tool's content scan, so
+    the same excludes/caps apply), and attaches the matching file list plus a
+    head snippet of the first few - a quick relevance pass so the agents start
+    with the repository's relevant code instead of discovering it from scratch.
+  - **`#changes`** attaches the workspace's uncommitted git diff (staged +
+    unstaged, read-only `git diff`), so `/review` and `/fix` can work against
+    what you actually changed. A missing git, a clean tree, or no workspace all
+    degrade to a short notice.
+
+  Both are opt-in (you type the marker), so their cost is bounded by the
+  `settings.references.*` caps and only paid when asked for. The `#changes`
+  resolver is injected (it defaults to the real `git diff`) so tests need no
+  repository. Real `#`-variable autocomplete (a contributed chat-variable or
+  tool) is a later step; today the markers are recognised as literal prompt
+  tokens.
+
 ### Configuration vs. code (`config/`)
 
 Anything that's *configuration* - prose an author tunes, tunable limits, UI
@@ -311,7 +350,7 @@ never carry literals inline.
 | `engine/config/commands.ts`     | Discovers the command files, exports `commandConfigs`/`commandNames` and the pinned-route reason |
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
-| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
+| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, Ollama endpoint, run timeout, search caps, snippet line count, and instruction file list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
 | `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama-hint template the LocalEngine fills in, the /clear confirmation, and the run-mirror terminal's copy (tab name, command header, outcome note). Knows nothing about agents or models - which model is routed where is engine knowledge that reaches the UI only as a protocol error's `hint` |
 | `config/clientCommands.ts`      | The client-handled commands (`/clear`, with its autocomplete description) plus the `/compact` marker name the history collection watches for - client-side because conversation history is client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
@@ -681,9 +720,12 @@ Out of the box, `@devteam <prompt>`:
 
 1. Resolves the workspace's instruction file (the first match in
    `myDevTeam.instructions.files`, `AGENTS.md` then `CLAUDE.md` by default),
-   any attached files/selections into labelled attachments (an
-   attached file beyond `settings.maxAttachmentReadBytes` becomes a too-large
-   notice instead of being read), and the chat session's prior turns (your
+   the request's references into labelled attachments - attached
+   files/selections/symbols (an attached file beyond
+   `settings.maxAttachmentReadBytes` becomes a too-large notice instead of
+   being read), plus the inline `#codebase` (a quick workspace search) and
+   `#changes` (the uncommitted git diff) markers, which are also stripped from
+   the prompt - and the chat session's prior turns (your
    prompts and the participant's replies, capped per `settings.history`) into
    conversation history, and starts a
    protocol run on the selected engine (`myDevTeam.engine`, the in-process

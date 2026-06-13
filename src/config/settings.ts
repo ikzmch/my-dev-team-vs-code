@@ -220,6 +220,27 @@ export const settings = {
     maxChars: 8_000,
   },
 
+  /**
+   * Caps on the inline prompt references the client resolves into context
+   * (`client/references.ts`): `#codebase` (a quick workspace search) and
+   * `#changes` (the uncommitted git diff). Compile-time constants - resolving
+   * is opt-in (the user types the marker), so these bound the opt-in cost.
+   */
+  references: {
+    /** Most distinctive search terms derived from the prompt for `#codebase`. */
+    codebaseMaxTerms: 4,
+    /** Max matching files a `#codebase` search lists. */
+    codebaseMaxFiles: 8,
+    /** Of the listed files, how many include a head snippet. */
+    codebaseSnippetFiles: 3,
+    /** Head lines per `#codebase` snippet. */
+    codebaseSnippetLines: 20,
+    /** Max characters of the assembled `#codebase` attachment text. */
+    codebaseMaxChars: 8_000,
+    /** Max characters of the `#changes` (git diff) attachment text. */
+    changesMaxChars: 12_000,
+  },
+
   /** Max characters of an attached file/selection inlined into the prompt. */
   maxAttachmentChars: 20_000,
 

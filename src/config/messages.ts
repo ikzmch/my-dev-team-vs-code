@@ -128,6 +128,27 @@ export const messages = {
       'attach a selection from it instead)',
   },
 
+  /** Copy for the inline prompt references the client resolves (client/references.ts). */
+  references: {
+    /** Stands in for an attached reference of a kind we cannot inline. */
+    unsupported: '(a reference of an unsupported type was attached and skipped)',
+    /** Label of the `#codebase` attachment, naming the search terms used. */
+    codebaseLabel: (terms: string) => `Codebase search: ${terms}`,
+    /** Heading above the list of files a `#codebase` search matched. */
+    codebaseHeader: (terms: string) => `Files matching ${terms}:\n`,
+    /** Body when no distinctive search terms could be derived from the prompt. */
+    codebaseNoTerms:
+      '(no distinctive search terms could be derived from your message; ' +
+      'mention a name, symbol, or keyword to search for)',
+    /** Body when the search terms matched no files in the workspace. */
+    codebaseNoMatches: (terms: string) =>
+      `(no files in the workspace matched: ${terms})`,
+    /** Label of the `#changes` attachment. */
+    changesLabel: 'Uncommitted git changes',
+    /** Body when there are no uncommitted changes (or git is unavailable). */
+    changesEmpty: '(no uncommitted git changes, or git is not available here)',
+  },
+
   /** Copy for the client-side /clear command (it never starts a run). */
   clear: {
     /** The whole reply to a /clear turn. */

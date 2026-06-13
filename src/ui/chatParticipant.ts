@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import { Approver } from '../tools/types';
 import {
-  Attachment,
   HistoryTurn,
   Intent,
   PartialExecution,
@@ -16,6 +15,7 @@ import { clientTools, ToolHost } from '../protocol/toolContract';
 import { Engine, RunCancelledError, RunFailedError } from '../protocol/engine';
 import { EvalLog, UsageEntry } from '../client/evalLog';
 import { collectInstructions } from '../client/instructions';
+import { collectReferences } from '../client/references';
 import { CLEAR_COMMAND, COMPACT_COMMAND } from '../config/clientCommands';
 import { environment } from '../config/environment';
 import { settings } from '../config/settings';
@@ -141,63 +141,6 @@ export class ChatApprover implements Approver {
 function truncate(text: string, maxChars: number): string {
   // Cap on inlined text so a huge file or reply can't blow up the prompt.
   return text.length > maxChars ? text.slice(0, maxChars) + '\n…(truncated)' : text;
-}
-
-/**
- * Resolve files/selections the user attached to the chat request into
- * run-request attachments. VS Code delivers attachments on
- * `request.references`, not in the prompt: each `value` is a Uri (whole
- * file), a Location (file + range, e.g. a selection), or a plain string. The
- * engine decides per step how much of each attachment its model sees (triage
- * gets labels only, the planner/answerer get the full text).
- */
-async function collectAttachments(
-  refs: readonly vscode.ChatPromptReference[]
-): Promise<Attachment[]> {
-  const attachments: Attachment[] = [];
-  for (const ref of refs) {
-    const v = ref.value;
-    try {
-      if (v instanceof vscode.Uri) {
-        const rel = vscode.workspace.asRelativePath(v);
-        // Check the size via stat before reading: only maxAttachmentChars of
-        // the text survive into the prompt anyway, so an enormous file is
-        // answered with a notice instead of being pulled fully into memory.
-        const stat = await vscode.workspace.fs.stat(v);
-        if (stat.size > settings.maxAttachmentReadBytes) {
-          attachments.push({
-            label: `File: ${rel}`,
-            text: messages.attachments.tooLarge(stat.size),
-          });
-          continue;
-        }
-        const bytes = await vscode.workspace.fs.readFile(v);
-        attachments.push({
-          label: `File: ${rel}`,
-          text: truncate(Buffer.from(bytes).toString('utf8'), settings.maxAttachmentChars),
-        });
-      } else if (v instanceof vscode.Location) {
-        const doc = await vscode.workspace.openTextDocument(v.uri);
-        const rel = vscode.workspace.asRelativePath(v.uri);
-        const startLine = v.range.start.line + 1;
-        attachments.push({
-          label: `Selection from ${rel} (line ${startLine})`,
-          text: truncate(doc.getText(v.range), settings.maxAttachmentChars),
-        });
-      } else if (typeof v === 'string') {
-        attachments.push({
-          label: 'Attached text',
-          text: truncate(v, settings.maxAttachmentChars),
-        });
-      }
-    } catch (err) {
-      attachments.push({
-        label: 'Unreadable attachment',
-        text: `(could not read attachment: ${String(err)})`,
-      });
-    }
-  }
-  return attachments;
 }
 
 /**
@@ -503,10 +446,16 @@ export function createHandler(
     }
 
     // Resolve the workspace's standing instruction file (AGENTS.md/CLAUDE.md),
-    // attached files/selections, and the prior turns; the engine folds them
-    // into each step's prompt as that step's model needs them.
+    // the request's references (attached files/selections/symbols plus inline
+    // #codebase/#changes markers), and the prior turns; the engine folds them
+    // into each step's prompt as that step's model needs them. Resolving the
+    // references also strips any inline marker from the prompt, so the agents
+    // see the request, not a stray "#codebase".
     const instructions = await collectInstructions();
-    const attachments = await collectAttachments(request.references);
+    const { attachments, prompt } = await collectReferences(
+      request.references,
+      request.prompt
+    );
     const history = collectHistory(context.history);
 
     // What this turn contributes to the eval log: a fresh run id (also the
@@ -572,7 +521,7 @@ export function createHandler(
     const handle = getEngine().startRun(
       {
         protocolVersion: PROTOCOL_VERSION,
-        prompt: request.prompt,
+        prompt,
         // The slash command travels by name only: what it does (route
         // pinning, prompt preamble) is the engine's command registry's
         // business, and an engine that does not know the name treats the

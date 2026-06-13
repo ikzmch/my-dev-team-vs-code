@@ -67,10 +67,24 @@ Then try a real request:
   @devteam create a console calculator in calculator.py with add, subtract, multiply and divide
   ```
 
-- **Attach context** - use the paperclip (or `#`-references) to attach files
-  or a selection; the agent receives their full text. A really huge file
-  (tens of megabytes) is skipped with a note - attach a selection from it
+- **Attach context** - use the paperclip (or `#`-references) to attach files,
+  a selection, or a symbol; the agent receives their full text. A really huge
+  file (tens of megabytes) is skipped with a note - attach a selection from it
   instead.
+
+- **Point at your code inline** - type these markers anywhere in your message
+  and the agent pulls in the matching context for you:
+
+  - `#codebase` - searches your workspace for code relevant to your message and
+    attaches the matching files (with a peek at the top ones), so you do not
+    have to find and attach them yourself.
+  - `#changes` - attaches your uncommitted git changes, handy for "review what
+    I changed" or "fix the bug I just introduced".
+
+  ```
+  @devteam where is the retry logic? #codebase
+  @devteam review my work so far #changes
+  ```
 
 - **Follow up** - the conversation carries over, so "now rename it too" or
   "add a test for that" resolves against what was just done.
