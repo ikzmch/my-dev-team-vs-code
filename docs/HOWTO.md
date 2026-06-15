@@ -232,7 +232,10 @@ it an API key one of two ways:
    your settings file. This works with the default (local) engine.
    **Or** set the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GROQ_API_KEY`
    environment variable before launching VS Code - the only option if you run
-   the `sidecar` engine, which reads keys from the environment.
+   the `sidecar` engine, which reads keys from the environment. If you switch to
+   the `sidecar` engine while a key is set only via "Set API Key", a warning
+   reminds you to set the matching environment variable (or switch back to the
+   local engine), so the key does not silently stop working.
 2. Pick the model with `/model` - cloud models you have a key for become
    selectable; the rest show as unavailable.
 

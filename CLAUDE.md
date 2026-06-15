@@ -142,10 +142,21 @@ version first, `## [x.y.z] - date`, changes under `### Added` / `### Changed`
   bump only the patch version for fixes, hardening, and refactors; propose a
   major version bump only when it is really justified (e.g. a breaking change
   or a milestone like the first stable release)
-- when there are uncommitted changes, only bump the version if the current
-  uncommitted version is a patch version (the patch number does not end in 0);
-  if the current uncommitted version is `major.minor.0`, leave the version as
-  is and do not bump it
+- the rule below turns on whether the version in `package.json` has already
+  been **committed**. Check `git status`/`git log` first:
+  - **the current version is already committed** (a clean tree, or your change
+    is the first uncommitted work on top of a released version): this is a new
+    release, so bump it - patch for a fix/hardening/refactor, minor for a
+    significant change - even when the committed version is a `major.minor.0`.
+    A small change on top of a committed `0.47.0` becomes `0.47.1`, and its
+    CHANGELOG entry goes under a new `## [0.47.1]` section, not under the
+    already-released `0.47.0`.
+  - **the current version is itself uncommitted** (a previous change in this
+    same uncommitted batch already bumped it, so `package.json` is dirty): only
+    bump again if that uncommitted version is a patch version (the patch number
+    does not end in 0); if it is a `major.minor.0`, leave it as is and add your
+    entry under that pending section. This keeps one in-flight batch from
+    inflating the version several times before it lands.
 
 ## Keep unit tests in sync
 

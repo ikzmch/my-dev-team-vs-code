@@ -77,3 +77,16 @@ export async function setApiKey(
 export const secretStorageSource: SecretSource = {
   apiKey: (provider) => stored[provider] ?? apiKeyFromEnv(provider),
 };
+
+/**
+ * Cloud providers whose key was set via "Set API Key" (stored in SecretStorage)
+ * but have no matching environment variable. The sidecar child reads keys from
+ * the environment only, so these stored keys never reach it - the client warns
+ * about exactly this set when the sidecar engine is selected (see
+ * client/engineFactory.ts). Reflects the cache `loadStoredApiKeys` populated.
+ */
+export function providersWithStoredKeyButNoEnv(): ProviderName[] {
+  return cloudProviderDescriptors
+    .filter((d) => stored[d.id] !== undefined && apiKeyFromEnv(d.id) === undefined)
+    .map((d) => d.id);
+}

@@ -410,8 +410,14 @@ sidecar needs, so no protocol churn was required.
   the environment variables it inherits from the parent - nothing secret crosses
   the wire. (The in-process local engine, by contrast, also accepts keys stored
   in SecretStorage via the host-injected source; the sidecar deliberately does
-  not.) MCP keeps working unchanged: the child's proxy `ToolHost` forwards
-  an MCP tool call to the parent, where the real `McpHub` runs it.
+  not.) Because that difference is otherwise invisible, the client warns about it:
+  when the sidecar engine is selected and a provider has a key set via "Set API
+  Key" (SecretStorage) but no matching environment variable, `engineFactory`
+  shows a one-time notice naming the provider and its env var
+  (`providersWithStoredKeyButNoEnv` in `client/secrets.ts`), re-armed when the
+  user switches engines, so a stored key does not silently stop working. MCP keeps
+  working unchanged: the child's proxy `ToolHost` forwards an MCP tool call to the
+  parent, where the real `McpHub` runs it.
 
 **Conversation history.** The handler converts `ChatContext.history` into the
 workflow's `history` turns: this participant's exchanges only (a request turn

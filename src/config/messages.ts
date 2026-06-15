@@ -631,6 +631,12 @@ export const messages = {
     remoteUnavailable:
       'My Dev Team: the remote engine is not available yet; using the local engine. ' +
       'Set "myDevTeam.engine" back to "local" to hide this warning.',
+    /** `keys` is the comma-joined "Provider (set ENV_VAR)" list of affected providers. */
+    sidecarSecretKeysIgnored: (keys: string) =>
+      'My Dev Team: the sidecar engine reads cloud API keys from environment ' +
+      `variables only, so a key you set with "Set API Key" will not be used: ${keys}. ` +
+      'Set the matching environment variable before launching VS Code, or switch ' +
+      '"myDevTeam.engine" back to "local" to use the stored key.',
   },
 
   /** Warnings the engines' startup probes may surface (ui/startupCheck.ts). */

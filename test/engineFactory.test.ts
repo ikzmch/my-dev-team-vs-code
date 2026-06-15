@@ -32,15 +32,24 @@ import { createEngineProvider } from '../src/client/engineFactory';
 import { AnonymousAuthProvider } from '../src/client/auth';
 import { LocalEngine } from '../src/engine/localEngine';
 import { SidecarEngine } from '../src/client/sidecarEngine';
-import { __reset, __setConfig, window } from './mocks/vscode';
+import { setApiKey } from '../src/client/secrets';
+import { __reset, __setConfig, window, secrets } from './mocks/vscode';
 
 const SIDECAR_PATH = '/ext/dist/sidecar.js';
 
-beforeEach(() => {
+beforeEach(async () => {
   __reset();
   vi.mocked(window.showWarningMessage).mockClear();
   forkMock.mockClear();
   forkedChildren.length = 0;
+  // The sidecar secret-source cache is module state; clear it and the env so a
+  // test only sees the keys it sets.
+  delete process.env.OPENAI_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.GROQ_API_KEY;
+  await setApiKey(secrets, 'openai', '');
+  await setApiKey(secrets, 'anthropic', '');
+  await setApiKey(secrets, 'groq', '');
 });
 
 describe('createEngineProvider', () => {
@@ -94,6 +103,43 @@ describe('createEngineProvider', () => {
 
     provider.dispose();
     expect(forkedChildren[0].killed).toBe(true);
+  });
+
+  it('warns once that the sidecar ignores a SecretStorage-only key', async () => {
+    await setApiKey(secrets, 'openai', 'sk-stored'); // stored, no env var
+    __setConfig('myDevTeam.engine', 'sidecar');
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
+
+    getEngine();
+    getEngine();
+    expect(window.showWarningMessage).toHaveBeenCalledTimes(1);
+    const warning = vi.mocked(window.showWarningMessage).mock.calls[0][0] as string;
+    expect(warning).toContain('OpenAI');
+    expect(warning).toContain('OPENAI_API_KEY');
+  });
+
+  it('does not warn when the key is also in the environment', async () => {
+    process.env.OPENAI_API_KEY = 'sk-env';
+    await setApiKey(secrets, 'openai', 'sk-stored');
+    __setConfig('myDevTeam.engine', 'sidecar');
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
+
+    getEngine();
+    expect(window.showWarningMessage).not.toHaveBeenCalled();
+  });
+
+  it('warns again only after switching away from and back to sidecar', async () => {
+    await setApiKey(secrets, 'openai', 'sk-stored');
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
+    __setConfig('myDevTeam.engine', 'sidecar');
+    getEngine();
+    getEngine();
+    __setConfig('myDevTeam.engine', 'local');
+    getEngine();
+    __setConfig('myDevTeam.engine', 'sidecar');
+    getEngine();
+
+    expect(window.showWarningMessage).toHaveBeenCalledTimes(2);
   });
 });
 

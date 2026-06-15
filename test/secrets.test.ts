@@ -3,6 +3,7 @@ import {
   loadStoredApiKeys,
   setApiKey,
   secretStorageSource,
+  providersWithStoredKeyButNoEnv,
 } from '../src/client/secrets';
 import { __reset, __state, secrets } from './mocks/vscode';
 
@@ -63,5 +64,34 @@ describe('client SecretStorage source', () => {
       delete: vi.fn(),
     } as any;
     await expect(loadStoredApiKeys(failing)).resolves.toBeUndefined();
+  });
+});
+
+describe('providersWithStoredKeyButNoEnv', () => {
+  beforeEach(async () => {
+    // Start from a clean cache: clear every provider's stored key.
+    await setApiKey(secrets, 'openai', '');
+    await setApiKey(secrets, 'anthropic', '');
+    await setApiKey(secrets, 'groq', '');
+  });
+
+  it('flags a provider with a stored key but no environment variable', async () => {
+    await setApiKey(secrets, 'openai', 'sk-stored');
+    expect(providersWithStoredKeyButNoEnv()).toEqual(['openai']);
+  });
+
+  it('does not flag a provider whose env var is also set', async () => {
+    process.env.OPENAI_API_KEY = 'sk-env';
+    await setApiKey(secrets, 'openai', 'sk-stored');
+    expect(providersWithStoredKeyButNoEnv()).toEqual([]);
+  });
+
+  it('does not flag a provider with only an environment variable', async () => {
+    process.env.GROQ_API_KEY = 'gsk-env';
+    expect(providersWithStoredKeyButNoEnv()).toEqual([]);
+  });
+
+  it('returns nothing when no cloud key is configured at all', () => {
+    expect(providersWithStoredKeyButNoEnv()).toEqual([]);
   });
 });

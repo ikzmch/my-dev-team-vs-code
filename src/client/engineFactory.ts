@@ -15,6 +15,8 @@ import * as vscode from 'vscode';
 import { Engine } from '../protocol/engine';
 import { LocalEngine } from '../engine/localEngine';
 import { SidecarEngine, createForkedChannel } from './sidecarEngine';
+import { providersWithStoredKeyButNoEnv } from './secrets';
+import { providerDescriptor, providerLabels } from '../config/providers';
 import { settings, runtimeConfigSnapshot } from '../config/settings';
 import { messages } from '../config/messages';
 
@@ -37,10 +39,37 @@ export function createEngineProvider(sidecarScriptPath: string): EngineProvider 
   let local: LocalEngine | undefined;
   let sidecar: SidecarEngine | undefined;
   let warnedRemote = false;
+  let warnedSidecarSecrets = false;
+
+  // The sidecar child reads cloud keys from the environment only, so a key the
+  // user set via "Set API Key" (SecretStorage) silently stops working under it.
+  // Warn once when sidecar is selected and that mismatch exists; re-armed when
+  // the user switches away, the same way the remote warning is.
+  const warnSidecarSecrets = (): void => {
+    if (warnedSidecarSecrets) {
+      return;
+    }
+    const affected = providersWithStoredKeyButNoEnv();
+    if (affected.length === 0) {
+      return;
+    }
+    warnedSidecarSecrets = true;
+    const list = affected
+      .map((id) => `${providerLabels[id]} (set ${providerDescriptor(id).envKey})`)
+      .join(', ');
+    void vscode.window.showWarningMessage(messages.engine.sidecarSecretKeysIgnored(list));
+  };
 
   const getEngine = (): Engine => {
     const choice = settings.engine;
+    if (choice !== 'sidecar') {
+      warnedSidecarSecrets = false;
+    }
+    if (choice !== 'remote') {
+      warnedRemote = false;
+    }
     if (choice === 'sidecar') {
+      warnSidecarSecrets();
       return (sidecar ??= new SidecarEngine(
         createForkedChannel(sidecarScriptPath),
         runtimeConfigSnapshot
@@ -49,9 +78,6 @@ export function createEngineProvider(sidecarScriptPath: string): EngineProvider 
     if (choice === 'remote' && !warnedRemote) {
       void vscode.window.showWarningMessage(messages.engine.remoteUnavailable);
       warnedRemote = true;
-    }
-    if (choice !== 'remote') {
-      warnedRemote = false;
     }
     return (local ??= new LocalEngine());
   };
