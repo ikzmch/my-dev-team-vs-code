@@ -255,8 +255,8 @@ export const messages = {
       const arg = (approved: boolean) =>
         encodeURIComponent(JSON.stringify([id, approved]));
       return (
-        `[${messages.approval.approve}](command:${command}?${arg(true)}) | ` +
-        `[${messages.approval.decline}](command:${command}?${arg(false)})\n`
+        `[**${messages.approval.approve}**](command:${command}?${arg(true)}) | ` +
+        `[**${messages.approval.decline}**](command:${command}?${arg(false)})\n`
       );
     },
   },

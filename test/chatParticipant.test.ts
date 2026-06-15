@@ -154,7 +154,7 @@ function emitted(stream: ReturnType<typeof fakeStream>): string {
 /**
  * Extract the approval command links rendered into a stream, in render order.
  * The approver now emits the Approve/Decline choices as inline trusted-markdown
- * command links (`[Approve](command:<id>?<encoded args>)`) rather than
+ * command links (`[**Approve**](command:<id>?<encoded args>)`) rather than
  * stream.button parts, so a test "clicks" one by parsing the link and invoking
  * its registered command with the decoded arguments.
  */
@@ -207,8 +207,8 @@ describe('ChatApprover', () => {
     };
     expect(md.value).toContain('**Run command?**');
     expect(md.value).toContain('preview body');
-    expect(md.value).toContain('[Approve](command:');
-    expect(md.value).toContain('[Decline](command:');
+    expect(md.value).toContain('[**Approve**](command:');
+    expect(md.value).toContain('[**Decline**](command:');
     // Trust is scoped to just the approval command, so no other command: link
     // in the block could fire.
     expect(md.isTrusted).toEqual({ enabledCommands: [APPROVAL_COMMAND_ID] });

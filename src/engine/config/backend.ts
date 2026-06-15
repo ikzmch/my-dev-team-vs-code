@@ -1,9 +1,10 @@
 /**
  * The universal backend config: operator-owned settings the engine enforces,
  * distinct from the user's VS Code settings (config/settings.ts). It ships as a
- * single JSON file (`backend.json`) bundled into the build - the engine reads no
- * file at runtime, so this is the backend equivalent of the model/tool `.md`
- * configs: edit the file, rebuild, and the new floor takes effect.
+ * single JSON file at the project root (`config/backend.json`), inlined into the
+ * build by this module's import - the engine reads no file at runtime, so this is
+ * the backend equivalent of the model/tool `.md` configs: edit the file, rebuild,
+ * and the new floor takes effect.
  *
  * Today the "backend" runs in-process on the client, so the file ships with the
  * extension; a future remote backend would carry the same file server-side. It
@@ -31,7 +32,7 @@
  *    home). The resolution lives in core/models.ts (`triageRouting`).
  */
 import { z } from 'zod';
-import rawBackendConfig from './backend.json';
+import rawBackendConfig from '../../../config/backend.json';
 
 /** A list of provider/model identifiers, defaulting to empty when omitted. */
 const idList = z.array(z.string()).default([]);

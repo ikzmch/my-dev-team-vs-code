@@ -78,8 +78,7 @@ src/
       tools/*.md          model-facing tool descriptions + transcript preview hints
       commands/*.md       one slash command per file: pinned route, execute flag + prompt preamble
       skills/*.md         one built-in skill per file: name + description frontmatter + instruction body
-      backend.json        the universal backend config (operator floor): a namespaced JSON file - `models` (disabled providers/models), `providers` (endpoint overrides), `agents` (triage routing)
-      backend.ts          loads + validates backend.json, exports the typed `backendConfig`
+      backend.ts          loads + validates the root config/backend.json (below), exports the typed `backendConfig`
       agents.ts           loads agents/*.md, renders the tools + environment sections, exports `agents`
       models.ts           discovers models/*.md, exports the registry + capability-based `selectModel`
       tools.ts            discovers tools/*.md, exports `toolConfigs` + `renderToolsSection`
@@ -119,6 +118,8 @@ src/
     runTerminal.ts        Phase-1 RunMirror: a read-only "Dev Team" terminal logging every run command live
     editorEntryPoints.ts  editor shims: "Fix with Dev Team" code action, "Explain" selection action, write/repair-tests CodeLens - each opens the chat with a pinned command
     startupCheck.ts       activation health check: surfaces the selected engine's startup warnings
+config/
+  backend.json            the universal backend config (operator floor): a namespaced JSON file - `models` (disabled providers/models), `providers` (endpoint overrides), `agents` (triage routing); inlined at build time by src/engine/config/backend.ts
 test/                     Vitest unit tests + an in-memory `vscode` mock
 examples/                 one prompt file per triage route - the manual smoke suite for pipeline changes
 esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
@@ -148,6 +149,33 @@ Three layers, deliberately decoupled:
   and the `ChangeTracker` (`client/changeTracker.ts`) sums a turn's writes into
   the reply's "N files changed, +X -Y" line. All three are client seams: an
   engine never knows how approval, mirroring, or change tracking happened.
+
+> **Deployment targets - design for all of them.** This separation is not
+> cosmetic: the engine is meant to run in more than one place, and every change
+> to `engine/`/`protocol/` must keep all of these viable:
+>
+> - **in-process** today (the `LocalEngine`),
+> - a **standalone remote backend** (Phase B),
+> - a **sidecar process** behind a VS Code client, and
+> - a **sidecar process** behind an **IntelliJ IDEA** (JVM/Kotlin) client.
+>
+> The last two matter because an IntelliJ plugin cannot import the TypeScript
+> engine; the realistic way to share the brain across editors is to run the
+> same engine as a child process and have each editor implement only the thin
+> client half against the protocol. That only works if the engine never assumes
+> it shares a process, a language, or a filesystem with its client. Concretely,
+> any backend change must preserve four invariants: (1) **no `vscode` import in
+> `engine/`** (verified - the layer is clean today); (2) **everything crossing
+> the boundary is wire-serializable** through `protocol/` (plain data, no
+> functions/class instances/`Uri`s that only survive in-process); (3) **config
+> and secrets are injected, never read in-process** - the engine takes resolved
+> values via the protocol / `AuthProvider`, it does not reach into VS Code
+> settings or SecretStorage (this is the one seam not fully realised yet: see
+> the config note in [Capability-based model router](#capability-based-model-router-engineconfigmodelsts--enginecoremodelsts));
+> and (4) **tools stay inverted** - the engine only ever *asks* for a side
+> effect through the `ToolHost`. When in doubt, ask "would this still work if
+> the engine were a separate process talking to a Kotlin client?" - if the
+> answer is no, the change belongs on the client side of the protocol.
 
 ### Request flow
 
@@ -423,6 +451,22 @@ along the engine/client boundary: prompt material and the model registry in
 `src/config/` (the client's). The agents and tools import from there and
 never carry literals inline.
 
+**Two config folders, two audiences - the split is intentional, not an
+inconsistency.** The root-level `config/` holds **operator/deployment config**:
+the knobs you turn to customize an *install* (today only `backend.json` - which
+provider/model to disable, which gateway to pin, how to route triage). It is
+deliberately at the root, editable without touching `src/`, and is the file a
+future remote backend carries server-side. Everything under `src/engine/config/`
+and `src/config/`, by contrast, is **authored product source**: the system
+prompts, the model registry, the tool/command/skill definitions, and the
+typed loaders that validate and consume them. Those `.md` files *are* the
+engine's behavior - they change through PRs and tests, not deployment-time
+edits, and they must travel with the engine in the Phase B backend split, so
+they stay co-located with their loaders rather than moving to the root. Put
+another way: root `config/` is "what an operator configures"; `src/**/config/`
+is "what the product is made of". Only the former belongs outside `src/`, which
+is why `backend.json` is the sole data file there.
+
 | File                            | Holds                                                          |
 | ------------------------------- | ------------------------------------------------------------- |
 | `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
@@ -430,7 +474,7 @@ never carry literals inline.
 | `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` and `skill` tools have no client half |
 | `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only, optional `complexity` sizing the executor since triage is skipped - `moderate` by default) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/skills/*.md`     | One built-in skill per file: frontmatter (name, description) + an instruction body. A skill is loaded on demand by the executor's `skill` tool when a task matches the description (see [Skills](#skills-engineconfigskills--clientskills)); dropping a file in registers it |
-| `engine/config/backend.json`    | The universal backend config: operator-owned settings the engine enforces (distinct from the user's VS Code settings), bundled into the build. Namespaced - a `models` section (`disabledProviders` + `disabledModels`), a `providers` section (per-provider endpoint overrides: Ollama's `endpoint`, the cloud providers' `baseUrl`, each winning over its user setting), and an `agents` section (today `triage.model`: a model id pins it, a provider name routes by capability, default the "ollama" provider); room for more sections later - with sensible defaults so a partial file is valid. `backend.ts` validates it into the typed `backendConfig`. See [the capability router](#capability-based-model-router-engineconfigmodelsts--enginecoremodelsts) |
+| `config/backend.json` (project root) | The universal backend config: operator-owned settings the engine enforces (distinct from the user's VS Code settings), inlined into the build by `engine/config/backend.ts`. Namespaced - a `models` section (`disabledProviders` + `disabledModels`), a `providers` section (per-provider endpoint overrides: Ollama's `endpoint`, the cloud providers' `baseUrl`, each winning over its user setting), and an `agents` section (today `triage.model`: a model id pins it, a provider name routes by capability, default the "ollama" provider); room for more sections later - with sensible defaults so a partial file is valid. `backend.ts` validates it into the typed `backendConfig`. See [the capability router](#capability-based-model-router-engineconfigmodelsts--enginecoremodelsts) |
 | `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
 | `engine/config/models.ts`       | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `engine/config/tools.ts`        | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
@@ -478,14 +522,17 @@ prompts announce is always what executes.
 
 The runtime knobs an end user may need to turn are real VS Code settings
 (Settings UI → "My Dev Team", or `settings.json`), declared in `package.json`
-and read **live** by `config/settings.ts` on every access - no reload needed:
+and read **live** by `config/settings.ts` on every access - no reload needed.
+For the exhaustive parameter inventory across every source (user settings, the
+operator floor, secrets, build-time constants, and the author `.md` configs),
+see [CONFIG.md](CONFIG.md); the table below is the user-settings summary:
 
 | Setting                              | Default                  | Controls                                  |
 | ------------------------------------ | ------------------------ | ----------------------------------------- |
 | `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process) or `remote` (Phase B; warns and falls back to local until it exists) |
 | `myDevTeam.model`                    | `auto`                   | What the planner/answerer/executor use: a model id, a `provider:<name>` to route within one provider, or `auto` to route by capability among the available models. Triage is configured separately by `myDevTeam.triage.model`. Set it with `/model` or the "My Dev Team" status button's menu |
 | `myDevTeam.triage.model`             | `""`                     | What triage uses, separate from the model above so the cheap classifier need not ride on the executor's model. Empty defers to the backend `agents.triage.model` floor (the "ollama" provider by default); otherwise `auto`, a `provider:<name>` (or bare provider name), or a model id, resolved by `triageRouting`. User-controlled like `myDevTeam.model`, with the disable layers still applied, so it can never reach a disabled provider/model |
-| `myDevTeam.disabledProviders`        | `[]`                     | Providers the router must never use (e.g. `["anthropic"]`): their models are skipped and shown disabled in the `/model` picker even with a key set, and never run even when pinned. The per-user layer on top of the backend floor (`engine/config/backend.json`), which it cannot re-enable. Non-string/blank entries are ignored |
+| `myDevTeam.disabledProviders`        | `[]`                     | Providers the router must never use (e.g. `["anthropic"]`): their models are skipped and shown disabled in the `/model` picker even with a key set, and never run even when pinned. The per-user layer on top of the backend floor (`config/backend.json`), which it cannot re-enable. Non-string/blank entries are ignored |
 | `myDevTeam.disabledModels`           | `[]`                     | Individual model ids the router must never use (e.g. `["qwen3-coder"]`), same two-layer hard-block semantics as `disabledProviders`: a disabled model never runs even when pinned (the run falls back to Auto) |
 | `myDevTeam.complexityRouting`        | `true`                   | Size models to how demanding the work is (the model registry's `tier`): triage's guess sizes the planner, the planner's judgement sizes the executor; simpler work routes to a cheaper/smaller model, harder work to a stronger one. Off routes by capability alone; a pinned model is never affected |
 | `myDevTeam.planApproval`             | `auto`                   | When `@devteam` pauses to let you approve a drafted plan before it executes: `auto` only when the planner judged the work `complex`, `always` on every plan, `never` straight through. The gate offers Approve (execute), Cancel (keep the plan, run nothing), or Revise (comment, re-plan, ask again) |
@@ -519,7 +566,7 @@ limits. The endpoint is the **single source of truth**: the provider wiring
 hint in chat errors, and the activation health check all derive from one
 resolved-endpoint accessor (`ollamaEndpoint()` in `engine/core/models.ts`), so
 they can never disagree. That accessor is itself "**backend override else user
-setting**": when `engine/config/backend.json`'s `providers.ollama.endpoint` is
+setting**": when `config/backend.json`'s `providers.ollama.endpoint` is
 set it wins (an operator pinning the server for everyone), otherwise
 `settings.ollamaEndpoint` applies - the same precedence for the cloud providers'
 `baseUrl`, resolved generically per provider from the descriptor's
@@ -659,7 +706,7 @@ it to the descriptor's `build`.
 fallbacks) and accept an optional custom base URL (`myDevTeam.openai.baseUrl` /
 `anthropic.baseUrl` / `groq.baseUrl`) for Azure or an
 OpenAI-compatible/Anthropic/Groq gateway. Every provider's endpoint can also be
-**overridden by the operator** in `engine/config/backend.json`'s `providers`
+**overridden by the operator** in `config/backend.json`'s `providers`
 section (Ollama's `endpoint`, the cloud providers' `baseUrl`), which wins over
 the user setting - so a build can pin them all at a corporate gateway. Each
 provider is built lazily and rebuilt when its (resolved) endpoint, key, or base
@@ -672,7 +719,7 @@ taken out of play at **two layers**, unioned into one predicate
 only when its provider is enabled and neither its provider nor its id is
 disabled at either layer.
 
-- **The backend floor** is the operator's `engine/config/backend.json` (the
+- **The backend floor** is the operator's `config/backend.json` (the
   universal backend config, validated by `backend.ts` into `backendConfig`): its
   `models.disabledProviders` / `models.disabledModels` are switched off for
   everyone and **cannot be re-enabled by a user setting**. Today the engine runs

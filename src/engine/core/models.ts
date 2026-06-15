@@ -11,7 +11,7 @@
  * (config/providers.ts). This file only adds the runtime resolution: it reads
  * each provider's resolved config and feeds it to the descriptor's `build`.
  * Each endpoint/base URL is *resolved* as "backend override
- * (engine/config/backend.json) else user setting", so an operator can pin every
+ * (config/backend.json) else user setting", so an operator can pin every
  * provider at a fixed gateway while the user setting fills in otherwise. Each
  * provider is built lazily and rebuilt when its configuration (resolved
  * endpoint, key, or base URL) changes, dropping the memoised model instances so
@@ -58,7 +58,7 @@ function backendEndpointOverride(id: ProviderName): string | undefined {
 
 /**
  * The Ollama server origin actually used: the backend override
- * (engine/config/backend.json) when set, else the user's
+ * (config/backend.json) when set, else the user's
  * `myDevTeam.ollama.endpoint`. The single source the provider wiring, the
  * startup probe, and the error hints all read, so they can never disagree.
  */

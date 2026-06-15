@@ -242,7 +242,7 @@ export const settings = {
    * Providers the user switched off (`myDevTeam.disabledProviders`): the router
    * never routes to their models and the `/model` picker shows them disabled,
    * even when a key is set. This is the per-user layer on top of the backend's
-   * own floor (engine/config/backend.json); it narrows further but can never
+   * own floor (config/backend.json); it narrows further but can never
    * re-enable a provider the backend disabled. Read live. Names that are not
    * registered providers are simply harmless.
    */

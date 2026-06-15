@@ -1,5 +1,38 @@
 # Project instructions
 
+## Preserve the backend/client separation
+
+The agent pipeline is split into three layers - the **engine** (`src/engine/`,
+the brain: agents, prompts, model router, workflow), the **client**
+(`src/tools/`, `src/client/`, `src/ui/`, the hands: tool implementations,
+approval, rendering), and the **protocol** (`src/protocol/`, the contract
+between them). This separation is load-bearing: the engine is meant to run not
+only in-process (today's `LocalEngine`) but eventually as a **standalone remote
+backend**, or as a **sidecar process** behind either a VS Code client **or an
+IntelliJ IDEA (JVM/Kotlin) client**. An IntelliJ plugin cannot import the
+TypeScript engine, so the only way to share the brain across editors is to run
+the same engine as a separate process and reimplement just the thin client half
+per editor.
+
+Every change to `engine/` or `protocol/` must keep that future viable. Hold to
+four invariants:
+
+1. **No `vscode` import in `src/engine/`** (or `src/protocol/`). The engine
+   knows nothing about any editor.
+2. **Everything crossing the protocol is wire-serializable** - plain data, no
+   functions, class instances, or `Uri`s that only survive in one process.
+3. **Config and secrets are injected, not read in-process** - the engine
+   receives resolved values via the protocol / `AuthProvider`; it must not reach
+   into VS Code settings or SecretStorage directly. (This is the one seam not
+   fully realised yet - new engine code must not deepen the coupling.)
+4. **Tools stay inverted** - the engine only ever *asks* for a side effect
+   through the `ToolHost`; it never touches the workspace itself.
+
+When unsure, ask: "would this still work if the engine were a separate process
+talking to a Kotlin client?" If no, the change belongs on the client side of
+the protocol. See the "Deployment targets" note in DESIGN.md (the Architecture
+section) for the full rationale.
+
 ## Keep DESIGN.md in sync
 
 DESIGN.md is the developer documentation: architecture, request flow, the
@@ -21,6 +54,27 @@ scripts table - they name concrete files and models and drift easily.
 
 Pure refactors that change no structure or behavior, and test-only changes, do
 not require a DESIGN.md update.
+
+## Keep CONFIG.md in sync
+
+CONFIG.md is the exhaustive configuration reference: every parameter the
+extension reads, grouped by source (user `myDevTeam.*` settings, the
+`backend.json` operator floor, secrets, build-time constants, and the author
+`.md` configs), with its default, scope, read cadence, and usage, plus the
+precedence/merge rules. Whenever a change adds, renames, removes, or changes the
+default of any of these, update the matching row in CONFIG.md in the same piece
+of work - do not leave it for a follow-up. That means:
+
+- a new/renamed/removed `myDevTeam.*` setting or a changed default (keep it
+  consistent with `package.json`, `config/settings.ts`, and the DESIGN.md
+  user-settings table)
+- a new/changed `config/backend.json` field, secret key, or notable
+  build-time constant in `config/settings.ts`
+- a change to the precedence or merge semantics (override vs union, the floor
+  rules)
+
+The source of truth is the code; CONFIG.md follows it. Test-only changes and
+pure refactors that touch no parameter need no CONFIG.md update.
 
 ## Keep README.md high-level
 
@@ -83,6 +137,10 @@ version first, `## [x.y.z] - date`, changes under `### Added` / `### Changed`
   bump only the patch version for fixes, hardening, and refactors; propose a
   major version bump only when it is really justified (e.g. a breaking change
   or a milestone like the first stable release)
+- when there are uncommitted changes, only bump the version if the current
+  uncommitted version is a patch version (the patch number does not end in 0);
+  if the current uncommitted version is `major.minor.0`, leave the version as
+  is and do not bump it
 
 ## Keep unit tests in sync
 
