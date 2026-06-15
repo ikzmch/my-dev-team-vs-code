@@ -118,6 +118,24 @@ describe('pickModel', () => {
     expect(picked?.id).toBe('anthropic-opus');
     expect(modelSetting()).toBe('anthropic-opus');
   });
+
+  it('shows the disabled detail for a disabled choice', async () => {
+    const list: ModelChoice[] = [
+      { id: 'auto', label: 'Auto', description: 'router', available: true },
+      {
+        id: 'qwen3-coder',
+        label: 'Qwen3 Coder (Ollama)',
+        description: 'code',
+        available: false,
+        disabled: true,
+      },
+    ];
+    __setQuickPickResponse(undefined);
+    await pickModel(fakeEngine(list));
+    const items = window.showQuickPick.mock.calls[0][0] as { choice: ModelChoice; detail: string }[];
+    const coder = items.find((i) => i.choice.id === 'qwen3-coder')!;
+    expect(coder.detail).toContain('Disabled');
+  });
 });
 
 describe('runSetApiKeyCommand', () => {

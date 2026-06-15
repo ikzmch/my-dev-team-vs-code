@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
 import { registerTools } from './tools/registerTools';
 import { WorkspaceToolHost } from './tools/toolHost';
+import { McpHub } from './client/mcp';
 import { createEngineProvider } from './client/engineFactory';
 import { EvalLog } from './client/evalLog';
+import { ChangeTracker } from './client/changeTracker';
 import {
   PARTICIPANT_ID,
   ChatApprover,
+  ChatPlanReviewer,
   createHandler,
   TurnMetadata,
 } from './ui/chatParticipant';
@@ -19,6 +22,7 @@ import {
 } from './ui/modelCommands';
 import { StatusBar, STATUS_MENU_COMMAND_ID } from './ui/statusBar';
 import { runShowUsageCommand, SHOW_USAGE_COMMAND_ID } from './ui/usageView';
+import { registerEditorEntryPoints } from './ui/editorEntryPoints';
 import { loadStoredApiKeys } from './config/credentials';
 
 export function activate(context: vscode.ExtensionContext) {
@@ -29,18 +33,39 @@ export function activate(context: vscode.ExtensionContext) {
   const approver = new ChatApprover();
   approver.register(context);
 
+  // --- Plan-approval seam: the gate shown before a plan executes ---
+  // Like the approver, registered up front so its in-chat Approve/Cancel/Revise
+  // links work; the engine calls it via the run client's reviewPlan when the
+  // myDevTeam.planApproval setting asks to pause.
+  const planReviewer = new ChatPlanReviewer();
+  planReviewer.register(context);
+
   // --- Run-transparency seam: mirror executed commands into a terminal ---
   // Every approved `run` command's live output lands in a read-only
   // "Dev Team" terminal tab the user can open; never revealed automatically.
   const runMirror = new TerminalRunMirror();
   context.subscriptions.push(runMirror);
 
+  // --- Change-tracking seam: sum each turn's writes into a Changes line ---
+  // The write/edit tools report every file they land here; the chat handler
+  // opens a per-turn session and renders the rolled-up "N files changed" line.
+  const changeTracker = new ChangeTracker();
+
+  // --- MCP seam: tools from user-configured MCP servers ---
+  // Launches the servers configured in myDevTeam.mcp.servers (over stdio,
+  // nothing in an untrusted workspace), discovers their tools, and runs a call
+  // back through the ToolHost behind the same Approver as the run tool. Disposed
+  // on deactivate so the server processes are closed.
+  const mcp = new McpHub();
+  context.subscriptions.push({ dispose: () => void mcp.dispose() });
+
   // --- The client's hands: the workspace ToolHost ---
   // The one place tool calls are validated and dispatched, shared by the
   // engine's executor loop and the editor-wide Language Model Tools
   // registrations. Whichever engine runs, the implementations, the approval
-  // gate, and the mirror stay here on the user's machine.
-  const toolHost = new WorkspaceToolHost(approver, runMirror);
+  // gate, the mirror, and the change tracker stay here on the user's machine.
+  // The MCP hub is handed in so a discovered MCP tool dispatches like any other.
+  const toolHost = new WorkspaceToolHost(approver, runMirror, changeTracker, mcp);
   registerTools(context, toolHost);
 
   // --- The engine, behind the protocol ---
@@ -103,24 +128,49 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // --- Editor entry points ---
+  // Meet the user in the editor, not only the chat panel: a "Fix with Dev
+  // Team" quick fix on a diagnostic, an "Explain with Dev Team" selection
+  // action, and a write/repair-tests CodeLens on test files. Each is a thin
+  // shim that opens the chat with a pinned slash command, so the routing,
+  // references, and approvals all flow through the same pipeline.
+  registerEditorEntryPoints(context);
+
   // --- UI layer: the chat participant ---
-  const handler = createHandler(getEngine, toolHost, evalLog, (usage) =>
-    statusBar.add(usage)
+  const handler = createHandler(
+    getEngine,
+    toolHost,
+    evalLog,
+    (usage) => statusBar.add(usage),
+    changeTracker,
+    planReviewer,
+    // The handler owns the approval session: it opens one keyed by the run id
+    // and binds the run's tool calls to it, so an approval renders in the turn
+    // that owns it. The plan-review session has no such per-call seam, so the
+    // wrapper still manages it the most-recent way below.
+    approver,
+    // The same MCP hub the ToolHost uses: the handler discovers its tools and
+    // ships them on the run request, so the offered names and shipped
+    // definitions are one set.
+    mcp
   );
   const participant = vscode.chat.createChatParticipant(
     PARTICIPANT_ID,
     async (request, ctx, stream, token) => {
-      // Each request opens its own approval session: when it ends (or is
-      // cancelled, where a pending approval could otherwise block the run
-      // forever), disposing declines only this request's approvals - a
-      // concurrent turn's pending approval and stream are untouched.
-      const session = approver.openSession(stream);
-      const cancellation = token.onCancellationRequested(() => session.dispose());
+      // Each request opens its own plan-review session: when it ends (or is
+      // cancelled, where a pending prompt could otherwise block the run
+      // forever), disposing settles only this request's review - a concurrent
+      // turn's pending review and stream are untouched. (The approval session
+      // is opened inside the handler, keyed by the run id.)
+      const reviewSession = planReviewer.openSession(stream);
+      const cancellation = token.onCancellationRequested(() => {
+        reviewSession.dispose();
+      });
       try {
         return await handler(request, ctx, stream, token);
       } finally {
         cancellation.dispose();
-        session.dispose(); // idempotent: a cancelled request already closed it
+        reviewSession.dispose(); // idempotent: a cancelled request already closed it
       }
     }
   );

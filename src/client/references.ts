@@ -34,7 +34,7 @@ const execFileAsync = promisify(execFile);
 
 /** Cap on inlined text so a huge file or diff can't blow up the prompt. */
 function truncate(text: string, maxChars: number): string {
-  return text.length > maxChars ? text.slice(0, maxChars) + '\n…(truncated)' : text;
+  return text.length > maxChars ? text.slice(0, maxChars) + '\n. . . (truncated)' : text;
 }
 
 /** A value that carries a file Uri and a range, whether or not it is a `Location` instance. */
@@ -157,12 +157,14 @@ async function resolveCodebase(prompt: string): Promise<Attachment> {
   for (const term of terms) {
     let hits: { path: string }[] = [];
     try {
-      hits = await searchContent(term);
+      // #codebase only wants the distinct matching files, not the truncation
+      // flag (the attachment is a best-effort relevance pass, and removing the
+      // candidate-set cap in searchContent already makes a low-match term scan
+      // to completion), so take the matches and fold them down by path.
+      hits = (await searchContent(term)).matches;
     } catch {
       // A failed search yields no hits for this term; the others still run.
     }
-    // Content search now returns one entry per matching line; #codebase wants
-    // the distinct files, so fold the matches down by path.
     for (const hit of hits) {
       if (!seen.has(hit.path)) {
         seen.add(hit.path);

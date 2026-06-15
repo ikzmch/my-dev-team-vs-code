@@ -31,13 +31,13 @@ describe('credentials', () => {
     expect(credentials.has('openai')).toBe(false);
     process.env.OPENAI_API_KEY = 'env-key';
     expect(credentials.has('openai')).toBe(true);
-    expect(credentials.openaiApiKey).toBe('env-key');
+    expect(credentials.apiKey('openai')).toBe('env-key');
   });
 
   it('prefers a stored key over the environment variable', async () => {
     process.env.ANTHROPIC_API_KEY = 'env-key';
     await setApiKey(secrets, 'anthropic', 'stored-key');
-    expect(credentials.anthropicApiKey).toBe('stored-key');
+    expect(credentials.apiKey('anthropic')).toBe('stored-key');
     // It was persisted to SecretStorage under the provider's key.
     expect(__state.secrets.get('myDevTeam.anthropic.apiKey')).toBe('stored-key');
   });
@@ -45,7 +45,7 @@ describe('credentials', () => {
   it('loads a previously-stored key into the cache on startup', async () => {
     __state.secrets.set('myDevTeam.openai.apiKey', 'persisted');
     await loadStoredApiKeys(secrets);
-    expect(credentials.openaiApiKey).toBe('persisted');
+    expect(credentials.apiKey('openai')).toBe('persisted');
   });
 
   it('clearing a key removes it from SecretStorage and the cache', async () => {

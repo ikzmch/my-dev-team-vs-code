@@ -9,10 +9,13 @@
  * wire traffic linear in the reply size.
  */
 import {
+  Complexity,
   ExecutionEvent,
   Intent,
   ModelSelection,
   PartialPlan,
+  PartialSummary,
+  Plan,
   Reply,
   ReplyProgress,
 } from './types';
@@ -22,7 +25,7 @@ import {
  * events. Deliberately not the engine's internal step ids: those are
  * implementation detail and may change without a protocol bump.
  */
-export type RunStep = 'triage' | 'plan' | 'answer' | 'execute';
+export type RunStep = 'triage' | 'plan' | 'answer' | 'execute' | 'summarize';
 
 /**
  * Estimated input-token attribution for one model call, split by the prompt
@@ -32,7 +35,7 @@ export type RunStep = 'triage' | 'plan' | 'answer' | 'execute';
  * from the prompt simply does not appear. The sections mirror how the workflow
  * assembles a prompt (project instructions, then conversation, the slash
  * command's preamble, the prompt itself, the inlined attachments, and - for the
- * executor - the drafted plan).
+ * executor - the available-skills catalogue and the drafted plan).
  */
 export interface InputBreakdown {
   instructions?: number;
@@ -40,13 +43,20 @@ export interface InputBreakdown {
   preamble?: number;
   prompt?: number;
   attachments?: number;
+  /** The executor's "Available skills" catalogue (names + descriptions). */
+  skills?: number;
   plan?: number;
 }
 
 /** The events an engine emits over the lifetime of one run, in order. */
 export type RunEvent =
-  /** Triage decided how to route the request. Always the first event. */
-  | { type: 'triaged'; intent: Intent; reason: string }
+  /**
+   * Triage decided how to route the request. Always the first event.
+   * `complexity` rides along when triage judged it (or a command supplied a
+   * default); it sizes the executor's model. Optional so a client that ignores
+   * it loses nothing.
+   */
+  | { type: 'triaged'; intent: Intent; reason: string; complexity?: Complexity }
   /**
    * Shadow triage: on a slash-command run that pinned the route, what triage
    * would have decided had it run. Emitted only when the request asked for it
@@ -70,12 +80,29 @@ export type RunEvent =
   /** The next chunk of the streamed oneshot answer. */
   | { type: 'answer-delta'; text: string }
   /**
+   * A condensed, user-facing line of the model's current reasoning - the
+   * "important piece" of its thinking, not the raw chain of thought (the engine
+   * reduces a reasoning model's verbose `<think>` monologue to one line before
+   * emitting; see engine/core/thinking.ts). Ephemeral by design: it is a live
+   * status signal like a spinner, carried as its own side-channel event (the
+   * way `usage` and `triage-shadow` are), never folded into a reply snapshot
+   * and never preserved past the run. `ReplyFolder` ignores it; a client that
+   * does not know it simply shows no thinking.
+   */
+  | { type: 'thinking'; text: string }
+  /**
    * Transcript event `index` was appended or changed. Execution transcripts
    * are grow-only with only the last event still mutating (text grows, a tool
    * call gains its result), so re-sending one indexed event at a time keeps
    * the stream linear in the transcript size.
    */
   | { type: 'execution-event'; index: number; event: ExecutionEvent }
+  /**
+   * The end-of-run summary as the model writes it. Snapshots, not deltas:
+   * a partial summary is small (three growing strings) and the partial-JSON
+   * stream it comes from revises fields in place.
+   */
+  | { type: 'summary-snapshot'; summary: PartialSummary }
   /**
    * The engine asks the client to execute a tool and answer with a
    * `ToolResultMessage` (see toolContract.ts). Only a remote engine emits
@@ -84,6 +111,15 @@ export type RunEvent =
    * protocol that must not churn.
    */
   | { type: 'tool-call'; callId: string; tool: string; args: unknown }
+  /**
+   * The engine asks the client to approve the drafted plan before executing it,
+   * answered with a `PlanDecision` (see RunClient.reviewPlan). Like `tool-call`,
+   * only a remote engine emits it over the wire: the LocalEngine shares a
+   * process with the client and calls `reviewPlan` directly. Defined now so the
+   * event list stays stable. A client that does not know it simply never sees a
+   * gate (the engine then proceeds to execution).
+   */
+  | { type: 'plan-review'; plan: Plan; complexity: Complexity }
   /**
    * Metering record for one step's model call: the billing seam. A side is
    * omitted when neither the SDK reported it nor an estimate covers it;
@@ -142,7 +178,11 @@ export class ReplyFolder {
 
   apply(event: RunEvent): ReplyProgress | undefined {
     if (event.type === 'triaged') {
-      this.progress = { intent: event.intent, reason: event.reason };
+      this.progress = {
+        intent: event.intent,
+        reason: event.reason,
+        ...(event.complexity ? { complexity: event.complexity } : {}),
+      };
       return this.progress;
     }
     if (!this.progress) {
@@ -163,6 +203,9 @@ export class ReplyFolder {
         execution.events[event.index] = event.event;
         return this.progress;
       }
+      case 'summary-snapshot':
+        this.progress.summary = event.summary;
+        return this.progress;
       case 'done':
         // The final validated reply supersedes whatever was folded so far.
         this.progress = { ...event.reply };

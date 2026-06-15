@@ -15,12 +15,15 @@ import { Triage } from './core/triage';
 import { Planner } from './core/planner';
 import { Answerer } from './core/answerer';
 import { Executor } from './core/executor';
+import { Summarizer } from './core/summarizer';
 import {
   createDevTeamWorkflow,
   abortSignalKey,
+  planReviewKey,
   replyProgressKey,
   stepIds,
   usageSinkKey,
+  thinkingSinkKey,
   triageShadowKey,
   ReplyProgress,
   StepUsage,
@@ -36,15 +39,28 @@ import {
   ModelInfo,
   ProviderName,
 } from './config/models';
-import { routeModel, localModels, isModelAvailable } from './core/models';
+import {
+  routeModel,
+  routeTriageModel,
+  isModelAvailable,
+  isModelEnabled,
+  isProviderEnabled,
+  effectivePin,
+  ollamaEndpoint,
+} from './core/models';
 import { isRateLimited } from './core/rateLimiter';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 import {
+  Complexity,
+  ComplexitySchema,
+  DynamicToolDef,
   ExecutionEvent,
   Intent,
+  PartialSummary,
   ModelChoice,
   ModelSelection,
+  Plan,
   PROTOCOL_VERSION,
   Reply,
   ReplySchema,
@@ -64,18 +80,25 @@ import {
 /**
  * The Ollama models the router selects for the registered agents under Auto
  * routing, deduplicated - the set the startup probe checks are pulled. Triage
- * always routes among the local models; the other agents route among the
- * available models, so a cloud model they pick (when its key is set) is simply
- * not an Ollama tag to check and is left out.
+ * routes per the backend triage config (Ollama by default, but an operator can
+ * point it elsewhere); like the other agents, only an Ollama choice is an Ollama
+ * tag to probe, so a non-Ollama triage/work model is simply left out.
  */
 export function routedModels(): string[] {
   const names = new Set<string>();
-  names.add(routeModel(agents.triage.capabilities, undefined, localModels()).model);
-  for (const name of ['planner', 'answerer', 'executor'] as const) {
-    const info = routeModel(agents[name].capabilities);
+  const addIfOllama = (info: ModelInfo) => {
     if (info.provider === 'ollama') {
       names.add(info.model);
     }
+  };
+  addIfOllama(routeTriageModel(agents.triage.capabilities));
+  addIfOllama(routeModel(agents.answerer.capabilities));
+  // The planner and the executor are both sized by complexity now, so a run can
+  // route either to a different Ollama tag per tier; probe all of them so the
+  // startup check warns about any that is not pulled.
+  for (const complexity of ComplexitySchema.options) {
+    addIfOllama(routeModel(agents.planner.capabilities, undefined, undefined, complexity));
+    addIfOllama(routeModel(agents.executor.capabilities, undefined, undefined, complexity));
   }
   return [...names];
 }
@@ -88,10 +111,25 @@ export function routedModels(): string[] {
  * pin (or, in Auto, the best available model). Only the steps the route will
  * run are listed: triage always, then plan+execute, or answer.
  */
-export function modelSelection(intent: Intent, modelPin?: string): ModelSelection {
+export function modelSelection(
+  intent: Intent,
+  modelPin?: string,
+  // Two tiers, because the planner and executor are now sized differently: the
+  // planner by triage's pre-exploration guess, the executor by the planner's
+  // post-exploration judgement. `planComplexity` is known only after the plan
+  // is drafted, so the streamed model-selected event (emitted right after
+  // triage) passes only `triageComplexity` and the final reply's selection -
+  // computed once the run finishes - corrects the executor entry.
+  triageComplexity?: Complexity,
+  planComplexity?: Complexity
+): ModelSelection {
+  // A disabled pin is hard-blocked to Auto, so the reported mode is derived from
+  // the *effective* pin - the same value routeModel routes on - keeping the
+  // model-selected event and reply honest about what actually ran.
+  const pin = effectivePin(modelPin);
   // pinned (a model id) > provider (a "provider:<name>" pin) > auto.
-  const providerPin = providerPinOf(modelPin);
-  const mode: ModelSelection['mode'] = modelById(modelPin)
+  const providerPin = providerPinOf(pin);
+  const mode: ModelSelection['mode'] = modelById(pin)
     ? 'pinned'
     : providerPin
     ? 'provider'
@@ -101,12 +139,25 @@ export function modelSelection(intent: Intent, modelPin?: string): ModelSelectio
     id: info.id,
     label: info.label,
   });
-  const models = [
-    entry('triage', routeModel(agents.triage.capabilities, undefined, localModels())),
-  ];
+  const models = [entry('triage', routeTriageModel(agents.triage.capabilities))];
   if (intent === 'planning') {
-    models.push(entry('plan', routeModel(agents.planner.capabilities, modelPin)));
-    models.push(entry('execute', routeModel(agents.executor.capabilities, modelPin)));
+    // The planner is sized by triage's complexity, the executor by the
+    // planner's (falling back to triage's until the plan is drafted) - matching
+    // the tiers the draft-plan and execute steps build their agents with.
+    models.push(
+      entry('plan', routeModel(agents.planner.capabilities, modelPin, undefined, triageComplexity))
+    );
+    models.push(
+      entry(
+        'execute',
+        routeModel(
+          agents.executor.capabilities,
+          modelPin,
+          undefined,
+          planComplexity ?? triageComplexity
+        )
+      )
+    );
   } else {
     models.push(entry('answer', routeModel(agents.answerer.capabilities, modelPin)));
   }
@@ -127,25 +178,36 @@ export class ProgressTranslator {
   private triaged = false;
   private answerChars = 0;
   private executionSeen: ExecutionEvent[] = [];
+  private summarySeen: string | undefined;
 
   /**
-   * `selectionFor` (when given) maps the decided route to the run's model
-   * selection, so the translator can emit `model-selected` right after the
-   * first `triaged` - the route is what decides which steps run.
+   * `selectionFor` (when given) maps the decided route and complexity to the
+   * run's model selection, so the translator can emit `model-selected` right
+   * after the first `triaged` - the route decides which steps run and the
+   * complexity sizes the executor's model.
    */
   constructor(
     private readonly emit: (event: RunEvent) => void,
-    private readonly selectionFor?: (intent: Intent) => ModelSelection
+    private readonly selectionFor?: (
+      intent: Intent,
+      triageComplexity?: Complexity,
+      planComplexity?: Complexity
+    ) => ModelSelection
   ) {}
 
   push(progress: ReplyProgress): void {
     if (!this.triaged) {
       this.triaged = true;
-      this.emit({ type: 'triaged', intent: progress.intent, reason: progress.reason });
+      this.emit({
+        type: 'triaged',
+        intent: progress.intent,
+        reason: progress.reason,
+        ...(progress.complexity ? { complexity: progress.complexity } : {}),
+      });
       if (this.selectionFor) {
         this.emit({
           type: 'model-selected',
-          selection: this.selectionFor(progress.intent),
+          selection: this.selectionFor(progress.intent, progress.complexity),
         });
       }
     }
@@ -172,6 +234,16 @@ export class ProgressTranslator {
           this.emit({ type: 'execution-event', index, event: { ...event } });
           this.executionSeen[index] = { ...event };
         }
+      }
+    }
+    // The summary streams in as small grow-only snapshots once execution is
+    // done; emit each new one (deduplicated, so a re-pushed identical snapshot
+    // does not produce a redundant event).
+    if (progress.summary) {
+      const json = JSON.stringify(progress.summary);
+      if (json !== this.summarySeen) {
+        this.summarySeen = json;
+        this.emit({ type: 'summary-snapshot', summary: progress.summary as PartialSummary });
       }
     }
   }
@@ -208,13 +280,13 @@ function failureDetail(error: unknown): string {
 function failureHint(agent: AgentName, modelPin?: string, error?: unknown): string {
   const info =
     agent === 'triage'
-      ? routeModel(agents.triage.capabilities, undefined, localModels())
+      ? routeTriageModel(agents.triage.capabilities)
       : routeModel(agents[agent].capabilities, modelPin);
   if (isRateLimited(error)) {
     return messages.rateLimitHint(info.label);
   }
   return info.provider === 'ollama'
-    ? messages.ollamaHint(settings.ollamaEndpoint, info.model)
+    ? messages.ollamaHint(ollamaEndpoint(), info.model)
     : messages.cloudKeyHint(info.label, info.provider);
 }
 
@@ -245,18 +317,42 @@ interface TagsResponse {
 export interface LocalEngineAgents {
   /** Triage is shared across runs - it never honours the model pin. */
   triage: Triage;
-  /** Built per run with the request's model pin (planner/answerer/executor honour it). */
-  createPlanner: (modelPin?: string) => Planner;
+  /**
+   * Built per run with the request's pin, plus the complexity triage decided -
+   * which sizes the planner's model, so it is supplied when the draft-plan step
+   * runs, not at run setup (mirroring the executor).
+   */
+  createPlanner: (modelPin?: string, complexity?: Complexity) => Planner;
   createAnswerer: (modelPin?: string) => Answerer;
-  createExecutor: (toolHost: ToolHost, modelPin?: string) => Executor;
+  /**
+   * Built per run with the request's pin and ToolHost, plus the complexity the
+   * triage step decided - which sizes the executor's model, so it is supplied
+   * when the execute step runs, not at run setup. The execute step also passes
+   * the run's resolved skill bodies so the executor's `skill` tool can serve them.
+   */
+  createExecutor: (
+    toolHost: ToolHost,
+    modelPin?: string,
+    complexity?: Complexity,
+    skillBodies?: ReadonlyMap<string, string>,
+    dynamicTools?: readonly DynamicToolDef[]
+  ) => Executor;
+  /**
+   * Built per run with the request's pin to recap an executed plan. Optional so
+   * a test agent set that does not exercise the summary can leave it out; the
+   * execute step then simply produces no summary.
+   */
+  createSummarizer?: (modelPin?: string) => Summarizer;
 }
 
 function defaultAgents(): LocalEngineAgents {
   return {
     triage: new Triage(),
-    createPlanner: (modelPin) => new Planner(modelPin),
+    createPlanner: (modelPin, complexity) => new Planner(modelPin, complexity),
     createAnswerer: (modelPin) => new Answerer(modelPin),
-    createExecutor: (toolHost, modelPin) => new Executor(toolHost, modelPin),
+    createExecutor: (toolHost, modelPin, complexity, skillBodies, dynamicTools) =>
+      new Executor(toolHost, modelPin, complexity, skillBodies, dynamicTools),
+    createSummarizer: (modelPin) => new Summarizer(modelPin),
   };
 }
 
@@ -296,15 +392,30 @@ export class LocalEngine implements Engine {
       // Triage ignores it (always local); the work agents are built per run
       // with it, since the pin changes which model they wire.
       const modelPin = input.model;
-      const selectionFor = (intent: Intent) => modelSelection(intent, modelPin);
+      const selectionFor = (
+        intent: Intent,
+        triageComplexity?: Complexity,
+        planComplexity?: Complexity
+      ) => modelSelection(intent, modelPin, triageComplexity, planComplexity);
 
       // The work agents are bound to this run's pin; the executor also to its
-      // ToolHost. Workflow assembly is plain object composition, cheap per run.
+      // ToolHost. It is passed as a factory because its model is sized by the
+      // request's complexity, decided inside the run. Workflow assembly is plain
+      // object composition, cheap per run.
+      const createSummarizer = this.agents.createSummarizer;
       const workflow = createDevTeamWorkflow(
         this.agents.triage,
-        this.agents.createPlanner(modelPin),
+        (complexity) => this.agents.createPlanner(modelPin, complexity),
         this.agents.createAnswerer(modelPin),
-        this.agents.createExecutor(client.toolHost, modelPin)
+        (complexity, skillBodies) =>
+          this.agents.createExecutor(
+            client.toolHost,
+            modelPin,
+            complexity,
+            skillBodies,
+            input.dynamicTools
+          ),
+        createSummarizer ? () => createSummarizer(modelPin) : undefined
       );
       const run = await workflow.createRun();
       activeRun = run;
@@ -321,9 +432,23 @@ export class LocalEngine implements Engine {
       requestContext.set(usageSinkKey, (usage: StepUsage) =>
         emit({ type: 'usage', ...usage })
       );
+      // Thinking is a side-channel like usage: forwarded straight to the event
+      // stream, never folded into a reply snapshot. The UI shows it as
+      // transient progress and drops it when the run produces real output.
+      requestContext.set(thinkingSinkKey, (line: string) =>
+        emit({ type: 'thinking', text: line })
+      );
       requestContext.set(triageShadowKey, (predicted: Intent) =>
         emit({ type: 'triage-shadow', predicted })
       );
+      // The plan-approval seam: hand the workflow a handle on the client's
+      // reviewPlan, when it offered one. Absent, the draft-plan step never
+      // gates and runs straight through - so the gate is purely additive.
+      if (client.reviewPlan) {
+        requestContext.set(planReviewKey, (plan: Plan, complexity: Complexity) =>
+          client.reviewPlan!(plan, complexity)
+        );
+      }
 
       let outcome;
       try {
@@ -333,6 +458,7 @@ export class LocalEngine implements Engine {
             instructions: input.instructions,
             attachments: input.attachments,
             history: input.history,
+            skills: input.skills,
             command: input.command,
             shadowTriage: input.shadowTriage,
           },
@@ -354,7 +480,12 @@ export class LocalEngine implements Engine {
         // attached here (deterministic from the route), matching the
         // model-selected event the translator already emitted.
         const reply = ReplySchema.parse(outcome.result);
-        return { ...reply, selection: selectionFor(reply.intent) };
+        // The executor entry is now corrected to the planner's complexity (the
+        // streamed model-selected event only had triage's estimate).
+        return {
+          ...reply,
+          selection: selectionFor(reply.intent, reply.complexity, reply.plan?.complexity),
+        };
       }
       if (outcome.status === 'failed') {
         throw mapFailure(outcome.error, outcome.steps, modelPin);
@@ -401,7 +532,7 @@ export class LocalEngine implements Engine {
    */
   private async installedOllamaTags(): Promise<Set<string> | undefined> {
     try {
-      const res = await fetch(`${settings.ollamaEndpoint}/api/tags`, {
+      const res = await fetch(`${ollamaEndpoint()}/api/tags`, {
         signal: AbortSignal.timeout(settings.startupProbeTimeoutMs),
       });
       if (!res.ok) {
@@ -432,7 +563,7 @@ export class LocalEngine implements Engine {
   async startupWarnings(): Promise<string[]> {
     const installed = await this.installedOllamaTags();
     if (!installed) {
-      return [messages.startup.unreachable(settings.ollamaEndpoint)];
+      return [messages.startup.unreachable(ollamaEndpoint())];
     }
     const missing = routedModels().filter(
       (model) => !LocalEngine.ollamaInstalled(model, installed)
@@ -445,7 +576,10 @@ export class LocalEngine implements Engine {
    * model with whether it can run now. An Ollama model is available when it is
    * pulled (probed once here; if the server is unreachable we cannot tell, so
    * we report it available rather than hide it); a cloud model when its API
-   * key is set.
+   * key is set. A model/provider disabled at either layer (the backend floor or
+   * the user's settings) is flagged `disabled` and reported unavailable, so the
+   * picker shows it greyed out rather than letting the user pin something that
+   * is hard-blocked from running.
    */
   async listModels(): Promise<ModelChoice[]> {
     const installed = await this.installedOllamaTags();
@@ -460,20 +594,30 @@ export class LocalEngine implements Engine {
         ? installed === undefined || LocalEngine.ollamaInstalled(info.model, installed)
         : isModelAvailable(info);
     // One "best available within this provider" choice per provider that has
-    // registered models, available when any of its models can run now.
+    // registered models, available when any of its models can run now. A
+    // disabled provider is flagged and never available.
     const providers = [...new Set(modelRegistry.map((m) => m.provider))];
-    const providerChoices: ModelChoice[] = providers.map((provider: ProviderName) => ({
-      id: `${PROVIDER_PIN_PREFIX}${provider}`,
-      label: messages.model.providerLabel(providerLabels[provider]),
-      description: messages.model.providerDescription(providerLabels[provider]),
-      available: modelRegistry.some((m) => m.provider === provider && available(m)),
-    }));
-    const models = modelRegistry.map((info) => ({
-      id: info.id,
-      label: info.label,
-      description: info.description,
-      available: available(info),
-    }));
+    const providerChoices: ModelChoice[] = providers.map((provider: ProviderName) => {
+      const disabled = !isProviderEnabled(provider);
+      return {
+        id: `${PROVIDER_PIN_PREFIX}${provider}`,
+        label: messages.model.providerLabel(providerLabels[provider]),
+        description: messages.model.providerDescription(providerLabels[provider]),
+        available:
+          !disabled && modelRegistry.some((m) => m.provider === provider && available(m)),
+        ...(disabled ? { disabled: true } : {}),
+      };
+    });
+    const models = modelRegistry.map((info) => {
+      const disabled = !isModelEnabled(info);
+      return {
+        id: info.id,
+        label: info.label,
+        description: info.description,
+        available: !disabled && available(info),
+        ...(disabled ? { disabled: true } : {}),
+      };
+    });
     return [auto, ...providerChoices, ...models];
   }
 }

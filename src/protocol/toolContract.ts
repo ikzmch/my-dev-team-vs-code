@@ -109,8 +109,16 @@ export interface ToolHost {
    * Execute one tool. `args` is validated against the tool's input schema
    * before anything runs; an unknown tool or invalid arguments throw. The
    * returned string is exactly what the model sees as the tool result.
+   * `correlationId`, when given, identifies the run the call belongs to so an
+   * approval prompt can be attributed to the session that owns it (see
+   * `Approver.confirm`); the client binds it per run, the engine never sees it.
    */
-  execute(tool: string, args: unknown, signal?: AbortSignal): Promise<string>;
+  execute(
+    tool: string,
+    args: unknown,
+    signal?: AbortSignal,
+    correlationId?: string
+  ): Promise<string>;
 }
 
 /**

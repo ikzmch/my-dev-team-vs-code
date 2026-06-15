@@ -132,13 +132,28 @@ describe('readFile', () => {
     // One enormous line: the line cap cannot bound it, the char cap must.
     __setFile('big.ts', 'a'.repeat(settings.read.maxChars + 10));
     const text = await readFile('big.ts');
-    expect(text).toContain('…(truncated)');
+    expect(text).toContain('. . . (truncated)');
     expect(text.length).toBeLessThan(settings.read.maxChars + 100);
   });
 
   it('returns a whole small file verbatim, trailing newline included', async () => {
     __setFile('a.ts', 'one\ntwo\n');
     await expect(readFile('a.ts')).resolves.toBe('one\ntwo\n');
+  });
+
+  it('refuses an oversized file by its stat, without reading it (B-1)', async () => {
+    // A read of a multi-GB or giant minified file would otherwise pull the whole
+    // thing into the extension host before the line/char caps apply. The size is
+    // checked by stat first, so the file is never read into memory.
+    const uri = __setFile('huge.min.js', 'x'.repeat(settings.read.maxFileSizeBytes + 1));
+    workspace.fs.readFile.mockClear();
+
+    const out = await readFile('huge.min.js');
+
+    expect(out).toMatch(/over the .* read limit/);
+    expect(out).toContain('search tool');
+    const readPaths = workspace.fs.readFile.mock.calls.map((c) => (c[0] as Uri).path);
+    expect(readPaths).not.toContain(uri.path);
   });
 });
 
@@ -187,6 +202,29 @@ describe('readFile (line ranges)', () => {
     expect(text).toContain(
       `(lines 2-${cap + 1} of ${cap + 50}; continue with startLine ${cap + 2})`
     );
+  });
+
+  it('reports the lines actually returned when the char cap bites mid-range (B-7)', async () => {
+    // Lines long enough that the char backstop (read.maxChars) is hit well
+    // before the line cap. The range header must report the lines actually
+    // returned, not the full range requested - otherwise the model believes it
+    // has lines the char cap dropped and may edit against stale context.
+    const line = 'x'.repeat(2000);
+    const count = settings.read.maxLines;
+    __setFile('big.ts', Array.from({ length: count }, () => line).join('\n') + '\n');
+    const text = await readFile('big.ts');
+
+    expect(text).toContain('. . . (truncated)');
+    const header = text.split('\n')[0];
+    const match = header.match(/^\(lines 1-(\d+) of /);
+    expect(match).not.toBeNull();
+    const reportedEnd = Number(match![1]);
+    // It was the char cap, not the line cap, that bit.
+    expect(reportedEnd).toBeLessThan(count);
+    // The body (header line removed, truncation marker removed) holds exactly
+    // the number of lines the header claims - header and content agree.
+    const body = text.slice(header.length + 1).replace(/\n\. \. \. \(truncated\)$/, '');
+    expect(body.split('\n').length).toBe(reportedEnd);
   });
 
   it('does not count a trailing newline as a line of its own', async () => {
@@ -352,6 +390,57 @@ describe('searchFiles (content mode)', () => {
     __state.findFilesResult = uris;
     const results = await searchFiles('needle', 'content');
     expect(results).toHaveLength(settings.search.contentMaxMatches);
+  });
+
+  it('bounds the candidate set by a generous ceiling, far above the scan budget', async () => {
+    // The candidate Uri array can no longer grow without bound (B-4): findFiles
+    // is now passed a ceiling so a huge repo cannot materialise one Uri per
+    // file. The ceiling sits far above the files-examined budget, so it never
+    // drops a file the budget would have reached - a normal match is still found.
+    const hit = __setFile('late.ts', 'needle here');
+    __state.findFilesResult = [hit];
+    workspace.findFiles.mockClear();
+    const results = await searchFiles('needle', 'content');
+    expect(results).toEqual(['late.ts:1: needle here']);
+    const contentCall = workspace.findFiles.mock.calls.at(-1)!;
+    expect(contentCall[2]).toBe(settings.search.scanCandidateLimit);
+    expect(settings.search.scanCandidateLimit).toBeGreaterThan(
+      settings.search.contentScanLimit
+    );
+  });
+
+  it('flags truncation when the files-examined budget is hit with files left', async () => {
+    __setConfig('myDevTeam.search.contentScanLimit', 2);
+    // Three candidate files, none matching: the scan stops after two and says so.
+    __state.findFilesResult = [
+      __setFile('a.ts', 'nothing'),
+      __setFile('b.ts', 'nothing'),
+      __setFile('c.ts', 'has needle'), // beyond the budget, never scanned
+    ];
+    const results = await searchFiles('needle', 'content');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatch(/search stopped after scanning 2 files/);
+  });
+
+  it('does not flag truncation when every candidate fits the budget', async () => {
+    __setConfig('myDevTeam.search.contentScanLimit', 10);
+    __state.findFilesResult = [
+      __setFile('a.ts', 'has needle'),
+      __setFile('b.ts', 'nothing'),
+    ];
+    const results = await searchFiles('needle', 'content');
+    expect(results).toEqual(['a.ts:1: has needle']);
+  });
+
+  it('appends the truncation notice even when nothing matched within the budget', async () => {
+    __setConfig('myDevTeam.search.contentScanLimit', 1);
+    __state.findFilesResult = [
+      __setFile('a.ts', 'nothing here'),
+      __setFile('b.ts', 'needle'), // unscanned
+    ];
+    const results = await searchFiles('needle', 'content');
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatch(/search stopped after scanning 1 files/);
   });
 });
 
@@ -580,9 +669,10 @@ describe('runCommand mirroring', () => {
 });
 
 describe('writeFile', () => {
-  // write is not gated (the workspace is git-backed, so a clobber is
+  // write is not gated by default (the workspace is git-backed, so a clobber is
   // recoverable); it applies directly, with the path/symlink and cancellation
-  // guards still enforced.
+  // guards still enforced. The opt-in approval gate is covered in its own
+  // describe block below.
   it('writes the file and reports byte length', async () => {
     const out = await writeFile('new.ts', 'hello');
     expect(out).toBe('Wrote new.ts (5 bytes).');
@@ -632,8 +722,9 @@ describe('writeFile', () => {
 });
 
 describe('editFile', () => {
-  // edit is not gated (see writeFile); it locates a unique match and applies
-  // it directly. The match-uniqueness and path guards still protect the file.
+  // edit is not gated by default (see writeFile); it locates a unique match and
+  // applies it directly. The match-uniqueness and path guards still protect the
+  // file. The opt-in approval gate is covered in its own describe block below.
   it('replaces a unique match and reports the edit', async () => {
     __setFile('a.ts', 'const a = 1;\nconst b = 2;\n');
     const out = await editFile('a.ts', 'const a = 1;', 'const a = 42;');
@@ -722,6 +813,185 @@ describe('editFile', () => {
   });
 });
 
+describe('write/edit approval gate (myDevTeam.approval.fileChanges)', () => {
+  // Off by default, write/edit never ask. Turned on, every write and edit goes
+  // through the same Approver as the run tool: an approve lets the change land,
+  // a decline leaves the file untouched and returns a relayed message.
+  it('does not consult the approver when the setting is off (the default)', async () => {
+    const approver = makeApprover(false);
+    const out = await writeFile('new.ts', 'hello', undefined, undefined, approver);
+    expect(out).toBe('Wrote new.ts (5 bytes).');
+    expect(approver.calls).toHaveLength(0);
+    expect(__state.files.get('/ws/new.ts')).toBe('hello');
+  });
+
+  it('asks before a write and applies it when approved', async () => {
+    __setConfig('myDevTeam.approval.fileChanges', true);
+    const approver = makeApprover(true);
+    const out = await writeFile('new.ts', 'hello', undefined, undefined, approver);
+    expect(approver.calls[0]).toEqual({ title: 'Write file', detail: 'new.ts' });
+    expect(out).toBe('Wrote new.ts (5 bytes).');
+    expect(__state.files.get('/ws/new.ts')).toBe('hello');
+  });
+
+  it('leaves the file untouched when a write is declined', async () => {
+    __setConfig('myDevTeam.approval.fileChanges', true);
+    __setFile('exists.ts', 'old body');
+    const out = await writeFile('exists.ts', 'new body', undefined, undefined, makeApprover(false));
+    expect(out).toBe('Write was not approved by the user.');
+    expect(__state.files.get('/ws/exists.ts')).toBe('old body');
+  });
+
+  it('asks before an edit and applies it when approved', async () => {
+    __setConfig('myDevTeam.approval.fileChanges', true);
+    __setFile('a.ts', 'const a = 1;');
+    const approver = makeApprover(true);
+    const out = await editFile('a.ts', 'const a = 1;', 'const a = 2;', undefined, undefined, approver);
+    expect(approver.calls[0]).toEqual({ title: 'Edit file', detail: 'a.ts' });
+    expect(out).toBe('Edited a.ts (1 replacement).');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 2;');
+  });
+
+  it('leaves the file untouched when an edit is declined', async () => {
+    __setConfig('myDevTeam.approval.fileChanges', true);
+    __setFile('a.ts', 'const a = 1;');
+    const out = await editFile('a.ts', 'const a = 1;', 'const a = 2;', undefined, undefined, makeApprover(false));
+    expect(out).toBe('Edit was not approved by the user.');
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
+  });
+
+  it('does not prompt for a protected path even with the gate on', async () => {
+    // The protected-path refusal comes before the approval gate, so the user is
+    // never asked to approve a write that would be refused anyway.
+    __setConfig('myDevTeam.approval.fileChanges', true);
+    const approver = makeApprover(true);
+    const out = await writeFile('.git/hooks/pre-commit', 'x', undefined, undefined, approver);
+    expect(out).toMatch(/Refusing to write/);
+    expect(approver.calls).toHaveLength(0);
+  });
+
+  it('does not prompt for an edit that cannot locate its target', async () => {
+    // The gate is asked only after the edit is known to apply, so a missing
+    // match returns its recovery message without a prompt.
+    __setConfig('myDevTeam.approval.fileChanges', true);
+    __setFile('a.ts', 'const a = 1;');
+    const approver = makeApprover(true);
+    const out = await editFile('a.ts', 'const b = 2;', 'x', undefined, undefined, approver);
+    expect(out).toMatch(/not found in a\.ts/);
+    expect(approver.calls).toHaveLength(0);
+    expect(__state.files.get('/ws/a.ts')).toBe('const a = 1;');
+  });
+});
+
+describe('symlink re-validation (TOCTOU window)', () => {
+  // resolveWorkspaceUri's symlink check is check-then-use, not atomic: a
+  // component can be swapped for an escaping link between the resolve and the
+  // operation. read re-validates after reading, write/edit re-validate before
+  // writing, so a link swapped in mid-operation is still caught.
+  it('discards read bytes when a component becomes a symlink during the read', async () => {
+    const uri = __setFile('race.ts', 'secret');
+    // Simulate the swap: the read itself flips the path to a symlink, so the
+    // pre-read check passed but the post-read re-validation rejects it.
+    workspace.fs.readFile.mockImplementationOnce(async () => {
+      __state.symlinks.add(uri.path);
+      return new TextEncoder().encode('secret');
+    });
+    await expect(readFile('race.ts')).rejects.toThrow(/symbolic link/);
+  });
+
+  it('refuses a write when a component becomes a symlink after the resolve', async () => {
+    const uri = __setFile('race.ts', 'old');
+    const original = workspace.fs.stat.getMockImplementation()!;
+    // The first stat (the resolve-time check) reports a normal file, then flips
+    // the path to a symlink; the pre-write re-validation's stat catches it.
+    workspace.fs.stat.mockImplementationOnce(async (u: any) => {
+      const result = await original(u);
+      __state.symlinks.add(uri.path);
+      return result;
+    });
+    await expect(writeFile('race.ts', 'new')).rejects.toThrow(/symbolic link/);
+    expect(__state.files.get('/ws/race.ts')).toBe('old');
+  });
+
+  it('refuses an edit when a component becomes a symlink after the resolve', async () => {
+    const uri = __setFile('race.ts', 'const a = 1;');
+    // The edit's own read flips the path to a symlink; the pre-write
+    // re-validation rejects it before the changed bytes land.
+    workspace.fs.readFile.mockImplementationOnce(async () => {
+      __state.symlinks.add(uri.path);
+      return new TextEncoder().encode('const a = 1;');
+    });
+    await expect(editFile('race.ts', 'const a = 1;', 'const a = 2;')).rejects.toThrow(
+      /symbolic link/
+    );
+    expect(__state.files.get('/ws/race.ts')).toBe('const a = 1;');
+  });
+});
+
+describe('protected paths (write/edit)', () => {
+  // Locations inside the workspace that can run code on their own (.git hooks,
+  // .vscode tasks) are refused by write/edit even though they pass the
+  // containment check, so an ungated write cannot sidestep the run gate.
+  it('refuses to write inside .git and leaves the file untouched', async () => {
+    const out = await writeFile('.git/hooks/pre-commit', '#!/bin/sh\nrm -rf /\n');
+    expect(out).toMatch(/Refusing to write \.git\/hooks\/pre-commit/);
+    expect(out).toMatch(/protected location/);
+    expect(__state.files.has('/ws/.git/hooks/pre-commit')).toBe(false);
+  });
+
+  it('refuses to edit a file inside .git', async () => {
+    __setFile('.git/config', '[core]\n');
+    const out = await editFile('.git/config', '[core]', '[evil]');
+    expect(out).toMatch(/Refusing to edit \.git\/config/);
+    expect(__state.files.get('/ws/.git/config')).toBe('[core]\n');
+  });
+
+  it('matches per segment, so a sibling like .gitignore is not protected', async () => {
+    // .git is matched as a whole path segment, so .gitignore is fine to write.
+    const out = await writeFile('.gitignore', 'node_modules\n');
+    expect(out).toBe('Wrote .gitignore (13 bytes).');
+    expect(__state.files.get('/ws/.gitignore')).toBe('node_modules\n');
+  });
+
+  it('matches the protected segment case-insensitively', async () => {
+    // A case-insensitive filesystem would let .GIT/hooks resolve to .git/hooks.
+    const out = await writeFile('.GIT/hooks/pre-push', 'evil');
+    expect(out).toMatch(/Refusing to write/);
+    expect(__state.files.has('/ws/.GIT/hooks/pre-push')).toBe(false);
+  });
+
+  it('refuses .vscode by default (it can auto-run tasks)', async () => {
+    const out = await writeFile('.vscode/tasks.json', '{"version":"2.0.0"}');
+    expect(out).toMatch(/Refusing to write \.vscode\/tasks\.json/);
+    expect(__state.files.has('/ws/.vscode/tasks.json')).toBe(false);
+  });
+
+  it('honours a configured protected list, but .git stays protected regardless', async () => {
+    // Drop .vscode from the configurable list: it becomes writable, while the
+    // hardcoded .git remains refused.
+    __setConfig('myDevTeam.write.protectedPaths', ['secrets']);
+    expect(await writeFile('.vscode/settings.json', '{}')).toBe(
+      'Wrote .vscode/settings.json (2 bytes).'
+    );
+    expect(await writeFile('secrets/key.txt', 'x')).toMatch(/Refusing to write/);
+    expect(await writeFile('.git/hooks/pre-commit', 'x')).toMatch(/Refusing to write/);
+  });
+
+  it('still resolves containment before the protected check', async () => {
+    // A traversal path is rejected by resolveWorkspaceUri (a throw), not turned
+    // into a protected-path message.
+    await expect(writeFile('../.git/hooks/pre-commit', 'x')).rejects.toThrow(
+      /outside the workspace/
+    );
+  });
+
+  it('writes a normal source file unaffected', async () => {
+    expect(await writeFile('src/app.ts', 'export {};')).toBe(
+      'Wrote src/app.ts (10 bytes).'
+    );
+  });
+});
+
 describe('multi-root workspace', () => {
   // In a multi-root workspace asRelativePath prefixes paths with the folder
   // name, so the tools must resolve a `folderName/relative/path` against the
@@ -768,6 +1038,31 @@ describe('multi-root workspace', () => {
     await expect(readFile('api/../../secret.txt')).rejects.toThrow(
       /outside the workspace/
     );
+  });
+
+  it('does not let a same-named root shadow a real directory in the first folder', async () => {
+    // The first folder (api) has a real top-level `web/` directory while a
+    // `web` root also exists. A path under it must resolve to the real file in
+    // the first folder, not be hijacked to the `web` root - otherwise the
+    // search tool could list a path read/edit then opens as a different file.
+    __setFileIn('api', 'web/x.ts', 'shadowed file in the first root');
+    __setFileIn('web', 'x.ts', 'file in the web root');
+    await expect(readFile('web/x.ts')).resolves.toBe('shadowed file in the first root');
+  });
+
+  it('falls back to the named folder when the first folder has no such path', async () => {
+    // No `web/only.ts` in the first folder, so the head still routes to the
+    // web root (the asRelativePath-prefixed form).
+    __setFileIn('web', 'only.ts', 'web root only');
+    await expect(readFile('web/only.ts')).resolves.toBe('web root only');
+  });
+
+  it('routes a folder-prefixed write to the named folder when nothing exists yet', async () => {
+    // A not-yet-created target has no first-folder path to prefer, so the
+    // prefixed form lands in the named folder.
+    await writeFile('web/new.ts', 'hello');
+    expect(__state.files.get('/web/new.ts')).toBe('hello');
+    expect(__state.files.has('/api/web/new.ts')).toBe(false);
   });
 });
 

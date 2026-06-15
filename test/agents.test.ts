@@ -20,6 +20,7 @@ vi.mock('@mastra/core/agent', () => ({
 
 import { Triage, TriageSchema } from '../src/engine/core/triage';
 import { Planner, PlanSchema, PartialPlan } from '../src/engine/core/planner';
+import { Summarizer, SummaryGenSchema, PartialSummary } from '../src/engine/core/summarizer';
 import { Answerer } from '../src/engine/core/answerer';
 import { Executor, PartialExecution } from '../src/engine/core/executor';
 import { AgentUsage } from '../src/engine/core/usage';
@@ -54,20 +55,29 @@ function fakeStreamOutput(partials: unknown[], final: unknown) {
 }
 
 /**
- * Fake of the MastraModelOutput the answerer consumes: a text-delta stream
- * plus the final full text.
+ * Fake of the MastraModelOutput the answerer consumes: the full chunk stream,
+ * with each answer delta as a `text-delta` chunk (the answerer reads
+ * `fullStream` so it can split a reasoning model's `<think>` chunks from the
+ * answer). Extra chunks (e.g. `reasoning-delta`) can be appended for tests that
+ * exercise thinking.
  */
-function fakeTextOutput(deltas: string[], final = deltas.join('')) {
+function fakeTextOutput(
+  deltas: string[],
+  extra: Array<{ type: string; payload?: unknown }> = []
+) {
+  const chunks = [
+    ...deltas.map((text) => ({ type: 'text-delta', payload: { text } })),
+    ...extra,
+  ];
   return {
-    textStream: new ReadableStream({
+    fullStream: new ReadableStream({
       start(controller) {
-        for (const delta of deltas) {
-          controller.enqueue(delta);
+        for (const chunk of chunks) {
+          controller.enqueue(chunk);
         }
         controller.close();
       },
     }),
-    text: Promise.resolve(final),
   };
 }
 
@@ -96,14 +106,20 @@ const toolHostStub: ToolHost = {
 describe('Triage', () => {
   it('returns the structured object from the model', async () => {
     generateMock.mockResolvedValue({
-      object: { intent: 'oneshot', reason: 'just a question' },
+      object: { intent: 'oneshot', complexity: 'simple', reason: 'just a question' },
     });
     const result = await new Triage().classify('what is a closure');
-    expect(result).toEqual({ intent: 'oneshot', reason: 'just a question' });
+    expect(result).toEqual({
+      intent: 'oneshot',
+      complexity: 'simple',
+      reason: 'just a question',
+    });
   });
 
   it('passes the prompt and the triage schema to the model', async () => {
-    generateMock.mockResolvedValue({ object: { intent: 'planning', reason: 'x' } });
+    generateMock.mockResolvedValue({
+      object: { intent: 'planning', complexity: 'moderate', reason: 'x' },
+    });
     await new Triage().classify('refactor this');
 
     const [messages, options] = generateMock.mock.calls[0];
@@ -123,6 +139,7 @@ describe('Planner', () => {
   const plan = {
     summary: 'do the thing',
     steps: [{ title: 'Read it', detail: 'because' }],
+    complexity: 'moderate' as const,
   };
 
   it('returns the final structured plan from the stream', async () => {
@@ -170,6 +187,54 @@ describe('Planner', () => {
   });
 });
 
+describe('Summarizer', () => {
+  const summary = {
+    whatShips: 'A change line',
+    howItsBuilt: 'A client seam',
+    testsAndDocs: 'New tests; DESIGN updated',
+  };
+
+  it('returns the final structured summary from the stream', async () => {
+    streamMock.mockResolvedValue(fakeStreamOutput([{ whatShips: 'A' }], summary));
+    await expect(new Summarizer().summarize('recap this')).resolves.toEqual(summary);
+  });
+
+  it('forwards each partial snapshot to the callback in order', async () => {
+    const partials = [
+      { whatShips: 'A change' },
+      { whatShips: 'A change line', howItsBuilt: 'A client' },
+      { whatShips: 'A change line', howItsBuilt: 'A client seam', testsAndDocs: 'tests' },
+    ];
+    streamMock.mockResolvedValue(fakeStreamOutput(partials, summary));
+
+    const seen: PartialSummary[] = [];
+    await new Summarizer().summarize('recap this', (partial) => seen.push(partial));
+    expect(seen).toEqual(partials);
+  });
+
+  it('passes the prompt and the summary schema to the model', async () => {
+    streamMock.mockResolvedValue(fakeStreamOutput([], summary));
+    await new Summarizer().summarize('recap the change');
+
+    const [messages, options] = streamMock.mock.calls[0];
+    expect(messages).toEqual([{ role: 'user', content: 'recap the change' }]);
+    expect(options).toEqual({ structuredOutput: { schema: SummaryGenSchema } });
+  });
+
+  it('retries once with the validation error when a section is missing', async () => {
+    streamMock
+      // First summary omits a required field, so it fails the schema.
+      .mockResolvedValueOnce(fakeStreamOutput([], { whatShips: 'a', howItsBuilt: 'b' }))
+      .mockResolvedValueOnce(fakeStreamOutput([], summary));
+
+    await expect(new Summarizer().summarize('recap it')).resolves.toEqual(summary);
+    expect(streamMock).toHaveBeenCalledTimes(2);
+    const retryContent = streamMock.mock.calls[1][0][0].content as string;
+    expect(retryContent).toContain('recap it');
+    expect(retryContent).toContain('failed validation');
+  });
+});
+
 describe('Answerer', () => {
   it('returns the final text from the stream', async () => {
     streamMock.mockResolvedValue(fakeTextOutput(['It is', ' 4.']));
@@ -196,6 +261,24 @@ describe('Answerer', () => {
     const [messages, options] = streamMock.mock.calls[0];
     expect(messages).toEqual([{ role: 'user', content: 'explain closures' }]);
     expect(options).toBeUndefined();
+  });
+
+  it('splits reasoning from the answer, forwarding only thinking', async () => {
+    streamMock.mockResolvedValue(
+      fakeTextOutput(['It ', 'is 4.'], [
+        { type: 'reasoning-delta', payload: { text: 'compute 2+2' } },
+      ])
+    );
+    const thinking: string[] = [];
+    const answer = await new Answerer().answer(
+      'q',
+      undefined,
+      undefined,
+      (line) => thinking.push(line)
+    );
+    // The answer holds only the text-delta content; reasoning is kept out of it.
+    expect(answer).toBe('It is 4.');
+    expect(thinking).toEqual(['compute 2+2']);
   });
 
   it('is configured with answerer instructions', async () => {
@@ -230,6 +313,39 @@ describe('Executor', () => {
         { kind: 'text', text: 'Done.' },
       ],
     });
+  });
+
+  it('forwards condensed reasoning to the thinking sink, kept out of the transcript', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        { type: 'reasoning-delta', payload: { text: 'Let me check' } },
+        { type: 'reasoning-delta', payload: { text: ' the file.' } },
+        { type: 'text-delta', payload: { id: 't1', text: 'Done.' } },
+      ])
+    );
+    const thinking: string[] = [];
+    const result = await new Executor(toolHostStub).execute(
+      'do it',
+      undefined,
+      undefined,
+      undefined,
+      (line) => thinking.push(line)
+    );
+    // The latest condensed line as the reasoning buffer grew.
+    expect(thinking).toEqual(['Let me check', 'Let me check the file.']);
+    // Reasoning never becomes a transcript event.
+    expect(result).toEqual({ events: [{ kind: 'text', text: 'Done.' }] });
+  });
+
+  it('ignores reasoning chunks when no thinking sink is given', async () => {
+    streamMock.mockResolvedValue(
+      fakeChunkOutput([
+        { type: 'reasoning-delta', payload: { text: 'hidden' } },
+        { type: 'text-delta', payload: { id: 't1', text: 'Hi.' } },
+      ])
+    );
+    const result = await new Executor(toolHostStub).execute('do it');
+    expect(result).toEqual({ events: [{ kind: 'text', text: 'Hi.' }] });
   });
 
   it('turns a progress tool call into a progress event and drops its result', async () => {
@@ -371,8 +487,24 @@ describe('Executor', () => {
       'read',
       'run',
       'search',
+      'skill',
       'write',
     ]);
+    // With no MCP tools, the executor's prompt carries no additional-tools section.
+    expect(config.instructions).not.toContain('Additional tools');
+  });
+
+  it('adds MCP tools and an additional-tools prompt section when given dynamic tools', () => {
+    new Executor(toolHostStub, undefined, undefined, undefined, [
+      { name: 'mcp__fs__read', description: 'Read a file via MCP.', inputSchema: {} },
+    ]);
+    const config = agentCtor.mock.calls[0][0] as {
+      instructions: string;
+      tools: Record<string, unknown>;
+    };
+    expect(config.tools).toHaveProperty('mcp__fs__read');
+    expect(config.instructions).toContain('Additional tools');
+    expect(config.instructions).toContain('mcp__fs__read');
   });
 
   it('previews a call by the tool\'s configured key argument, not the args JSON', async () => {
@@ -415,7 +547,7 @@ describe('Executor', () => {
     streamMock.mockResolvedValue(fakeChunkOutput(writeCall(lines.join('\n'))));
     const result = await new Executor(toolHostStub).execute('go');
     expect((result.events[0] as { snippet?: string }).snippet).toBe(
-      'l1\nl2\nl3\nl4\nl5\n…(truncated)'
+      'l1\nl2\nl3\nl4\nl5\n. . . (truncated)'
     );
   });
 
@@ -431,7 +563,7 @@ describe('Executor', () => {
       streamMock.mockResolvedValue(fakeChunkOutput(writeCall('l1\nl2\nl3')));
       const result = await new Executor(toolHostStub).execute('go');
       expect((result.events[0] as { snippet?: string }).snippet).toBe(
-        'l1\nl2\n…(truncated)'
+        'l1\nl2\n. . . (truncated)'
       );
     } finally {
       __state.configuration.delete('myDevTeam.chat.toolSnippetLines');
@@ -624,16 +756,19 @@ describe('self-repair for malformed structured output', () => {
   const plan = {
     summary: 'do the thing',
     steps: [{ title: 'Read it', detail: 'because' }],
+    complexity: 'moderate' as const,
   };
 
   it('Triage retries once with the validation error and returns the corrected object', async () => {
     generateMock
       // First generation is malformed (no valid intent), so it fails the schema.
       .mockResolvedValueOnce({ object: { intent: 'nonsense' } })
-      .mockResolvedValueOnce({ object: { intent: 'oneshot', reason: 'ok' } });
+      .mockResolvedValueOnce({
+        object: { intent: 'oneshot', complexity: 'simple', reason: 'ok' },
+      });
 
     const result = await new Triage().classify('what is a closure');
-    expect(result).toEqual({ intent: 'oneshot', reason: 'ok' });
+    expect(result).toEqual({ intent: 'oneshot', complexity: 'simple', reason: 'ok' });
     expect(generateMock).toHaveBeenCalledTimes(2);
     // The retry re-asks with the original prompt plus the validation error.
     const retryContent = generateMock.mock.calls[1][0][0].content as string;
@@ -644,7 +779,10 @@ describe('self-repair for malformed structured output', () => {
   it('Triage reports both calls, flagging only the repair as repaired', async () => {
     generateMock
       .mockResolvedValueOnce({ object: { intent: 'nonsense' }, usage: counts })
-      .mockResolvedValueOnce({ object: { intent: 'oneshot', reason: 'ok' }, usage: counts });
+      .mockResolvedValueOnce({
+        object: { intent: 'oneshot', complexity: 'simple', reason: 'ok' },
+        usage: counts,
+      });
 
     const seen: AgentUsage[] = [];
     await new Triage().classify('q', (usage) => seen.push(usage));
@@ -690,11 +828,12 @@ describe('usage reporting', () => {
   const plan = {
     summary: 'do the thing',
     steps: [{ title: 'Read it', detail: 'because' }],
+    complexity: 'moderate' as const,
   };
 
   it('Triage reports the routed model and the generate result counts', async () => {
     generateMock.mockResolvedValue({
-      object: { intent: 'oneshot', reason: 'x' },
+      object: { intent: 'oneshot', complexity: 'simple', reason: 'x' },
       usage: counts,
     });
     const seen: AgentUsage[] = [];
@@ -708,7 +847,9 @@ describe('usage reporting', () => {
   });
 
   it('Triage falls back to a length-based estimate when the result carries no usage', async () => {
-    generateMock.mockResolvedValue({ object: { intent: 'oneshot', reason: 'x' } });
+    generateMock.mockResolvedValue({
+      object: { intent: 'oneshot', complexity: 'simple', reason: 'x' },
+    });
     const seen: AgentUsage[] = [];
     await new Triage().classify('q', (usage) => seen.push(usage));
     expect(seen).toHaveLength(1);
@@ -724,7 +865,7 @@ describe('usage reporting', () => {
 
   it('accepts the legacy prompt/completion token names', async () => {
     generateMock.mockResolvedValue({
-      object: { intent: 'oneshot', reason: 'x' },
+      object: { intent: 'oneshot', complexity: 'simple', reason: 'x' },
       usage: { promptTokens: 3, completionTokens: 5 },
     });
     const seen: AgentUsage[] = [];
@@ -756,6 +897,19 @@ describe('usage reporting', () => {
     await new Answerer().answer('q', undefined, (usage) => seen.push(usage));
     expect(seen).toEqual([
       { model: routeModel(agents.answerer.capabilities).model, ...counts },
+    ]);
+  });
+
+  it('Summarizer reports usage off the drained stream', async () => {
+    const summary = { whatShips: 'a', howItsBuilt: 'b', testsAndDocs: 'c' };
+    streamMock.mockResolvedValue({
+      ...fakeStreamOutput([], summary),
+      usage: Promise.resolve(counts),
+    });
+    const seen: AgentUsage[] = [];
+    await new Summarizer().summarize('p', undefined, (usage) => seen.push(usage));
+    expect(seen).toEqual([
+      { model: routeModel(agents.summarizer.capabilities).model, ...counts },
     ]);
   });
 

@@ -23,7 +23,7 @@
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
-import { IntentSchema } from '../../protocol/types';
+import { ComplexitySchema, IntentSchema } from '../../protocol/types';
 import commandFiles from 'glob:./commands/*.md';
 
 const CommandFrontmatterSchema = z.object({
@@ -38,6 +38,13 @@ const CommandFrontmatterSchema = z.object({
    * commands: /plan sets it false so the run stops after the plan.
    */
   execute: z.boolean().default(true),
+  /**
+   * The complexity the run is treated as, since a command skips the triage
+   * model call that would otherwise judge it. Sizes the executor's model
+   * (see the model registry's `tier`); only matters on the planning path.
+   * Defaults to "moderate" when a command omits it - e.g. /fix sets "complex".
+   */
+  complexity: ComplexitySchema.default('moderate'),
 });
 
 export interface CommandConfig extends z.infer<typeof CommandFrontmatterSchema> {

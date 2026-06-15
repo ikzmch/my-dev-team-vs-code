@@ -5,6 +5,267 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.44.0] - 2026-06-14
+
+### Added
+
+- **MCP (Model Context Protocol) tool support.** Configure stdio MCP servers in
+  the new `myDevTeam.mcp.servers` setting and `@devteam`'s executor can call
+  their tools alongside the built-in ones. The client discovers each server's
+  tools (namespaced `mcp__<server>__<tool>`) and ships them on the run request;
+  every MCP call is approved through the same prompt the `run` tool uses, and no
+  server is contacted in an untrusted workspace. This is the first half of the
+  workspace-extensibility roadmap (TODO.md chapter 26).
+
+## [0.43.1] - 2026-06-14
+
+### Fixed
+
+- **`read` tool now refuses oversized files by their size.** A `read` checks the
+  file's size first and refuses anything over a 10 MB cap with a notice, instead
+  of loading the whole file into memory before the line/char caps apply - so a
+  multi-GB or giant minified file can no longer exhaust the extension host's
+  memory. The `#codebase` snippet reader inherits the guard.
+- **Run approvals are attributed to the turn that owns them.** Each chat turn now
+  binds its tool calls to its own approval session by run id, so under concurrent
+  `@devteam` turns a `run` (or gated write/edit) approval renders in the turn
+  that triggered it rather than the most recently opened one; when the owning
+  session is gone it falls back to a modal.
+
+### Changed
+
+- **Eval log appends no longer re-read the whole file.** The opt-in eval log
+  keeps its contents in memory and appends to that, so a long telemetry session
+  no longer re-reads and re-decodes the growing file on every record. The
+  content scan's no-ripgrep fallback also bounds its candidate file list so it
+  cannot grow without bound on a very large repository.
+
+## [0.43.0] - 2026-06-14
+
+### Added
+
+- **Optional approval for file changes.** A new `myDevTeam.approval.fileChanges`
+  setting (off by default) gates the `write` and `edit` tools behind the same
+  Approve/Decline prompt the `run` tool uses, so you can confirm every file
+  change before it lands. Off by default keeps the current behaviour - changes
+  apply straight away, since a git-backed workspace makes them recoverable - and
+  the `run` tool stays gated regardless.
+
+## [0.42.0] - 2026-06-14
+
+### Added
+
+- **Plan approval gate.** The planner now judges each plan's complexity, and a
+  new `myDevTeam.planApproval` setting decides when `@devteam` pauses for your
+  sign-off before executing: `auto` (the default) pauses only on a `complex`
+  plan, `always` on every plan, `never` runs straight through as before. At the
+  gate you can Approve (execute), Cancel (keep the plan, run nothing), or Revise
+  (type a comment and have the plan redrafted, then asked again).
+
+### Changed
+
+- **Complexity routing is now two-stage.** The planner's model is sized by
+  triage's quick complexity guess, and the executor's by the planner's own,
+  better-informed judgement made after it has seen the request. The complexity
+  shown in the reply is the planner's, rendered with the plan.
+
+## [0.41.1] - 2026-06-14
+
+### Changed
+
+- **A single provider descriptor.** Each model provider is now described once,
+  in a single registry (`config/providers.ts`): its id, label, key requirement,
+  secret/env key names, base-URL setting, and how to build it. The model
+  `provider` enum, the provider labels, the API-key maps, the base-URL settings,
+  and the provider wiring all derive from that one list, and a model file naming
+  an unknown provider now fails at load with a clear message. Adding a provider
+  is one descriptor plus its npm import instead of a five-file edit. No
+  user-facing behavior change.
+
+## [0.41.0] - 2026-06-14
+
+### Changed
+
+- **Content search runs on ripgrep.** The `search` tool's content mode (and the
+  `#codebase` reference) now use VS Code's bundled `ripgrep` binary to scan the
+  whole workspace natively instead of reading every candidate file into the
+  extension host - much faster on a large repo, and bounded by match count
+  rather than a files-examined budget. The previous in-process scan stays as an
+  automatic fallback for when the binary is unavailable (a stripped build, a
+  virtual workspace, or a spawn failure), so results are identical either way.
+
+## [0.40.1] - 2026-06-14
+
+### Changed
+
+- **Tool dispatch derives from the contract.** The tool host's hand-written
+  per-tool switch is gone; it now dispatches through a handler map keyed by the
+  protocol's tool-contract names and typed against each tool's schema, so the
+  name set can no longer drift between the contract, the host, and the editor
+  registrations. No behavior change - same validation, approval gate, and
+  results.
+
+## [0.40.0] - 2026-06-14
+
+### Added
+
+- **Disable providers and models.** You can now take a provider or an individual
+  model out of play, at two layers. As a user, the new
+  `myDevTeam.disabledProviders` and `myDevTeam.disabledModels` settings switch
+  them off: the router never routes to them and the `/model` picker shows them as
+  disabled, even if an API key is set. The build also carries an operator floor
+  (`engine/config/backend.json`) for providers/models disabled for everyone,
+  which a user setting cannot re-enable. Disabling is a hard block - a disabled
+  choice never runs even when pinned; the run falls back to Auto among the
+  enabled models.
+- **Operator endpoint overrides.** The same `engine/config/backend.json` can pin
+  each provider's endpoint for everyone - Ollama's `endpoint` and the cloud
+  providers' `baseUrl` - and the override wins over the matching user setting, so
+  a build can point all four providers at a corporate gateway.
+- **Configurable triage model.** `backend.json`'s `agents.triage.model` now
+  controls how the internal triage classifier is routed: a model id pins that
+  exact model, a provider name routes by capability within it, and the default is
+  the "ollama" provider (the local models, as before). Lets an operator give
+  triage a sharper model without touching the model the user picked for the work.
+
+## [0.39.1] - 2026-06-14
+
+### Changed
+
+- **Inline approval choices.** The Approve / Decline prompt for a `run` command
+  now renders as two links on a single line instead of stacked buttons, so the
+  approval takes one row in the chat rather than three. Clicking either still
+  works exactly as before.
+
+## [0.39.0] - 2026-06-14
+
+### Added
+
+- **Skills.** `@devteam` can now load named, described instruction packages on
+  demand: when a task matches a skill's description, the executor pulls in its
+  full instructions and follows them, so reusable know-how (how to write a
+  commit message, format a changelog entry, follow a team convention) lives in
+  one place instead of being repeated in every prompt. A few skills ship
+  built-in, and you can add your own by dropping a `SKILL.md` under
+  `.devteam/skills/<name>/` (or `.claude/skills/<name>/`) - either in your
+  workspace (a project skill) or in your home directory (a personal skill shared
+  across projects), with the project one winning a name clash. The directories
+  are configurable with the new `myDevTeam.skills.directories` setting. Skills
+  are loaded only when relevant, so they cost nothing on a task that does not use
+  them.
+
+## [0.38.0] - 2026-06-14
+
+### Added
+
+- **Live thinking.** When a reasoning model is in use, `@devteam` now shows a
+  dimmed **Thinking** line while it works - a one-line glimpse of what it is
+  currently reasoning about, replaced as it goes and dropped once the real
+  answer or transcript arrives. It is never kept past the run. Turn it off with
+  the new `myDevTeam.thinking.showInChat` setting, which also skips capturing
+  the model's reasoning entirely.
+
+## [0.37.0] - 2026-06-14
+
+### Added
+
+- **End-of-run summary.** After a task that changes files, the reply ends with
+  a **Summary** recap in three sections - What ships, How it's built, and Tests
+  and docs - so you get a pull-request-style overview without rereading the
+  whole transcript. It runs only when files changed and can be turned off with
+  the new `myDevTeam.summary.showInChat` setting (which also skips the extra
+  model call).
+
+## [0.36.0] - 2026-06-14
+
+### Added
+
+- **Change summary line.** A reply that writes files now ends with a
+  **Changes** line - "N files changed, +X -Y" - so you can see the size of an
+  edit at a glance, the way you would skim a pull request. It appears only when
+  a turn actually changed files and can be turned off with the new
+  `myDevTeam.changes.showInChat` setting.
+
+## [0.35.1] - 2026-06-13
+
+### Security
+
+- **Symlink containment re-validation.** The path-safety check that rejects
+  symbolic links is now re-run right against each file operation (`read`
+  re-checks after reading and discards the bytes; `write`/`edit` re-check just
+  before writing), narrowing the small window in which a path component could be
+  swapped for a link pointing outside the workspace.
+
+### Fixed
+
+- **Multi-root paths no longer shadow real directories.** In a multi-root
+  workspace, a path like `backend/x` used to always route to a `backend` root
+  even when the first folder had a real `backend/` directory, so a search result
+  could open a different file than expected. An existing path in the first folder
+  now wins, and the folder-name routing applies only when nothing exists there.
+- **`read` no longer overstates a truncated range.** When a requested line range
+  was larger than the 200k-character backstop, the "lines X-Y" header still
+  claimed the full range while the tail was dropped, so the model could act on
+  lines it never received. The result is now capped at a line boundary and the
+  header reports only the lines actually returned.
+
+## [0.35.0] - 2026-06-13
+
+### Added
+
+- **Editor entry points.** You no longer have to start in the chat panel: a
+  **Fix with Dev Team** Quick Fix appears on a diagnostic (sends `/fix` with the
+  problem and your uncommitted changes), an **Explain with Dev Team** action sits
+  in the editor right-click menu for a selection (sends `/explain`), and a
+  **Write/update tests** CodeLens (it reads **Repair tests** when the file has
+  errors) tops a test file (sends `/test`). Each is a thin shim that opens the
+  chat with the command prefilled, so routing, attachments, and approvals are
+  unchanged.
+
+## [0.34.0] - 2026-06-13
+
+### Security
+
+- **Protected in-workspace locations for write/edit.** The ungated `write`/
+  `edit` tools now refuse paths that, although inside the workspace, can run
+  code on their own and so would sidestep the `run` approval gate: `.git/`
+  (always, e.g. `.git/hooks/*`) plus the configurable
+  `myDevTeam.write.protectedPaths` (default `.vscode`). The match is per path
+  segment (so `.git` never catches `.gitignore`) and case-insensitive.
+- **Prompt-injection hardening.** The planner, answerer, and executor prompts
+  now frame attached files, tool results, and file contents as untrusted data
+  to act on, not instructions to follow, so text embedded in workspace content
+  cannot redirect a run.
+
+### Fixed
+
+- **Content search no longer silently misses matches.** The search tool used to
+  cap the candidate files before scanning them, so on a large repo matches in
+  the dropped files vanished and `#codebase` was non-deterministic. It now scans
+  to completion for any query whose matches fit the result cap, and when a very
+  large repo exceeds the files-examined budget it says so instead of presenting a
+  partial result as complete.
+- **Rate limiter no longer wastes a slot on a cancelled request.** When a
+  throttled request is cancelled while waiting for its send slot, the slot is
+  now handed back, so the calls behind it are not pushed needlessly further out
+  and the provider's quota is not under-used after a cancellation.
+
+## [0.33.0] - 2026-06-13
+
+### Added
+
+- **Complexity-based executor model routing.** Triage now also judges how
+  demanding a request is (simple, moderate, or complex) and the executor's
+  model is sized to it: trivial work (e.g. a command-line calculator) routes to
+  a cheaper/smaller model and hard work (multi-file changes, subtle debugging)
+  to the strongest one, within whatever provider applies (Ollama included).
+  Each registered model carries a `tier`, and the router narrows the executor's
+  candidates to the request's tier before picking by capability, falling back
+  to the nearest available tier when a provider lacks one. A pinned model is
+  never affected, and the new `myDevTeam.complexityRouting` setting (on by
+  default) turns the whole behaviour off. The detected complexity is shown
+  under the planning reply.
+
 ## [0.32.0] - 2026-06-13
 
 ### Added
@@ -56,6 +317,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Activate at startup.** The extension now activates when VS Code finishes
   starting up, so the status-bar button is there from launch instead of
   appearing only after the first `@devteam` request.
+
+### Added
+
+- **Rich hover on the status button.** Hovering the **My Dev Team** status-bar
+  button now shows a popup with the active model and session token total plus
+  clickable **Select model**, **Token usage report**, and **Set API key** links
+  - the same hover-with-actions approach as Copilot's status item.
 
 ## [0.30.0] - 2026-06-13
 

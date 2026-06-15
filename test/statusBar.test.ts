@@ -4,6 +4,7 @@ import { SELECT_MODEL_COMMAND_ID } from '../src/ui/modelCommands';
 import { SHOW_USAGE_COMMAND_ID } from '../src/ui/usageView';
 import { Engine } from '../src/protocol/engine';
 import { ModelChoice } from '../src/protocol/types';
+import { SET_API_KEY_COMMAND_ID } from '../src/ui/modelCommands';
 import {
   __reset,
   __setConfig,
@@ -11,6 +12,7 @@ import {
   __setQuickPickResponse,
   commands,
   window,
+  MarkdownString,
 } from './mocks/vscode';
 
 beforeEach(() => {
@@ -84,5 +86,38 @@ describe('StatusBar', () => {
     __setQuickPickResponse(undefined);
     await bar.openMenu();
     expect(commands.executeCommand).not.toHaveBeenCalled();
+  });
+
+  it('hovers a trusted markdown tooltip with command links for each action', async () => {
+    __setConfig('myDevTeam.model', 'qwen3-coder');
+    const bar = new StatusBar(fakeEngine(), STATUS_MENU_COMMAND_ID);
+    await bar.refresh();
+
+    const tooltip = theItem().tooltip as MarkdownString;
+    expect(tooltip).toBeInstanceOf(MarkdownString);
+    expect(tooltip.supportThemeIcons).toBe(true);
+    // Trusted, but only for the three commands it links - nothing else.
+    expect(tooltip.isTrusted).toEqual({
+      enabledCommands: [
+        SELECT_MODEL_COMMAND_ID,
+        SHOW_USAGE_COMMAND_ID,
+        SET_API_KEY_COMMAND_ID,
+      ],
+    });
+    expect(tooltip.value).toContain('Qwen3 Coder (Ollama)');
+    // A separator under the title and another before the action links.
+    expect((tooltip.value.match(/\n---\n/g) ?? []).length).toBe(2);
+    expect(tooltip.value).toContain(`command:${SELECT_MODEL_COMMAND_ID}`);
+    expect(tooltip.value).toContain(`command:${SHOW_USAGE_COMMAND_ID}`);
+    expect(tooltip.value).toContain(`command:${SET_API_KEY_COMMAND_ID}`);
+    // Each link carries a title so the hover shows meaningful text, not the URI.
+    expect(tooltip.value).toContain('"Choose the model for @devteam"');
+  });
+
+  it('redraws the hover token total as runs accumulate', () => {
+    const bar = new StatusBar(fakeEngine(), STATUS_MENU_COMMAND_ID);
+    bar.add([{ step: 'execute', inputTokens: 200, outputTokens: 150 }]);
+    const tooltip = theItem().tooltip as MarkdownString;
+    expect(tooltip.value).toContain('350'); // 200 in + 150 out
   });
 });

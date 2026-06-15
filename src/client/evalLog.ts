@@ -88,8 +88,18 @@ export const EVAL_LOG_FILENAME = 'eval-log.jsonl';
 export class EvalLog {
   private readonly directory: vscode.Uri;
   private readonly file: vscode.Uri;
-  /** Serializes appends so concurrent records cannot interleave the read-modify-write. */
+  /** Serializes appends so concurrent records cannot interleave the modify-write. */
   private queue: Promise<void> = Promise.resolve();
+  /**
+   * The log's current contents, held in memory so each append neither re-reads
+   * nor re-decodes the whole file (the cost cliff once telemetry has run long
+   * enough to sit near the cap). Lazily loaded on the first write; kept in step
+   * with disk only after a successful write, so a failed write does not poison
+   * the next one. `undefined` means "not loaded yet". This assumes a single
+   * writer (the one extension instance), which has always held - the prior
+   * read-modify-write would have raced a second writer too.
+   */
+  private cached: string | undefined;
 
   constructor(storageDirectory: vscode.Uri) {
     this.directory = storageDirectory;
@@ -147,16 +157,20 @@ export class EvalLog {
 
   private async write(record: EvalRecord): Promise<void> {
     await vscode.workspace.fs.createDirectory(this.directory);
-    let existing = '';
-    try {
-      existing = new TextDecoder().decode(
-        await vscode.workspace.fs.readFile(this.file)
-      );
-    } catch {
-      // First record: the file does not exist yet.
+    if (this.cached === undefined) {
+      // First write of this session: read the existing log once, then keep it
+      // in memory so later appends skip the read-and-decode entirely.
+      try {
+        this.cached = new TextDecoder().decode(
+          await vscode.workspace.fs.readFile(this.file)
+        );
+      } catch {
+        // The file does not exist yet.
+        this.cached = '';
+      }
     }
     const line = JSON.stringify(record) + '\n';
-    let next = existing + line;
+    let next = this.cached + line;
     const cap = settings.telemetry.evalLogMaxChars;
     if (next.length > cap) {
       // Drop whole oldest lines until the log fits the cap again. A single
@@ -169,5 +183,9 @@ export class EvalLog {
       }
     }
     await vscode.workspace.fs.writeFile(this.file, new TextEncoder().encode(next));
+    // Only adopt the new contents once the write lands, so a failed write
+    // leaves the cache matching disk and the record is simply lost (not
+    // double-written on the next append).
+    this.cached = next;
   }
 }

@@ -99,7 +99,7 @@ describe('collectReferences - explicit references', () => {
   it('truncates very large attachments', async () => {
     const huge = 'z'.repeat(settings.maxAttachmentChars + 100);
     const { attachments } = await collectReferences([{ value: huge } as any], 'q', noDiff);
-    expect(attachments[0].text).toContain('…(truncated)');
+    expect(attachments[0].text).toContain('. . . (truncated)');
   });
 });
 
@@ -122,7 +122,7 @@ describe('collectReferences - #changes', () => {
   it('truncates an enormous diff to the cap', async () => {
     const gitDiff = async () => 'd'.repeat(settings.references.changesMaxChars + 100);
     const { attachments } = await collectReferences([], '#changes', gitDiff);
-    expect(attachments[0].text).toContain('…(truncated)');
+    expect(attachments[0].text).toContain('. . . (truncated)');
   });
 
   it('attaches a notice when there is no workspace folder', async () => {

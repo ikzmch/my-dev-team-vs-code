@@ -147,6 +147,20 @@ describe('EvalLog', () => {
     expect(await makeLog().readRecords()).toEqual([]);
   });
 
+  it('does not re-read the whole file on every append (B-3)', async () => {
+    const log = makeLog();
+    workspace.fs.readFile.mockClear();
+    await log.recordRun({ runId: 'a', outcome: 'ok', usage: [] });
+    await log.recordRun({ runId: 'b', outcome: 'ok', usage: [] });
+    await log.recordRun({ runId: 'c', outcome: 'ok', usage: [] });
+
+    // The contents are cached after the first load, so later appends skip the
+    // read entirely instead of re-reading and re-decoding the growing file.
+    expect(workspace.fs.readFile).toHaveBeenCalledTimes(1);
+    // The records still all landed, in order.
+    expect(storedLines().map((l) => l.runId)).toEqual(['a', 'b', 'c']);
+  });
+
   it('serializes concurrent appends so no record is lost', async () => {
     const log = makeLog();
     await Promise.all([

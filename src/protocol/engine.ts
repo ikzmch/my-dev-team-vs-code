@@ -5,7 +5,7 @@
  * contract over HTTP - and a VS Code setting switches between them, so
  * nothing above this interface may depend on which one is running.
  */
-import { ModelChoice, Reply, RunRequest } from './types';
+import { Complexity, ModelChoice, Plan, PlanDecision, Reply, RunRequest } from './types';
 import { RunEvent, RunStep } from './events';
 import { ToolHost } from './toolContract';
 
@@ -17,6 +17,15 @@ import { ToolHost } from './toolContract';
 export interface RunClient {
   onEvent(event: RunEvent): void;
   toolHost: ToolHost;
+  /**
+   * The plan-approval seam: the engine calls this when a drafted plan needs the
+   * user's verdict before executing (see the `myDevTeam.planApproval` setting),
+   * and the client returns approve / cancel / revise. Like the ToolHost, the UI
+   * lives entirely on the client - the engine only ever asks. Optional: a client
+   * that does not implement it (or an engine that never gates) simply proceeds
+   * to execution without a checkpoint, so the gate is purely additive.
+   */
+  reviewPlan?(plan: Plan, complexity: Complexity): Promise<PlanDecision>;
 }
 
 /** A started run. `result` settles exactly once; `cancel` is idempotent. */

@@ -3,6 +3,7 @@ id: anthropic-sonnet
 label: Claude Sonnet 4.6 (Anthropic)
 provider: anthropic
 model: claude-sonnet-4-6
+tier: moderate
 capabilities:
   reasoning: 0.9
   coding: 0.92

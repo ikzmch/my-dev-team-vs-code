@@ -1,0 +1,15 @@
+{
+  "models": {
+    "disabledProviders": [],
+    "disabledModels": []
+  },
+  "providers": {
+    "ollama": { "endpoint": "" },
+    "openai": { "baseUrl": "" },
+    "anthropic": { "baseUrl": "" },
+    "groq": { "baseUrl": "" }
+  },
+  "agents": {
+    "triage": { "model": "ollama" }
+  }
+}

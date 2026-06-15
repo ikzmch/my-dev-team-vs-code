@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 
-import { buildAgentTools } from '../src/engine/core/agentTools';
+import { buildAgentTools, renderDynamicToolsSection } from '../src/engine/core/agentTools';
 import { toolConfigs } from '../src/engine/config/tools';
 import { ToolHost } from '../src/protocol/toolContract';
+import { DynamicToolDef } from '../src/protocol/types';
 
 /** ToolHost test double recording calls and returning a fixed result. */
 function makeHost(result = 'ok'): ToolHost & {
@@ -25,7 +26,7 @@ function invoke(tool: { execute?: Function }, input: unknown): Promise<unknown> 
 }
 
 describe('buildAgentTools', () => {
-  it('exposes the five workspace tools plus the engine-only progress tool', () => {
+  it('exposes the five workspace tools plus the engine-only progress and skill tools', () => {
     const tools = buildAgentTools(makeHost());
     expect(Object.keys(tools).sort()).toEqual([
       'edit',
@@ -33,6 +34,7 @@ describe('buildAgentTools', () => {
       'read',
       'run',
       'search',
+      'skill',
       'write',
     ]);
     for (const [name, tool] of Object.entries(tools)) {
@@ -51,6 +53,27 @@ describe('buildAgentTools', () => {
     expect(result).toBe('Progress shown to the user.');
     // The progress tool never delegates to the ToolHost.
     expect(host.calls).toHaveLength(0);
+  });
+
+  it('returns a skill body by name without a host call, and a notice for an unknown one', async () => {
+    const host = makeHost();
+    const bodies = new Map([['demo', 'the demo skill instructions']]);
+    const tools = buildAgentTools(host, undefined, bodies);
+
+    await expect(invoke(tools.skill, { name: 'demo' })).resolves.toBe(
+      'the demo skill instructions'
+    );
+    const miss = (await invoke(tools.skill, { name: 'nope' })) as string;
+    expect(miss).toContain('No skill named "nope"');
+    expect(miss).toContain('demo');
+    // The skill tool never delegates to the ToolHost.
+    expect(host.calls).toHaveLength(0);
+  });
+
+  it('reports no skills available when the bodies map is empty or absent', async () => {
+    const tools = buildAgentTools(makeHost());
+    const result = (await invoke(tools.skill, { name: 'demo' })) as string;
+    expect(result).toContain('No skills are available.');
   });
 
   it('delegates each call to the ToolHost with the tool name and args', async () => {
@@ -103,6 +126,48 @@ describe('buildAgentTools', () => {
 
     expect(host.calls[0].signal).toBeUndefined();
     expect(host.calls[1].signal).toBe(controller.signal);
+  });
+
+  it('builds a proxy for each dynamic (MCP) tool that delegates to the host', async () => {
+    const host = makeHost('mcp result');
+    const defs: DynamicToolDef[] = [
+      {
+        name: 'mcp__fs__read',
+        description: 'Read a file via MCP.',
+        inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+      },
+    ];
+    const tools = buildAgentTools(host, undefined, undefined, defs);
+
+    expect(Object.keys(tools)).toContain('mcp__fs__read');
+    const tool = tools['mcp__fs__read' as keyof typeof tools];
+    expect(tool.id).toBe('mcp__fs__read');
+    expect(tool.description).toBe('Read a file via MCP.');
+
+    await expect(invoke(tool, { path: 'a.txt' })).resolves.toBe('mcp result');
+    expect(host.calls[0]).toMatchObject({
+      tool: 'mcp__fs__read',
+      args: { path: 'a.txt' },
+    });
+  });
+
+  it('falls back to a permissive schema when an MCP input schema does not convert', () => {
+    const defs: DynamicToolDef[] = [
+      { name: 'mcp__x__y', description: 'd', inputSchema: 'not a schema' },
+    ];
+    const tools = buildAgentTools(makeHost(), undefined, undefined, defs);
+    // It still builds (no throw) and the tool is present.
+    expect(tools['mcp__x__y' as keyof typeof tools].inputSchema).toBeDefined();
+  });
+
+  it('renders the additional-tools section only when there are dynamic tools', () => {
+    expect(renderDynamicToolsSection([])).toBe('');
+    const section = renderDynamicToolsSection([
+      { name: 'mcp__fs__read', description: 'Read a file.', inputSchema: {} },
+    ]);
+    expect(section).toContain('Additional tools');
+    expect(section).toContain('"mcp__fs__read": Read a file.');
+    expect(section).toContain('Requires user approval.');
   });
 
   it('validates tool input against the schema instead of calling through', async () => {

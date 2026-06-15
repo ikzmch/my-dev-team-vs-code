@@ -6,33 +6,89 @@
  * needs its API key), and turning the winning registry entry into an AI SDK
  * model instance for the configured endpoint/key.
  *
- * Four providers are wired:
- *   - ollama:    local, keyless, from `settings.ollamaEndpoint`.
- *   - openai:    needs `credentials.openaiApiKey`; optional `settings.openaiBaseUrl`.
- *   - anthropic: needs `credentials.anthropicApiKey`; optional `settings.anthropicBaseUrl`.
- *   - groq:      needs `credentials.groqApiKey`; optional `settings.groqBaseUrl`.
- * Each provider is built lazily and rebuilt when its configuration (endpoint,
- * key, or base URL) changes, dropping the memoised model instances so the next
- * request talks to the new configuration without a reload.
+ * The providers themselves - their ids, labels, key requirements, and how to
+ * build each one's AI SDK factory - live in the single provider registry
+ * (config/providers.ts). This file only adds the runtime resolution: it reads
+ * each provider's resolved config and feeds it to the descriptor's `build`.
+ * Each endpoint/base URL is *resolved* as "backend override
+ * (engine/config/backend.json) else user setting", so an operator can pin every
+ * provider at a fixed gateway while the user setting fills in otherwise. Each
+ * provider is built lazily and rebuilt when its configuration (resolved
+ * endpoint, key, or base URL) changes, dropping the memoised model instances so
+ * the next request talks to the new configuration without a reload.
  */
 import { wrapLanguageModel } from 'ai';
-import { createOllama } from 'ollama-ai-provider-v2';
-import { createOpenAI } from '@ai-sdk/openai';
-import { createAnthropic } from '@ai-sdk/anthropic';
-import { createGroq } from '@ai-sdk/groq';
 import { rateLimitMiddleware } from './rateLimiter';
 import {
   CapabilityScores,
   ModelInfo,
+  modelById,
   modelRegistry,
+  PROVIDER_PIN_PREFIX,
   ProviderName,
+  providerPinOf,
   selectModel,
 } from '../config/models';
+import {
+  providerDescriptor,
+  providerDescriptors,
+  providerIds,
+  ProviderConfig,
+  ProviderDescriptor,
+  RoutedModel,
+} from '../../config/providers';
+import { Complexity } from '../../protocol/types';
 import { settings } from '../../config/settings';
 import { credentials } from '../../config/credentials';
+import { backendConfig } from '../config/backend';
 
-/** The AI SDK model type all providers produce. */
-export type RoutedModel = ReturnType<ReturnType<typeof createOllama>>;
+/** The AI SDK model type all providers produce (re-exported from the registry). */
+export type { RoutedModel } from '../../config/providers';
+
+/**
+ * A provider's resolved endpoint override from the backend config: Ollama's
+ * `endpoint` or a cloud provider's `baseUrl`, both stored under the provider's
+ * id in `backend.json`. Undefined means "no override - fall back to the user
+ * setting".
+ */
+function backendEndpointOverride(id: ProviderName): string | undefined {
+  const entry = backendConfig.providers[id] as { endpoint?: string; baseUrl?: string };
+  return entry.endpoint ?? entry.baseUrl;
+}
+
+/**
+ * The Ollama server origin actually used: the backend override
+ * (engine/config/backend.json) when set, else the user's
+ * `myDevTeam.ollama.endpoint`. The single source the provider wiring, the
+ * startup probe, and the error hints all read, so they can never disagree.
+ */
+export function ollamaEndpoint(): string {
+  return backendEndpointOverride('ollama') ?? settings.ollamaEndpoint;
+}
+
+/**
+ * A provider's resolved runtime config, fed to its descriptor's `build`: the
+ * API key (keyless providers get none) and the resolved base URL (backend
+ * override else user setting). For Ollama the base URL is the endpoint, which
+ * always resolves to at least the default; for a cloud provider it may be
+ * undefined (use the SDK's own endpoint).
+ */
+function resolveProviderConfig(descriptor: ProviderDescriptor): ProviderConfig {
+  if (descriptor.keyless) {
+    return { baseUrl: ollamaEndpoint() };
+  }
+  return {
+    apiKey: credentials.apiKey(descriptor.id),
+    baseUrl:
+      backendEndpointOverride(descriptor.id) ??
+      settings.providerBaseUrl(descriptor.baseUrlSetting),
+  };
+}
+
+/** The config signature a provider was built from: a key or base-URL change rebuilds it. */
+function providerSignature(config: ProviderConfig): string {
+  return `${config.apiKey ?? ''}::${config.baseUrl ?? ''}`;
+}
 
 const instances = new Map<string, RoutedModel>();
 
@@ -42,88 +98,138 @@ const instances = new Map<string, RoutedModel>();
  * instances are dropped, so a key or endpoint change takes effect next run.
  */
 interface ProviderCache {
-  signature: () => string;
-  build: () => (model: string) => RoutedModel;
   instance?: (model: string) => RoutedModel;
   builtFrom?: string;
 }
 
-const providers: Record<ProviderName, ProviderCache> = {
-  ollama: {
-    signature: () => settings.ollamaEndpoint,
-    build: () => {
-      const ollama = createOllama({ baseURL: `${settings.ollamaEndpoint}/api` });
-      return (model) => ollama(model);
-    },
-  },
-  openai: {
-    signature: () => `${credentials.openaiApiKey ?? ''}::${settings.openaiBaseUrl ?? ''}`,
-    build: () => {
-      const openai = createOpenAI({
-        apiKey: credentials.openaiApiKey,
-        ...(settings.openaiBaseUrl ? { baseURL: settings.openaiBaseUrl } : {}),
-      });
-      return (model) => openai(model) as RoutedModel;
-    },
-  },
-  anthropic: {
-    signature: () =>
-      `${credentials.anthropicApiKey ?? ''}::${settings.anthropicBaseUrl ?? ''}`,
-    build: () => {
-      const anthropic = createAnthropic({
-        apiKey: credentials.anthropicApiKey,
-        ...(settings.anthropicBaseUrl ? { baseURL: settings.anthropicBaseUrl } : {}),
-      });
-      return (model) => anthropic(model) as RoutedModel;
-    },
-  },
-  groq: {
-    signature: () => `${credentials.groqApiKey ?? ''}::${settings.groqBaseUrl ?? ''}`,
-    build: () => {
-      const groq = createGroq({
-        apiKey: credentials.groqApiKey,
-        ...(settings.groqBaseUrl ? { baseURL: settings.groqBaseUrl } : {}),
-      });
-      return (model) => groq(model) as RoutedModel;
-    },
-  },
-};
+/** One cache slot per registered provider, keyed by id. */
+const providerCaches: Record<ProviderName, ProviderCache> = Object.fromEntries(
+  providerDescriptors.map((d) => [d.id, {} as ProviderCache])
+) as Record<ProviderName, ProviderCache>;
 
 /** The provider factory for `name`, rebuilt when its configuration changed. */
 function providerFactory(name: ProviderName): (model: string) => RoutedModel {
-  const cache = providers[name];
-  const signature = cache.signature();
+  const cache = providerCaches[name];
+  const descriptor = providerDescriptor(name);
+  const config = resolveProviderConfig(descriptor);
+  const signature = providerSignature(config);
   if (!cache.instance || cache.builtFrom !== signature) {
-    cache.instance = cache.build();
+    cache.instance = descriptor.build(config);
     cache.builtFrom = signature;
     instances.clear();
   }
   return cache.instance;
 }
 
-/** Whether a registered model can actually run now: Ollama always (assumed
- * pulled), a cloud model only when its API key is configured. */
+/** Whether a registered model can actually run now: a keyless provider's model
+ * always (Ollama, assumed pulled), a cloud model only when its API key is set. */
 export function isModelAvailable(info: ModelInfo): boolean {
-  switch (info.provider) {
-    case 'ollama':
-      return true;
-    case 'openai':
-      return credentials.has('openai');
-    case 'anthropic':
-      return credentials.has('anthropic');
-    case 'groq':
-      return credentials.has('groq');
+  return providerDescriptor(info.provider).keyless || credentials.has(info.provider);
+}
+
+/**
+ * Whether a provider is enabled, unioning the two disable layers: the backend
+ * floor (the operator's `backend.json`, unbypassable) and the user's
+ * `myDevTeam.disabledProviders` setting. A disabled provider's models never run,
+ * even when pinned (see `effectivePin`).
+ */
+export function isProviderEnabled(provider: ProviderName): boolean {
+  return (
+    !backendConfig.models.disabledProviders.includes(provider) &&
+    !settings.disabledProviders.includes(provider)
+  );
+}
+
+/**
+ * Whether a registered model is enabled: its provider must be enabled, and the
+ * model's own id must not be disabled at either layer (the backend floor or the
+ * user's `myDevTeam.disabledModels`). Orthogonal to `isModelAvailable` (whether
+ * its API key is set) - a model must be both enabled and available to run.
+ */
+export function isModelEnabled(info: ModelInfo): boolean {
+  return (
+    isProviderEnabled(info.provider) &&
+    !backendConfig.models.disabledModels.includes(info.id) &&
+    !settings.disabledModels.includes(info.id)
+  );
+}
+
+/**
+ * Resolve a user's model pin against the disable layers, so a hard-blocked pin
+ * never runs. A pin naming a disabled model, or a `provider:<name>` pin naming a
+ * disabled provider, is dropped (returns undefined), so the run falls back to
+ * Auto among the enabled models rather than honouring the choice. "auto", an
+ * unknown id, or no pin passes through unchanged - and an enabled provider pin
+ * stays a provider pin (its individually-disabled members are excluded later by
+ * the `isModelEnabled` predicate handed to `selectModel`).
+ */
+export function effectivePin(pin?: string): string | undefined {
+  if (pin === undefined) {
+    return undefined;
   }
+  const pinned = modelById(pin);
+  if (pinned) {
+    return isModelEnabled(pinned) ? pin : undefined;
+  }
+  if (pin.startsWith(PROVIDER_PIN_PREFIX)) {
+    const provider = providerPinOf(pin);
+    // A provider pin naming an unknown provider already degrades to Auto; one
+    // naming a disabled provider is hard-blocked the same way.
+    return provider && isProviderEnabled(provider) ? pin : undefined;
+  }
+  return pin;
 }
 
-/** The models Auto may route to right now (Ollama plus any keyed cloud models). */
+/** The models Auto may route to right now (Ollama plus any keyed cloud models),
+ * minus anything disabled at either layer. */
 export function availableModels(): ModelInfo[] {
-  return modelRegistry.filter(isModelAvailable);
+  return modelRegistry.filter((m) => isModelAvailable(m) && isModelEnabled(m));
 }
 
-/** The local Ollama models - the only candidates triage ever routes among. */
+/** The local Ollama models, minus anything disabled at either layer. The
+ * default candidate pool for triage (the "ollama" provider choice). */
 export function localModels(): ModelInfo[] {
-  return modelRegistry.filter((m) => m.provider === 'ollama');
+  return modelRegistry.filter((m) => m.provider === 'ollama' && isModelEnabled(m));
+}
+
+/** The provider names the registry knows, in a stable order. */
+const providerNames: readonly ProviderName[] = providerIds;
+
+/**
+ * How the triage agent is routed, from `backend.json`'s `agents.triage.model`:
+ * a registered model id pins that exact model; a provider name routes by
+ * capability among that provider's enabled models; anything else (the default
+ * "ollama", an unknown name, or a provider with nothing enabled) falls back to
+ * the local models. Returned as the `(pin, candidates)` inputs the normal router
+ * takes, so triage reuses the same scoring and disable rules as every other
+ * agent - it is no longer hardwired to Ollama, but still defaults there.
+ */
+export function triageRouting(): { pin?: string; candidates: readonly ModelInfo[] } {
+  const choice = backendConfig.agents.triage.model;
+  if (modelById(choice)) {
+    return { pin: choice, candidates: availableModels() };
+  }
+  if ((providerNames as readonly string[]).includes(choice)) {
+    const pool = modelRegistry.filter(
+      (m) => m.provider === (choice as ProviderName) && isModelEnabled(m)
+    );
+    if (pool.length > 0) {
+      return { candidates: pool };
+    }
+  }
+  return { candidates: localModels() };
+}
+
+/** The registry entry triage will use, honouring the backend triage config. */
+export function routeTriageModel(requirements: CapabilityScores): ModelInfo {
+  const { pin, candidates } = triageRouting();
+  return routeModel(requirements, pin, candidates);
+}
+
+/** The wired AI SDK instance triage will use, honouring the backend triage config. */
+export function resolveTriageModel(requirements: CapabilityScores): RoutedModel {
+  const { pin, candidates } = triageRouting();
+  return resolveModel(requirements, pin, candidates);
 }
 
 /**
@@ -132,13 +238,23 @@ export function localModels(): ModelInfo[] {
  * fails with a helpful hint); otherwise the best weighted fit among
  * `candidates` (defaults to the currently-available models, so Auto never
  * routes to a cloud model whose key is not set).
+ *
+ * `complexity` (only the executor passes one) narrows the pool to the request's
+ * tier before scoring - but only when `myDevTeam.complexityRouting` is on, the
+ * gate read live here so every caller (the executor and the engine's
+ * model-selection mirror) honours it identically.
  */
 export function routeModel(
   requirements: CapabilityScores,
   pin?: string,
-  candidates: readonly ModelInfo[] = availableModels()
+  candidates: readonly ModelInfo[] = availableModels(),
+  complexity?: Complexity
 ): ModelInfo {
-  return selectModel(requirements, pin, candidates);
+  const tier = settings.complexityRoutingEnabled ? complexity : undefined;
+  // A disabled pin is dropped to Auto, and the predicate also drops a disabled
+  // member of an (otherwise enabled) pinned provider's pool - so disabling is an
+  // unbypassable hard block however the model would have been reached.
+  return selectModel(requirements, effectivePin(pin), candidates, tier, isModelEnabled);
 }
 
 /**
@@ -148,7 +264,7 @@ export function routeModel(
  * providerFactory, so this is belt-and-braces).
  */
 function instanceKey(info: ModelInfo): string {
-  return `${providers[info.provider].builtFrom ?? ''}::${info.id}`;
+  return `${providerCaches[info.provider].builtFrom ?? ''}::${info.id}`;
 }
 
 /**
@@ -159,9 +275,10 @@ function instanceKey(info: ModelInfo): string {
 export function resolveModel(
   requirements: CapabilityScores,
   pin?: string,
-  candidates?: readonly ModelInfo[]
+  candidates?: readonly ModelInfo[],
+  complexity?: Complexity
 ): RoutedModel {
-  const info = routeModel(requirements, pin, candidates);
+  const info = routeModel(requirements, pin, candidates, complexity);
   const factory = providerFactory(info.provider);
   const key = instanceKey(info);
   let model = instances.get(key);

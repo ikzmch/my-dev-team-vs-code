@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   PROTOCOL_VERSION,
+  PlanDecisionSchema,
+  PlanSchema,
   ReplySchema,
   RunRequestSchema,
   Reply,
@@ -71,9 +73,48 @@ describe('protocol schemas', () => {
         ],
       },
     };
+    const planningWithSummary: Reply = {
+      ...planning,
+      summary: { whatShips: 'a', howItsBuilt: 'b', testsAndDocs: 'c' },
+    };
     expect(ReplySchema.parse(oneshot)).toEqual(oneshot);
     expect(ReplySchema.parse(planning)).toEqual(planning);
+    expect(ReplySchema.parse(planningWithSummary)).toEqual(planningWithSummary);
+    // A summary missing a section is malformed.
+    expect(() =>
+      ReplySchema.parse({ ...planning, summary: { whatShips: 'a' } })
+    ).toThrow();
     expect(() => ReplySchema.parse({ intent: 'maybe', reason: 'r' })).toThrow();
+  });
+
+  it('carries the planner complexity on the plan as an optional field', () => {
+    // Additive: a plan without it still validates (an older engine, or a model
+    // that omitted it), and a known complexity is accepted.
+    expect(PlanSchema.parse({ summary: 's', steps: [{ title: 't', detail: 'd' }] })).toEqual({
+      summary: 's',
+      steps: [{ title: 't', detail: 'd' }],
+    });
+    expect(
+      PlanSchema.parse({
+        summary: 's',
+        steps: [{ title: 't', detail: 'd' }],
+        complexity: 'complex',
+      }).complexity
+    ).toBe('complex');
+    expect(() =>
+      PlanSchema.parse({ summary: 's', steps: [{ title: 't', detail: 'd' }], complexity: 'huge' })
+    ).toThrow();
+  });
+
+  it('accepts the three plan-review decisions and rejects anything else', () => {
+    expect(PlanDecisionSchema.parse({ kind: 'approve' })).toEqual({ kind: 'approve' });
+    expect(PlanDecisionSchema.parse({ kind: 'cancel' })).toEqual({ kind: 'cancel' });
+    expect(
+      PlanDecisionSchema.parse({ kind: 'revise', comment: 'fewer files' })
+    ).toEqual({ kind: 'revise', comment: 'fewer files' });
+    // A revise without a comment, or an unknown kind, is malformed.
+    expect(() => PlanDecisionSchema.parse({ kind: 'revise' })).toThrow();
+    expect(() => PlanDecisionSchema.parse({ kind: 'maybe' })).toThrow();
   });
 
   it('validates tool inputs per the contract schemas', () => {
@@ -168,6 +209,22 @@ describe('ReplyFolder', () => {
         { kind: 'text', text: 'Done.' },
       ],
     });
+  });
+
+  it('folds summary snapshots onto the progress after execution', () => {
+    const folder = new ReplyFolder();
+    folder.apply({ type: 'triaged', intent: 'planning', reason: 'steps' });
+    folder.apply({
+      type: 'execution-event',
+      index: 0,
+      event: { kind: 'tool', tool: 'write', input: 'a.ts', result: 'Wrote a.ts.' },
+    });
+    folder.apply({ type: 'summary-snapshot', summary: { whatShips: 'A' } });
+    const final = folder.apply({
+      type: 'summary-snapshot',
+      summary: { whatShips: 'A feature', howItsBuilt: 'B', testsAndDocs: 'C' },
+    });
+    expect(final?.summary).toEqual({ whatShips: 'A feature', howItsBuilt: 'B', testsAndDocs: 'C' });
   });
 
   it('folds the model-selected event onto the snapshot selection', () => {

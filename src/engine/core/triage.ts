@@ -1,10 +1,10 @@
 import { Agent } from '@mastra/core/agent';
 import { z } from 'zod';
-import { resolveModel, routeModel, localModels } from './models';
+import { routeTriageModel, resolveTriageModel } from './models';
 import { resolveTokenCounts, UsageReporter } from './usage';
 import { parseWithRepair } from './repair';
 import { agents } from '../config/agents';
-import { IntentSchema } from '../../protocol/types';
+import { ComplexitySchema, IntentSchema } from '../../protocol/types';
 
 /**
  * Triage decision for a user request:
@@ -19,27 +19,26 @@ export const TriageSchema = z.object({
   intent: IntentSchema.describe(
     '"oneshot" when the deliverable is text in the chat; "planning" when the workspace should change - any file to create or modify, even one small file.'
   ),
+  complexity: ComplexitySchema.describe(
+    'How demanding the work is: "simple" for a self-contained task needing little reasoning or exploration (e.g. a single small script); "moderate" for a typical change touching a few files; "complex" for multi-file changes, subtle debugging, or architectural/performance work.'
+  ),
   reason: z.string().describe('One short sentence explaining the choice.'),
 });
 
 export type TriageResult = z.infer<typeof TriageSchema>;
 
 export class Triage {
-  // Triage always routes among the local Ollama models only - never a pinned
-  // cloud model. It is a cheap, invisible classification, so it stays fast and
-  // free even when the user has pinned (or Auto-routed to) a paid model for
-  // the work that follows.
-  private readonly modelName = routeModel(
-    agents.triage.capabilities,
-    undefined,
-    localModels()
-  ).model;
+  // Triage routes per the backend `agents.triage.model` config: by default the
+  // local Ollama models (a cheap, invisible classification that stays fast and
+  // free even when a paid model is pinned for the work that follows), but an
+  // operator can point it at a specific model or another provider.
+  private readonly modelName = routeTriageModel(agents.triage.capabilities).model;
   private readonly agent = new Agent({
     id: agents.triage.id,
     name: agents.triage.name,
     description: agents.triage.description,
     instructions: agents.triage.instructions,
-    model: resolveModel(agents.triage.capabilities, undefined, localModels()),
+    model: resolveTriageModel(agents.triage.capabilities),
   });
 
   async classify(prompt: string, onUsage?: UsageReporter): Promise<TriageResult> {

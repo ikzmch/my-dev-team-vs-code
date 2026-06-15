@@ -29,18 +29,67 @@ import { settings } from '../../config/settings';
 const nextSlot = new Map<string, number>();
 
 /**
- * Reserve the next send slot for `key` and return how long (ms) to wait before
- * using it. `now` is injectable for tests. With throttling off (`rpm <= 0`)
- * there is no wait and no slot is consumed.
+ * A reserved send slot: how long to wait before using it, plus the bookkeeping
+ * `releaseSlot` needs to hand the slot back if the wait is aborted before the
+ * request ever goes out.
  */
-export function reserveSlot(key: string, rpm: number, now: number = Date.now()): number {
+interface SlotReservation {
+  key: string;
+  /** ms to wait before the slot is usable. */
+  wait: number;
+  /** The `nextSlot` value this reservation set (so a release can tell it is still the tail). */
+  reserved: number;
+  /** The `nextSlot` value before this reservation, to roll back to on release. */
+  previous: number;
+}
+
+/**
+ * Reserve the next send slot for `key`, returning the reservation. Spacing is
+ * `60_000 / rpm`; a burst queues onto successive slots. With throttling off
+ * (`rpm <= 0`) nothing is reserved and the wait is 0. `now` is injectable for
+ * tests.
+ */
+function acquireSlot(key: string, rpm: number, now: number = Date.now()): SlotReservation {
   if (rpm <= 0) {
-    return 0;
+    return { key, wait: 0, reserved: 0, previous: 0 };
   }
   const interval = 60_000 / rpm;
-  const earliest = Math.max(now, nextSlot.get(key) ?? 0);
-  nextSlot.set(key, earliest + interval);
-  return earliest - now;
+  const previous = nextSlot.get(key) ?? 0;
+  const earliest = Math.max(now, previous);
+  const reserved = earliest + interval;
+  nextSlot.set(key, reserved);
+  return { key, wait: earliest - now, reserved, previous };
+}
+
+/**
+ * Hand a reserved slot back when the request it was for never went out (the
+ * throttle wait was aborted). Without this, a cancelled call still consumed its
+ * slot and pushed every later call to the same provider needlessly further into
+ * the future. The rollback only applies when no later reservation has advanced
+ * past ours (`nextSlot` is still our value) - otherwise our slot is in the
+ * middle of the queue and cannot be cleanly reclaimed, so it is left as spacing.
+ * When the rollback empties the entry (our reservation was the first) it is
+ * deleted, so an aborted first call leaves no lingering state.
+ */
+function releaseSlot(reservation: SlotReservation): void {
+  if (reservation.reserved === 0 || nextSlot.get(reservation.key) !== reservation.reserved) {
+    return;
+  }
+  if (reservation.previous === 0) {
+    nextSlot.delete(reservation.key);
+  } else {
+    nextSlot.set(reservation.key, reservation.previous);
+  }
+}
+
+/**
+ * Reserve the next send slot for `key` and return how long (ms) to wait before
+ * using it. `now` is injectable for tests. With throttling off (`rpm <= 0`)
+ * there is no wait and no slot is consumed. A thin wrapper over `acquireSlot`
+ * for callers (and tests) that only need the wait and never release the slot.
+ */
+export function reserveSlot(key: string, rpm: number, now: number = Date.now()): number {
+  return acquireSlot(key, rpm, now).wait;
 }
 
 /** Drop all reserved slots - used by tests to isolate the shared state. */
@@ -137,9 +186,18 @@ async function withRateLimit<T>(
   signal?: AbortSignal
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const wait = reserveSlot(provider, settings.provider.requestsPerMinute);
-    if (wait > 0) {
-      await delay(wait, signal);
+    const reservation = acquireSlot(provider, settings.provider.requestsPerMinute);
+    if (reservation.wait > 0) {
+      try {
+        await delay(reservation.wait, signal);
+      } catch (err) {
+        // Aborted before the request went out: hand the slot back so a
+        // cancelled call does not push the provider's queue out for the calls
+        // behind it. (Once operation() below runs, the request was issued, so
+        // its slot is legitimately spent and is never released.)
+        releaseSlot(reservation);
+        throw err;
+      }
     }
     try {
       return await operation();

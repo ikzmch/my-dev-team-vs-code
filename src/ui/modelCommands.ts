@@ -14,6 +14,7 @@ import { ModelChoice } from '../protocol/types';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 import { CloudProvider, setApiKey } from '../config/credentials';
+import { cloudProviderDescriptors } from '../config/providers';
 
 const CONFIG_SECTION = 'myDevTeam';
 const MODEL_KEY = 'model';
@@ -70,7 +71,11 @@ export async function pickModel(engine: Engine): Promise<ModelChoice | undefined
   const items: ModelQuickPickItem[] = choices.map((c) => ({
     label: c.label + (c.id === current ? messages.model.currentSuffix : ''),
     description: c.id,
-    detail: c.available ? c.description : messages.model.unavailableDetail,
+    detail: c.disabled
+      ? messages.model.disabledDetail
+      : c.available
+      ? c.description
+      : messages.model.unavailableDetail,
     choice: c,
   }));
   const picked = await vscode.window.showQuickPick(items, {
@@ -116,22 +121,17 @@ export async function handleModelChatCommand(
   stream.markdown(messages.model.confirmation(match.label));
 }
 
-/** Provider labels shown in the Set API Key provider pick. */
-const PROVIDER_LABELS: Record<CloudProvider, string> = {
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  groq: 'Groq',
-};
-
 /**
  * The "Set API Key" command: pick a cloud provider, enter (or clear) its key,
  * and store it in SecretStorage (refreshing the in-memory cache so the next
- * run sees it). Keys never touch settings.json.
+ * run sees it). Keys never touch settings.json. The provider list and labels
+ * come from the single provider registry (config/providers.ts).
  */
 export async function runSetApiKeyCommand(secrets: vscode.SecretStorage): Promise<void> {
-  const providerItems = (Object.keys(PROVIDER_LABELS) as CloudProvider[]).map(
-    (provider) => ({ label: PROVIDER_LABELS[provider], provider })
-  );
+  const providerItems = cloudProviderDescriptors.map((d) => ({
+    label: d.label,
+    provider: d.id as CloudProvider,
+  }));
   const pickedProvider = await vscode.window.showQuickPick(providerItems, {
     placeHolder: messages.model.setKeyProviderPlaceholder,
   });

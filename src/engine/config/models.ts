@@ -19,7 +19,15 @@
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
+import { Complexity, ComplexitySchema } from '../../protocol/types';
+import {
+  providerIds,
+  providerLabels as registryProviderLabels,
+  type ProviderName,
+} from '../../config/providers';
 import modelFiles from 'glob:./models/*.md';
+
+export type { ProviderName } from '../../config/providers';
 
 /** The capability vocabulary models are scored on and agents weight. */
 export const capabilityNames = [
@@ -53,10 +61,27 @@ const ModelFrontmatterSchema = z.object({
    * ran" line - the one place the protocol exposes a concrete model identity.
    */
   label: z.string(),
-  /** Which provider hosts the model (see the factories in core/models.ts). */
-  provider: z.enum(['ollama', 'openai', 'anthropic', 'groq']),
+  /**
+   * Which provider hosts the model. The allowed ids are generated from the
+   * provider registry (config/providers.ts), so a model file naming an unknown
+   * provider fails at load with a clear message rather than registering a model
+   * the wiring cannot build.
+   */
+  provider: z.enum(providerIds, {
+    error: () =>
+      `Unknown provider in a model config file. Known providers: ${providerIds.join(', ')}.`,
+  }),
   /** Provider-specific model name, e.g. the Ollama tag or the API model id. */
   model: z.string(),
+  /**
+   * The model's weight class: how demanding a request it is meant for. The
+   * executor's candidate pool is narrowed to the request's complexity tier
+   * before capability scoring (see `selectModel`), so "simple" work routes to
+   * a cheaper model and "complex" work to a stronger one. Orthogonal to the
+   * capability scores (what kind of work), which still break ties within a
+   * tier. Defaults to "moderate" when a model file omits it.
+   */
+  tier: ComplexitySchema.default('moderate'),
   /** How good this model is at each capability, 0–1. */
   capabilities: CapabilityScoresSchema,
 });
@@ -65,8 +90,6 @@ export interface ModelInfo extends z.infer<typeof ModelFrontmatterSchema> {
   /** Human-facing note on the model's strengths (the markdown body). */
   description: string;
 }
-
-export type ProviderName = ModelInfo['provider'];
 
 function loadModel(raw: string): ModelInfo {
   const { data, body } = parseFrontmatter(raw);
@@ -108,13 +131,12 @@ export const AUTO_MODEL = 'auto';
  */
 export const PROVIDER_PIN_PREFIX = 'provider:';
 
-/** User-facing display names for the registry's providers. */
-export const providerLabels: Record<ProviderName, string> = {
-  ollama: 'Ollama',
-  openai: 'OpenAI',
-  anthropic: 'Anthropic',
-  groq: 'Groq',
-};
+/**
+ * User-facing display names for the registry's providers, re-exported from the
+ * provider registry (config/providers.ts) so this stays the engine's single
+ * import surface for provider identity.
+ */
+export const providerLabels: Record<ProviderName, string> = registryProviderLabels;
 
 /** The registered model with this id, or undefined for "auto"/unknown ids. */
 export function modelById(id: string | undefined): ModelInfo | undefined {
@@ -132,6 +154,41 @@ export function providerPinOf(pin: string | undefined): ProviderName | undefined
   }
   const name = pin.slice(PROVIDER_PIN_PREFIX.length) as ProviderName;
   return modelRegistry.some((m) => m.provider === name) ? name : undefined;
+}
+
+/** Tier as a 0-2 ordinal, so "nearest available tier" is an integer distance. */
+const tierOrdinal: Record<Complexity, number> = { simple: 0, moderate: 1, complex: 2 };
+
+/**
+ * Narrow a candidate pool to the request's complexity tier. Models tagged for
+ * that exact tier are preferred; when the pool has none (e.g. a local-only box
+ * with no "complex" model, or a provider missing a tier), it falls back to the
+ * nearest available tier by ordinal distance, breaking a distance tie toward
+ * the cheaper (lower) tier. The result is always non-empty when the pool is, so
+ * scoring still has something to choose from.
+ */
+export function tierPool(
+  pool: readonly ModelInfo[],
+  complexity: Complexity
+): readonly ModelInfo[] {
+  const exact = pool.filter((m) => m.tier === complexity);
+  if (exact.length > 0) {
+    return exact;
+  }
+  const want = tierOrdinal[complexity];
+  let bestTier: Complexity | undefined;
+  let bestKey = Infinity;
+  for (const m of pool) {
+    const ord = tierOrdinal[m.tier];
+    // Distance dominates (each step weighs 10, more than any ordinal); a
+    // distance tie then prefers the lower ordinal, i.e. the cheaper tier.
+    const key = Math.abs(ord - want) * 10 + ord;
+    if (key < bestKey) {
+      bestKey = key;
+      bestTier = m.tier;
+    }
+  }
+  return bestTier === undefined ? pool : pool.filter((m) => m.tier === bestTier);
 }
 
 /** Weighted fit of a model for a requirement profile: Σ weight × score. */
@@ -152,20 +209,36 @@ export function scoreModel(info: ModelInfo, requirements: CapabilityScores): num
  * pin falls back to the highest weighted fit among `candidates` (the whole
  * registry by default; the caller passes a narrower set to keep Auto from
  * routing to a model that cannot run - see core/models.ts).
+ *
+ * A `complexity` narrows the pool to the request's tier before scoring (see
+ * `tierPool`), so the same capability profile picks a cheaper model for simple
+ * work and a stronger one for complex work. It is skipped for a model pin (the
+ * user chose) and when the caller passes none; the provider-pin pool is still
+ * tier-narrowed, so e.g. "provider:anthropic" + simple picks Haiku.
+ *
+ * `isEnabled` is the disable predicate the runtime injects (core/models.ts): a
+ * disabled model is dropped from the provider-pin pool and from a candidate
+ * default, and a disabled pinned model falls through to scoring rather than
+ * being returned outright - so disabling cannot be bypassed by any kind of pin.
+ * It defaults to "everything enabled", keeping the pure function usable on its
+ * own (and in tests) without the runtime.
  */
 export function selectModel(
   requirements: CapabilityScores,
   pin?: string,
-  candidates: readonly ModelInfo[] = modelRegistry
+  candidates: readonly ModelInfo[] = modelRegistry,
+  complexity?: Complexity,
+  isEnabled: (info: ModelInfo) => boolean = () => true
 ): ModelInfo {
   const pinned = modelById(pin);
-  if (pinned) {
+  if (pinned && isEnabled(pinned)) {
     return pinned;
   }
   const provider = providerPinOf(pin);
-  const pool = provider
-    ? modelRegistry.filter((m) => m.provider === provider)
-    : candidates;
+  const base = provider
+    ? modelRegistry.filter((m) => m.provider === provider && isEnabled(m))
+    : candidates.filter(isEnabled);
+  const pool = complexity ? tierPool(base, complexity) : base;
   let best: ModelInfo | undefined;
   let bestScore = -Infinity;
   for (const info of pool) {
@@ -176,7 +249,9 @@ export function selectModel(
     }
   }
   if (!best) {
-    throw new Error('No models are available to select from.');
+    throw new Error(
+      'No models are available to select from (every candidate may be disabled).'
+    );
   }
   return best;
 }

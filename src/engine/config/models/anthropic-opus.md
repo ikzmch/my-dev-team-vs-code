@@ -3,6 +3,7 @@ id: anthropic-opus
 label: Claude Opus 4.8 (Anthropic)
 provider: anthropic
 model: claude-opus-4-8
+tier: complex
 capabilities:
   reasoning: 0.98
   coding: 0.97

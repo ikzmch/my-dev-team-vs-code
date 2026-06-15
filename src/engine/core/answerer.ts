@@ -1,7 +1,10 @@
 import { Agent } from '@mastra/core/agent';
 import { resolveModel, routeModel } from './models';
 import { resolveTokenCounts, UsageReporter } from './usage';
+import { condenseThinking } from './thinking';
 import { agents } from '../config/agents';
+import { settings } from '../../config/settings';
+import type { ThinkingProgress } from './executor';
 
 /**
  * Receives the answer-so-far as the model streams it. Each call carries the
@@ -39,28 +42,48 @@ export class Answerer {
   async answer(
     prompt: string,
     onPartial?: AnswerProgress,
-    onUsage?: UsageReporter
+    onUsage?: UsageReporter,
+    onThinking?: ThinkingProgress
   ): Promise<string> {
     const output = await this.agent.stream([{ role: 'user', content: prompt }]);
-    // The text stream delivers deltas; accumulate them into snapshots for the
-    // caller. Reading the stream is also what drives the generation to
-    // completion, so this loop runs even when nobody listens.
-    const reader = output.textStream.getReader();
+    // The full chunk stream so a reasoning model's `<think>` output can be
+    // split from the answer: `text-delta` chunks accumulate into the answer
+    // snapshots, `reasoning` chunks feed the (ephemeral) thinking sink and are
+    // kept out of the answer. Reading the stream is also what drives the
+    // generation to completion, so this loop runs even when nobody listens.
+    const reader = output.fullStream.getReader();
     let text = '';
+    let reasoning = '';
     for (;;) {
       const { done, value } = await reader.read();
       if (done) {
         break;
       }
-      if (value) {
-        text += value;
-        onPartial?.(text);
+      const chunk = value as { type: string; payload?: { text?: string } };
+      if (chunk.type === 'text-delta') {
+        const delta = chunk.payload?.text ?? '';
+        if (delta) {
+          text += delta;
+          onPartial?.(text);
+        }
+      } else if (
+        onThinking &&
+        (chunk.type === 'reasoning-delta' || chunk.type === 'reasoning')
+      ) {
+        const delta = chunk.payload?.text ?? '';
+        if (delta) {
+          reasoning += delta;
+          const line = condenseThinking(reasoning, settings.thinking.lineMaxChars);
+          if (line) {
+            onThinking(line);
+          }
+        }
       }
     }
     onUsage?.({
       model: this.modelName,
       ...(await resolveTokenCounts(output, prompt, text)),
     });
-    return output.text;
+    return text;
   }
 }

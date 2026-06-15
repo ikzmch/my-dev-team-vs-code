@@ -37,7 +37,7 @@ export async function collectInstructions(): Promise<ProjectInstructions | undef
     }
     const max = settings.instructions.maxChars;
     if (text.length > max) {
-      text = text.slice(0, max) + '\n…(truncated)';
+      text = text.slice(0, max) + '\n. . . (truncated)';
     }
     return { source: name, text };
   }

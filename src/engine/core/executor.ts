@@ -1,16 +1,24 @@
 import { Agent } from '@mastra/core/agent';
 import { resolveModel, routeModel } from './models';
-import { buildAgentTools, PROGRESS_TOOL, ProgressReportSchema } from './agentTools';
+import {
+  buildAgentTools,
+  renderDynamicToolsSection,
+  PROGRESS_TOOL,
+  ProgressReportSchema,
+} from './agentTools';
 import { resolveTokenCounts, UsageReporter } from './usage';
+import { condenseThinking } from './thinking';
 import { agents } from '../config/agents';
 import { toolConfigs } from '../config/tools';
 import { settings } from '../../config/settings';
 import {
+  DynamicToolDef,
   ExecutionEvent,
   Execution,
   ExecutionSchema,
   PartialExecution,
 } from '../../protocol/types';
+import { Complexity } from '../../protocol/types';
 import { ToolHost } from '../../protocol/toolContract';
 
 export { ExecutionSchema } from '../../protocol/types';
@@ -28,6 +36,14 @@ export type ExecutionResult = Execution;
 
 /** Receives execution snapshots as the run produces them. Must not throw. */
 export type ExecutionProgress = (partial: PartialExecution) => void;
+
+/**
+ * Receives a condensed line of the executor's reasoning as it works (the last
+ * non-empty line of a reasoning model's `<think>` output, replaced as it
+ * grows). Ephemeral and kept out of the transcript - it is a live status
+ * signal, not part of what the run produced. Must not throw.
+ */
+export type ThinkingProgress = (line: string) => void;
 
 function truncate(text: string, max: number): string {
   return text.length > max ? text.slice(0, max) + '…' : text;
@@ -75,7 +91,7 @@ function inputSnippet(tool: string, args: unknown): string | undefined {
     .slice(0, maxLines)
     .map((line) => truncate(line, settings.executor.inputPreviewMaxChars));
   if (lines.length > maxLines) {
-    head.push('…(truncated)');
+    head.push('. . . (truncated)');
   }
   return head.join('\n');
 }
@@ -107,18 +123,42 @@ export class Executor {
 
   /**
    * `modelPin` is the user's per-run model choice (a registry id, or "auto"/
-   * undefined for the capability router). The executor is already built per
-   * run (it is bound to the run's ToolHost), so the choice is resolved here.
+   * undefined for the capability router). `complexity` is triage's judgement of
+   * how demanding the work is: it narrows the routed model to the request's tier
+   * (cheaper for simple work, stronger for complex), unless the user pinned a
+   * model or turned `complexityRouting` off. The executor is built once the
+   * complexity is known (the workflow's execute step builds it), so both are
+   * resolved here.
    */
-  constructor(toolHost: ToolHost, modelPin?: string) {
-    this.modelName = routeModel(agents.executor.capabilities, modelPin).model;
+  constructor(
+    toolHost: ToolHost,
+    modelPin?: string,
+    complexity?: Complexity,
+    // The per-run skill bodies the executor's `skill` tool returns by name
+    // (built-in + workspace skills, resolved by the workflow's execute step).
+    skillBodies?: ReadonlyMap<string, string>,
+    // The run's MCP tools (discovered client-side, shipped on the request).
+    // Each becomes a tool proxy, and they are listed in an extra prompt section
+    // so the model knows they exist alongside the built-in tools.
+    dynamicTools?: readonly DynamicToolDef[]
+  ) {
+    this.modelName = routeModel(
+      agents.executor.capabilities,
+      modelPin,
+      undefined,
+      complexity
+    ).model;
+    const dynamicSection = renderDynamicToolsSection(dynamicTools ?? []);
+    const instructions = dynamicSection
+      ? `${agents.executor.instructions}\n\n${dynamicSection}`
+      : agents.executor.instructions;
     this.agent = new Agent({
       id: agents.executor.id,
       name: agents.executor.name,
       description: agents.executor.description,
-      instructions: agents.executor.instructions,
-      model: resolveModel(agents.executor.capabilities, modelPin),
-      tools: buildAgentTools(toolHost, () => this.currentSignal),
+      instructions,
+      model: resolveModel(agents.executor.capabilities, modelPin, undefined, complexity),
+      tools: buildAgentTools(toolHost, () => this.currentSignal, skillBodies, dynamicTools),
     });
   }
 
@@ -126,11 +166,12 @@ export class Executor {
     prompt: string,
     onPartial?: ExecutionProgress,
     signal?: AbortSignal,
-    onUsage?: UsageReporter
+    onUsage?: UsageReporter,
+    onThinking?: ThinkingProgress
   ): Promise<ExecutionResult> {
     this.currentSignal = signal;
     try {
-      return await this.run(prompt, onPartial, signal, onUsage);
+      return await this.run(prompt, onPartial, signal, onUsage, onThinking);
     } finally {
       this.currentSignal = undefined;
     }
@@ -140,7 +181,8 @@ export class Executor {
     prompt: string,
     onPartial: ExecutionProgress | undefined,
     signal: AbortSignal | undefined,
-    onUsage: UsageReporter | undefined
+    onUsage: UsageReporter | undefined,
+    onThinking: ThinkingProgress | undefined
   ): Promise<ExecutionResult> {
     // Forward the signal so Mastra stops the tool-calling loop when the request
     // is cancelled; only add it when present so the no-signal call still passes
@@ -161,6 +203,11 @@ export class Executor {
     // emission, not a live view that later mutations of the last event change.
     const emit = () => onPartial?.({ events: events.map((event) => ({ ...event })) });
 
+    // The model's reasoning, accumulated only to condense the latest line for
+    // the thinking sink. Deliberately not added to `events`: thinking is an
+    // ephemeral status signal, not part of the transcript the run produced.
+    let reasoning = '';
+
     // Drain the full chunk stream: reading it is what drives the tool-calling
     // loop to completion, so this runs even when nobody listens.
     const reader = output.fullStream.getReader();
@@ -171,6 +218,25 @@ export class Executor {
       }
       const chunk = value as { type: string; payload?: any };
       switch (chunk.type) {
+        // A reasoning model streams its `<think>` monologue as reasoning chunks
+        // (Mastra surfaces them as `reasoning-delta`/`reasoning`). Condense the
+        // buffer to its latest line and forward it as live thinking; never push
+        // it to `events`, so it stays out of the transcript. Skipped entirely
+        // when nobody is listening (the setting is off).
+        case 'reasoning-delta':
+        case 'reasoning': {
+          if (onThinking) {
+            const delta: string = chunk.payload?.text ?? '';
+            if (delta) {
+              reasoning += delta;
+              const line = condenseThinking(reasoning, settings.thinking.lineMaxChars);
+              if (line) {
+                onThinking(line);
+              }
+            }
+          }
+          break;
+        }
         case 'text-delta': {
           const delta: string = chunk.payload?.text ?? '';
           if (!delta) {

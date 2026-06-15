@@ -2,11 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   APPROVAL_COMMAND_ID,
   ChatApprover,
+  ChatPlanReviewer,
+  PLAN_REVIEW_COMMAND_ID,
   createHandler,
   renderReply,
   PARTICIPANT_ID,
 } from '../src/ui/chatParticipant';
-import { Reply, ReplyProgress } from '../src/protocol/types';
+import { PartialSummary, Reply, ReplyProgress } from '../src/protocol/types';
 import { RunEvent } from '../src/protocol/events';
 import {
   Engine,
@@ -15,6 +17,7 @@ import {
 } from '../src/protocol/engine';
 import { ToolHost } from '../src/protocol/toolContract';
 import { EvalLog, EVAL_LOG_FILENAME } from '../src/client/evalLog';
+import { ChangeTracker } from '../src/client/changeTracker';
 import { LocalEngine, modelSelection } from '../src/engine/localEngine';
 import { TriageResult } from '../src/engine/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/engine/core/planner';
@@ -143,15 +146,42 @@ function makeEngine(
 }
 
 function emitted(stream: ReturnType<typeof fakeStream>): string {
-  return stream.markdown.mock.calls.map((c) => c[0]).join('');
+  return stream.markdown.mock.calls
+    .map((c) => (typeof c[0] === 'string' ? c[0] : c[0].value))
+    .join('');
+}
+
+/**
+ * Extract the approval command links rendered into a stream, in render order.
+ * The approver now emits the Approve/Decline choices as inline trusted-markdown
+ * command links (`[Approve](command:<id>?<encoded args>)`) rather than
+ * stream.button parts, so a test "clicks" one by parsing the link and invoking
+ * its registered command with the decoded arguments.
+ */
+function approvalLinks(
+  stream: ReturnType<typeof fakeStream>
+): Array<{ command: string; arguments: unknown[] }> {
+  const links: Array<{ command: string; arguments: unknown[] }> = [];
+  for (const call of stream.markdown.mock.calls) {
+    const value: string = typeof call[0] === 'string' ? call[0] : call[0].value;
+    const re = /\(command:([^?)]+)\?([^)]*)\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(value)) !== null) {
+      links.push({
+        command: m[1],
+        arguments: JSON.parse(decodeURIComponent(m[2])),
+      });
+    }
+  }
+  return links;
 }
 
 describe('ChatApprover', () => {
   /**
    * Wire an approver the way activate() does: registered command plus an
    * open session for a request's stream. Returns a click(n) helper that
-   * presses the n-th rendered button by invoking the registered command with
-   * that button's arguments.
+   * presses the n-th rendered approval link by invoking the registered command
+   * with that link's decoded arguments.
    */
   function wiredApprover() {
     const approver = new ChatApprover();
@@ -160,31 +190,32 @@ describe('ChatApprover', () => {
     const stream = fakeStream();
     const session = approver.openSession(stream as any);
     const click = (n: number) => {
-      const button = stream.button.mock.calls[n][0] as {
-        command: string;
-        arguments: unknown[];
-      };
-      __state.registeredCommands.get(button.command)!(...button.arguments);
+      const link = approvalLinks(stream)[n];
+      __state.registeredCommands.get(link.command)!(...link.arguments);
     };
     return { approver, stream, session, click, context };
   }
 
-  it('renders the question with Approve/Decline buttons into the chat', async () => {
+  it('renders the question with inline Approve/Decline links into the chat', async () => {
     const { approver, stream, click } = wiredApprover();
 
     const pending = approver.confirm('Run command', 'preview body');
     expect(stream.markdown).toHaveBeenCalledOnce();
-    expect(stream.markdown.mock.calls[0][0]).toContain('**Run command?**');
-    expect(stream.markdown.mock.calls[0][0]).toContain('preview body');
-    expect(stream.button).toHaveBeenCalledTimes(2);
-    expect(stream.button.mock.calls[0][0]).toMatchObject({
-      command: APPROVAL_COMMAND_ID,
-      title: 'Approve',
-    });
-    expect(stream.button.mock.calls[1][0]).toMatchObject({
-      command: APPROVAL_COMMAND_ID,
-      title: 'Decline',
-    });
+    const md = stream.markdown.mock.calls[0][0] as {
+      value: string;
+      isTrusted: unknown;
+    };
+    expect(md.value).toContain('**Run command?**');
+    expect(md.value).toContain('preview body');
+    expect(md.value).toContain('[Approve](command:');
+    expect(md.value).toContain('[Decline](command:');
+    // Trust is scoped to just the approval command, so no other command: link
+    // in the block could fire.
+    expect(md.isTrusted).toEqual({ enabledCommands: [APPROVAL_COMMAND_ID] });
+
+    const links = approvalLinks(stream);
+    expect(links).toHaveLength(2);
+    expect(links[0].command).toBe(APPROVAL_COMMAND_ID);
 
     click(0); // Approve
     await expect(pending).resolves.toBe(true);
@@ -203,7 +234,7 @@ describe('ChatApprover', () => {
 
     const first = approver.confirm('Run command', 'one');
     const second = approver.confirm('Run command', 'two');
-    expect(stream.button).toHaveBeenCalledTimes(4);
+    expect(approvalLinks(stream)).toHaveLength(4);
 
     click(3); // decline the second
     click(0); // approve the first
@@ -244,7 +275,7 @@ describe('ChatApprover', () => {
 
     await expect(approver.confirm('Run command', '$ ls')).resolves.toBe(true);
     expect(stream.markdown).not.toHaveBeenCalled();
-    expect(stream.button).not.toHaveBeenCalled();
+    expect(approvalLinks(stream)).toHaveLength(0);
   });
 
   it('survives a disposed stream and still asks via the modal', async () => {
@@ -280,11 +311,8 @@ describe('ChatApprover', () => {
     await expect(pendingA).resolves.toBe(false);
 
     // B's approval survived A's teardown and its Approve click still settles.
-    const button = streamB.button.mock.calls[0][0] as {
-      command: string;
-      arguments: unknown[];
-    };
-    __state.registeredCommands.get(button.command)!(...button.arguments);
+    const link = approvalLinks(streamB)[0];
+    __state.registeredCommands.get(link.command)!(...link.arguments);
     await expect(pendingB).resolves.toBe(true);
     sessionB.dispose();
   });
@@ -295,6 +323,115 @@ describe('ChatApprover', () => {
     session.dispose();
     expect(() => session.dispose()).not.toThrow();
     await expect(pending).resolves.toBe(false);
+  });
+
+  it('renders a correlated confirm in the owning session, not the most recent (B-2)', async () => {
+    // Two concurrent turns: a run-A tool call carries A's id, so its approval
+    // must render in A's stream even though B's session opened later.
+    const approver = new ChatApprover();
+    const context = { subscriptions: [] as unknown[] };
+    approver.register(context as any);
+
+    const streamA = fakeStream();
+    approver.openSession(streamA as any, 'runA');
+    const streamB = fakeStream();
+    approver.openSession(streamB as any, 'runB'); // most recent
+
+    const pending = approver.confirm('Run command', 'a', 'runA');
+    expect(streamB.markdown).not.toHaveBeenCalled();
+    const link = approvalLinks(streamA)[0];
+    expect(link).toBeDefined();
+    __state.registeredCommands.get(link.command)!(...link.arguments); // Approve
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it('falls back to the modal when the correlated session is gone (B-2)', async () => {
+    // The owning run's session already closed: the prompt must not leak into a
+    // concurrent turn's stream, so it drops to the modal rather than the most
+    // recent session.
+    const approver = new ChatApprover();
+    const streamOther = fakeStream();
+    approver.openSession(streamOther as any, 'otherRun');
+    __state.warningResponse = 'Approve';
+
+    await expect(approver.confirm('Run command', 'x', 'goneRun')).resolves.toBe(true);
+    expect(streamOther.markdown).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChatPlanReviewer', () => {
+  /** Wire a reviewer the way activate() does and return a click(n, choice) helper. */
+  function wiredReviewer() {
+    const reviewer = new ChatPlanReviewer();
+    const context = { subscriptions: [] as unknown[] };
+    reviewer.register(context as any);
+    const stream = fakeStream();
+    const session = reviewer.openSession(stream as any);
+    const click = (n: number) => {
+      const link = approvalLinks(stream)[n];
+      return __state.registeredCommands.get(link.command)!(...link.arguments);
+    };
+    return { reviewer, stream, session, click };
+  }
+
+  const aReviewedPlan = { summary: 's', steps: [{ title: 't', detail: 'd' }], complexity: 'complex' as const };
+
+  it('renders the gate with inline Approve/Cancel/Revise links into the chat', async () => {
+    const { reviewer, stream } = wiredReviewer();
+    void reviewer.review(aReviewedPlan, 'complex');
+    const md = stream.markdown.mock.calls[0][0] as { value: string; isTrusted: unknown };
+    expect(md.value).toContain('Approve this plan before it runs?');
+    expect(md.value).toContain('complexity: `complex`');
+    expect(md.value).toContain('[Approve](command:');
+    expect(md.value).toContain('[Cancel](command:');
+    expect(md.value).toContain('[Revise](command:');
+    expect(md.isTrusted).toEqual({ enabledCommands: [PLAN_REVIEW_COMMAND_ID] });
+    const links = approvalLinks(stream);
+    expect(links).toHaveLength(3);
+    expect(links[0].command).toBe(PLAN_REVIEW_COMMAND_ID);
+  });
+
+  it('resolves approve and cancel from their links', async () => {
+    const r1 = wiredReviewer();
+    const approve = r1.reviewer.review(aReviewedPlan, 'complex');
+    r1.click(0);
+    await expect(approve).resolves.toEqual({ kind: 'approve' });
+
+    const r2 = wiredReviewer();
+    const cancel = r2.reviewer.review(aReviewedPlan, 'complex');
+    r2.click(1);
+    await expect(cancel).resolves.toEqual({ kind: 'cancel' });
+  });
+
+  it('opens an input box for a revise comment and returns it', async () => {
+    const { reviewer, click } = wiredReviewer();
+    __state.inputBoxResponse = '  use fewer files  ';
+    const pending = reviewer.review(aReviewedPlan, 'complex');
+    await click(2); // Revise opens the input box, then settles
+    await expect(pending).resolves.toEqual({ kind: 'revise', comment: 'use fewer files' });
+  });
+
+  it('treats a dismissed or empty revise comment as a cancel', async () => {
+    const { reviewer, click } = wiredReviewer();
+    __state.inputBoxResponse = undefined; // user dismissed the box
+    const pending = reviewer.review(aReviewedPlan, 'complex');
+    await click(2);
+    await expect(pending).resolves.toEqual({ kind: 'cancel' });
+  });
+
+  it('cancels a pending review when its session is disposed', async () => {
+    const { reviewer, session } = wiredReviewer();
+    const pending = reviewer.review(aReviewedPlan, 'complex');
+    session.dispose();
+    await expect(pending).resolves.toEqual({ kind: 'cancel' });
+  });
+
+  it('falls back to the modal when no session is open', async () => {
+    const reviewer = new ChatPlanReviewer();
+    __state.warningResponse = 'Approve';
+    await expect(reviewer.review(aReviewedPlan, 'complex')).resolves.toEqual({ kind: 'approve' });
+    __state.warningResponse = undefined; // dismissed -> cancel
+    await expect(reviewer.review(aReviewedPlan, 'complex')).resolves.toEqual({ kind: 'cancel' });
   });
 });
 
@@ -320,6 +457,33 @@ describe('createHandler', () => {
     expect(text).toContain('**Answer:**\n\nIt is **4**.');
     // No custom progress label: the chat shows the standard indicator.
     expect(stream.progress).not.toHaveBeenCalled();
+  });
+
+  it('shows the model thinking as transient progress, never in the reply', async () => {
+    const reply: Reply = { intent: 'oneshot', reason: 'simple', answer: 'It is 4.' };
+    const engine: Engine = {
+      kind: 'local',
+      startRun: (_request, client) => {
+        client.onEvent({ type: 'triaged', intent: 'oneshot', reason: 'simple' });
+        client.onEvent({ type: 'thinking', text: 'working it out' });
+        client.onEvent({ type: 'done', reply });
+        return { result: Promise.resolve(reply), cancel: vi.fn() };
+      },
+      startupWarnings: async () => [],
+    };
+    const stream = fakeStream();
+
+    await createHandler(() => engine, hostStub)(
+      { prompt: 'what is 2+2', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    // Thinking surfaces as a transient progress line, prefixed so it reads as
+    // reasoning, and is dropped from the appended reply markdown.
+    expect(stream.progress).toHaveBeenCalledWith('Thinking: working it out');
+    expect(emitted(stream)).not.toContain('working it out');
   });
 
   it('renders a planning request as a checklist plus the execution transcript', async () => {
@@ -691,7 +855,7 @@ describe('createHandler', () => {
       fakeStream() as any,
       fakeToken() as any
     );
-    expect(seen.answerer).toContain('…(truncated)');
+    expect(seen.answerer).toContain('. . . (truncated)');
   });
 
   it('replaces an oversized attached file with a notice, without reading it', async () => {
@@ -809,6 +973,38 @@ describe('createHandler', () => {
       )
     ).resolves.toBeDefined();
     expect(stream.markdown).not.toHaveBeenCalled();
+  });
+});
+
+describe('renderReply plan complexity', () => {
+  it('shows the planner complexity in the plan block, not the triage block', () => {
+    const reply: Reply = {
+      intent: 'planning',
+      reason: 'needs steps',
+      complexity: 'moderate', // triage's value: must not be the one rendered
+      plan: { ...aPlan, complexity: 'complex' },
+      execution: anExecution,
+    };
+    const text = renderReply(reply, true);
+    // The shown complexity is the planner's, and it sits after the plan steps
+    // (before the execution), never inside the triage block.
+    expect(text).toContain('**Complexity:** `complex`');
+    expect(text).not.toContain('`moderate`');
+    const triageEnd = text.indexOf('**Reason:**');
+    const complexityAt = text.indexOf('**Complexity:**');
+    const planAt = text.indexOf('**Plan:**');
+    expect(complexityAt).toBeGreaterThan(planAt);
+    expect(complexityAt).toBeGreaterThan(triageEnd);
+  });
+
+  it('omits the complexity line when the plan carries none', () => {
+    const reply: Reply = {
+      intent: 'planning',
+      reason: 'needs steps',
+      plan: aPlan, // no complexity
+      execution: anExecution,
+    };
+    expect(renderReply(reply, true)).not.toContain('**Complexity:**');
   });
 });
 
@@ -1226,7 +1422,7 @@ describe('createHandler conversation history', () => {
     const huge = 'z'.repeat(settings.history.maxTurnChars + 100);
     const seen = await handle([new ChatRequestTurn(huge)]);
 
-    expect(seen.answerer).toContain('…(truncated)');
+    expect(seen.answerer).toContain('. . . (truncated)');
     expect(seen.answerer).not.toContain('z'.repeat(settings.history.maxTurnChars + 1));
   });
 
@@ -1937,6 +2133,66 @@ describe('renderReply', () => {
     );
     expect(final.startsWith(previous)).toBe(true);
   });
+
+  const aSummary = {
+    whatShips: 'A change line',
+    howItsBuilt: 'A client seam',
+    testsAndDocs: 'New tests; DESIGN updated',
+  };
+
+  const withSummary = (summary: PartialSummary): ReplyProgress => ({
+    intent: 'planning',
+    reason: 'needs steps',
+    plan: aPlan,
+    execution: anExecution,
+    summary,
+  });
+
+  it('renders the three summary sections after the execution transcript', () => {
+    const text = renderReply(withSummary(aSummary), true);
+    const executionAt = text.indexOf('**Execution:**');
+    const summaryAt = text.indexOf('**Summary:**');
+    expect(summaryAt).toBeGreaterThan(executionAt);
+    expect(text).toContain('**What ships:** A change line');
+    expect(text).toContain("**How it's built:** A client seam");
+    expect(text).toContain('**Tests and docs:** New tests; DESIGN updated');
+  });
+
+  it('renders no Summary header when the reply carries none', () => {
+    const text = renderReply(
+      { intent: 'planning', reason: 'needs steps', plan: aPlan, execution: anExecution },
+      true
+    );
+    expect(text).not.toContain('**Summary:**');
+  });
+
+  it('withholds a summary section until it starts streaming', () => {
+    // Only whatShips so far: the How / Tests headers must not appear yet, or
+    // streamed renders would stop being prefix-extensions.
+    const text = renderReply(withSummary({ whatShips: 'A change' }), false);
+    expect(text).toContain('**What ships:** A change');
+    expect(text).not.toContain("**How it's built:**");
+    expect(text).not.toContain('**Tests and docs:**');
+  });
+
+  it('renders growing summary snapshots as prefix-extensions of each other', () => {
+    const snapshots: PartialSummary[] = [
+      { whatShips: 'A' },
+      { whatShips: 'A change line' },
+      { whatShips: 'A change line', howItsBuilt: 'A client' },
+      { whatShips: 'A change line', howItsBuilt: 'A client seam' },
+      { whatShips: 'A change line', howItsBuilt: 'A client seam', testsAndDocs: 'New' },
+      aSummary,
+    ];
+    let previous = renderReply(withSummary({}), false); // execution, no summary yet
+    for (const snapshot of snapshots) {
+      const rendered = renderReply(withSummary(snapshot), false);
+      expect(rendered.startsWith(previous)).toBe(true);
+      previous = rendered;
+    }
+    const final = renderReply(withSummary(aSummary), true);
+    expect(final.startsWith(previous)).toBe(true);
+  });
 });
 
 describe('module constants', () => {
@@ -1998,5 +2254,134 @@ describe('createHandler protocol envelope', () => {
     );
 
     expect(receivedHost).toBe(hostStub);
+  });
+});
+
+describe('createHandler change summary', () => {
+  const aReply: Reply = { intent: 'planning', reason: 'needs steps', plan: aPlan };
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.mocked(console.log).mockRestore();
+  });
+
+  /**
+   * An engine that, while the run is in flight (the handler's change session is
+   * the newest open one), reports the given file changes to the tracker - the
+   * way the real executor's write/edit calls land through the ToolHost - then
+   * settles with a plan reply.
+   */
+  function writingEngine(
+    tracker: ChangeTracker,
+    reports: Array<[path: string, before: string, after: string]>
+  ): Engine {
+    return {
+      kind: 'local',
+      startRun: (_request, client) => {
+        client.onEvent({ type: 'triaged', intent: 'planning', reason: 'needs steps' });
+        for (const [path, before, after] of reports) {
+          tracker.report(path, before, after);
+        }
+        client.onEvent({ type: 'done', reply: aReply });
+        return { result: Promise.resolve(aReply), cancel: vi.fn() };
+      },
+      startupWarnings: async () => [],
+    };
+  }
+
+  it('appends a Changes line summing the files the run wrote', async () => {
+    const tracker = new ChangeTracker();
+    const stream = fakeStream();
+    const engine = writingEngine(tracker, [
+      ['a.ts', '', 'one\ntwo\nthree'], // create: +3
+      ['b.ts', 'x\ny\nz', 'x'], // -2
+    ]);
+
+    await createHandler(() => engine, hostStub, undefined, undefined, tracker)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).toContain('**Changes:** 2 files changed, +3 -2');
+  });
+
+  it('uses the singular "file" for a single changed file', async () => {
+    const tracker = new ChangeTracker();
+    const stream = fakeStream();
+    const engine = writingEngine(tracker, [['a.ts', '', 'only']]);
+
+    await createHandler(() => engine, hostStub, undefined, undefined, tracker)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).toContain('**Changes:** 1 file changed, +1 -0');
+  });
+
+  it('omits the Changes line when the run wrote nothing', async () => {
+    const tracker = new ChangeTracker();
+    const stream = fakeStream();
+    const engine = writingEngine(tracker, []);
+
+    await createHandler(() => engine, hostStub, undefined, undefined, tracker)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).not.toContain('**Changes:**');
+  });
+
+  it('omits the Changes line when a file is rewritten to identical content', async () => {
+    const tracker = new ChangeTracker();
+    const stream = fakeStream();
+    const engine = writingEngine(tracker, [['a.ts', 'same', 'same']]);
+
+    await createHandler(() => engine, hostStub, undefined, undefined, tracker)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).not.toContain('**Changes:**');
+  });
+
+  it('suppresses the Changes line when the setting is off', async () => {
+    __setConfig('myDevTeam.changes.showInChat', false);
+    const tracker = new ChangeTracker();
+    const stream = fakeStream();
+    const engine = writingEngine(tracker, [['a.ts', '', 'x']]);
+
+    await createHandler(() => engine, hostStub, undefined, undefined, tracker)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken() as any
+    );
+
+    expect(emitted(stream)).not.toContain('**Changes:**');
+  });
+
+  it('renders nothing - including the Changes line - on a cancelled turn', async () => {
+    const tracker = new ChangeTracker();
+    const stream = fakeStream();
+    const engine = writingEngine(tracker, [['a.ts', '', 'x']]);
+
+    await createHandler(() => engine, hostStub, undefined, undefined, tracker)(
+      { prompt: 'add a feature', references: [] } as any,
+      { history: [] } as any,
+      stream as any,
+      fakeToken(true) as any
+    );
+
+    expect(emitted(stream)).not.toContain('**Changes:**');
   });
 });

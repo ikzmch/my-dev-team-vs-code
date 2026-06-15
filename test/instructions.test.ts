@@ -47,9 +47,9 @@ describe('collectInstructions', () => {
     __setFile('AGENTS.md', 'x'.repeat(settings.instructions.maxChars + 100));
     const result = await collectInstructions();
     expect(result?.text.length).toBeLessThanOrEqual(
-      settings.instructions.maxChars + '\n…(truncated)'.length
+      settings.instructions.maxChars + '\n. . . (truncated)'.length
     );
-    expect(result?.text.endsWith('…(truncated)')).toBe(true);
+    expect(result?.text.endsWith('. . . (truncated)')).toBe(true);
   });
 
   it('is disabled by an empty configured file list', async () => {

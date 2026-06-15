@@ -203,6 +203,81 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.search.contentMaxMatches).toBe(defaults.search.contentMaxMatches);
     expect(settings.executor.snippetLines).toBe(defaults.chat.toolSnippetLines);
     expect(settings.telemetry.evalLogEnabled).toBe(defaults.telemetry.evalLog);
+    expect(settings.disabledProviders).toEqual([]);
+    expect(settings.disabledModels).toEqual([]);
+  });
+
+  it('reads the disabled-provider/model lists, keeping only non-blank strings', () => {
+    __setConfig('myDevTeam.disabledProviders', ['anthropic', '  ', 7, 'groq']);
+    __setConfig('myDevTeam.disabledModels', [' qwen3-coder ', '']);
+    expect(settings.disabledProviders).toEqual(['anthropic', 'groq']);
+    expect(settings.disabledModels).toEqual(['qwen3-coder']);
+  });
+
+  it('falls back to an empty disable list when the value is not an array', () => {
+    __setConfig('myDevTeam.disabledProviders', 'anthropic');
+    expect(settings.disabledProviders).toEqual([]);
+  });
+
+  it('parses configured MCP servers, dropping invalid entries', () => {
+    __setConfig('myDevTeam.mcp.servers', {
+      fs: { command: 'npx', args: ['-y', 'server-fs', '.'], env: { TOKEN: 'x' } },
+      bare: { command: 'run-it' },
+      noCommand: { args: ['x'] },
+      blankCommand: { command: '   ' },
+      'bad name': { command: 'x' },
+      badArgs: { command: 'y', args: ['ok', 7] },
+    });
+    const servers = settings.mcp.servers;
+    const byName = Object.fromEntries(servers.map((s) => [s.name, s]));
+    expect(Object.keys(byName).sort()).toEqual(['badArgs', 'bare', 'fs']);
+    expect(byName.fs).toEqual({
+      name: 'fs',
+      command: 'npx',
+      args: ['-y', 'server-fs', '.'],
+      env: { TOKEN: 'x' },
+    });
+    expect(byName.bare).toEqual({ name: 'bare', command: 'run-it' });
+    // A bad args array is dropped, but the server still loads (command is valid).
+    expect(byName.badArgs).toEqual({ name: 'badArgs', command: 'y' });
+  });
+
+  it('returns no MCP servers when the value is missing or not an object map', () => {
+    expect(settings.mcp.servers).toEqual([]);
+    __setConfig('myDevTeam.mcp.servers', ['fs']);
+    expect(settings.mcp.servers).toEqual([]);
+    __setConfig('myDevTeam.mcp.servers', 'fs');
+    expect(settings.mcp.servers).toEqual([]);
+  });
+
+  it('treats the change line as on by default: only the literal false disables it', () => {
+    expect(settings.changes.showInChatEnabled).toBe(true);
+    __setConfig('myDevTeam.changes.showInChat', false);
+    expect(settings.changes.showInChatEnabled).toBe(false);
+    __setConfig('myDevTeam.changes.showInChat', 'no');
+    expect(settings.changes.showInChatEnabled).toBe(true);
+    __setConfig('myDevTeam.changes.showInChat', 0);
+    expect(settings.changes.showInChatEnabled).toBe(true);
+  });
+
+  it('treats the summary as on by default: only the literal false disables it', () => {
+    expect(settings.summary.showInChatEnabled).toBe(true);
+    __setConfig('myDevTeam.summary.showInChat', false);
+    expect(settings.summary.showInChatEnabled).toBe(false);
+    __setConfig('myDevTeam.summary.showInChat', 'no');
+    expect(settings.summary.showInChatEnabled).toBe(true);
+    __setConfig('myDevTeam.summary.showInChat', 0);
+    expect(settings.summary.showInChatEnabled).toBe(true);
+  });
+
+  it('treats thinking as on by default: only the literal false disables it', () => {
+    expect(settings.thinking.showInChatEnabled).toBe(true);
+    __setConfig('myDevTeam.thinking.showInChat', false);
+    expect(settings.thinking.showInChatEnabled).toBe(false);
+    __setConfig('myDevTeam.thinking.showInChat', 'no');
+    expect(settings.thinking.showInChatEnabled).toBe(true);
+    __setConfig('myDevTeam.thinking.showInChat', 0);
+    expect(settings.thinking.showInChatEnabled).toBe(true);
   });
 
   it('treats the eval log as opt-in: only the literal true enables it', () => {
@@ -213,6 +288,17 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.telemetry.evalLogEnabled).toBe(false);
     __setConfig('myDevTeam.telemetry.evalLog', 1);
     expect(settings.telemetry.evalLogEnabled).toBe(false);
+  });
+
+  it('treats write/edit approval as opt-in: only the literal true enables it', () => {
+    expect(settings.approval.fileChanges).toBe(defaults.approval.fileChanges);
+    expect(settings.approval.fileChanges).toBe(false);
+    __setConfig('myDevTeam.approval.fileChanges', true);
+    expect(settings.approval.fileChanges).toBe(true);
+    __setConfig('myDevTeam.approval.fileChanges', 'yes');
+    expect(settings.approval.fileChanges).toBe(false);
+    __setConfig('myDevTeam.approval.fileChanges', 1);
+    expect(settings.approval.fileChanges).toBe(false);
   });
 
   it('reads the snippet line count live, accepting 0 to hide snippets', () => {
@@ -231,6 +317,20 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.engine).toBe('local');
     __setConfig('myDevTeam.engine', 42);
     expect(settings.engine).toBe('local');
+  });
+
+  it('reads plan approval, defaulting to auto and accepting only always/never to override', () => {
+    expect(settings.planApproval).toBe(defaults.planApproval);
+    expect(settings.planApproval).toBe('auto');
+    __setConfig('myDevTeam.planApproval', 'always');
+    expect(settings.planApproval).toBe('always');
+    __setConfig('myDevTeam.planApproval', 'never');
+    expect(settings.planApproval).toBe('never');
+    // Anything else (a typo, a non-string) falls back to the safe auto default.
+    __setConfig('myDevTeam.planApproval', 'sometimes');
+    expect(settings.planApproval).toBe('auto');
+    __setConfig('myDevTeam.planApproval', 42);
+    expect(settings.planApproval).toBe('auto');
   });
 
   it('reads user-configured values live', () => {
@@ -292,6 +392,28 @@ describe('user-tunable settings (VS Code configuration)', () => {
     __setConfig('myDevTeam.provider.requestsPerMinute', -5);
     expect(settings.provider.requestsPerMinute).toBe(defaults.requestsPerMinute);
   });
+
+  it('reads the configurable write-protected paths, defaulting to .vscode', () => {
+    expect(settings.write.protectedPaths).toEqual(defaults.write.protectedPaths);
+    expect(settings.write.protectedPaths).toEqual(['.vscode']);
+    __setConfig('myDevTeam.write.protectedPaths', ['secrets', 'deploy']);
+    expect(settings.write.protectedPaths).toEqual(['secrets', 'deploy']);
+    // An empty list is valid: it drops the configurable prefixes (the hardcoded
+    // .git stays protected in workspaceTools, not via this setting).
+    __setConfig('myDevTeam.write.protectedPaths', []);
+    expect(settings.write.protectedPaths).toEqual([]);
+  });
+
+  it('rejects an invalid write-protected list and falls back to the default', () => {
+    __setConfig('myDevTeam.write.protectedPaths', 'secrets');
+    expect(settings.write.protectedPaths).toEqual(defaults.write.protectedPaths);
+    __setConfig('myDevTeam.write.protectedPaths', ['ok', '']);
+    expect(settings.write.protectedPaths).toEqual(defaults.write.protectedPaths);
+    __setConfig('myDevTeam.write.protectedPaths', ['../escape']);
+    expect(settings.write.protectedPaths).toEqual(defaults.write.protectedPaths);
+    __setConfig('myDevTeam.write.protectedPaths', [42]);
+    expect(settings.write.protectedPaths).toEqual(defaults.write.protectedPaths);
+  });
 });
 
 describe('model registry and selection', () => {
@@ -315,6 +437,15 @@ describe('model registry and selection', () => {
     const file =
       '---\nid: twin\nlabel: Twin\nprovider: ollama\nmodel: twin:1b\ncapabilities:\n  speed: 1\n---\nnote';
     expect(() => loadModels([file, file])).toThrow(/Duplicate model id "twin"/);
+  });
+
+  it('rejects a model file naming a provider not in the registry', () => {
+    // The frontmatter provider enum is generated from the provider registry, so
+    // an unknown provider fails at load with a clear message rather than
+    // registering a model the wiring cannot build.
+    const file =
+      '---\nid: x\nlabel: X\nprovider: mistral\nmodel: x\ncapabilities:\n  speed: 1\n---\nnote';
+    expect(() => loadModels([file])).toThrow(/Unknown provider in a model config file/);
   });
 
   it('keeps every capability score within [0, 1]', () => {
@@ -468,7 +599,7 @@ describe('environment', () => {
 });
 
 describe('tool configs', () => {
-  it('discovers the five workspace tools plus the engine-only progress tool', () => {
+  it('discovers the five workspace tools plus the engine-only progress and skill tools', () => {
     // Order follows the config filenames, so compare as a sorted set.
     expect([...toolNames].sort()).toEqual([
       'edit',
@@ -476,12 +607,15 @@ describe('tool configs', () => {
       'read',
       'run',
       'search',
+      'skill',
       'write',
     ]);
-    // progress is engine-only: the executor carries it, the planner never
-    // lists it (plan steps no longer name a tool at all).
+    // progress and skill are engine-only: the executor carries them, the planner
+    // never lists them (plan steps no longer name a tool at all).
     expect(agents.executor.tools).toContain('progress');
+    expect(agents.executor.tools).toContain('skill');
     expect(agents.planner.tools).not.toContain('progress');
+    expect(agents.planner.tools).not.toContain('skill');
   });
 
   it('marks only run as side-effecting; read, search, write, and edit are not', () => {
@@ -498,10 +632,13 @@ describe('tool configs', () => {
     // The engine's workspace tool configs (model-facing) and the protocol's
     // client tools (ids, display names, input schemas) describe the same five
     // tools; a tool added on one side only would silently break the other. The
-    // engine-only progress tool has no client contract.
-    const workspaceTools = toolNames.filter((name) => name !== 'progress');
+    // engine-only progress and skill tools have no client contract.
+    const workspaceTools = toolNames.filter(
+      (name) => name !== 'progress' && name !== 'skill'
+    );
     expect([...workspaceTools].sort()).toEqual([...clientToolNames].sort());
     expect(clientToolNames).not.toContain('progress');
+    expect(clientToolNames).not.toContain('skill');
     for (const name of clientToolNames) {
       expect(clientTools[name].lmToolId).toBe(`devteam__${name}`);
       expect(clientTools[name].displayName).toBeTruthy();
@@ -578,10 +715,25 @@ describe('agent configs', () => {
     expect(agents.executor.id).toBe('executor');
     expect(agents.executor.name).toBe('Executor');
     expect(agents.executor.description).toBeTruthy();
+    expect(agents.summarizer.id).toBe('summarizer');
+    expect(agents.summarizer.name).toBe('Summarizer');
+    expect(agents.summarizer.description).toBeTruthy();
     expect(agents.triage.instructions).toContain('triage agent');
     expect(agents.planner.instructions).toContain('planner');
     expect(agents.answerer.instructions).toContain('answerer');
     expect(agents.executor.instructions).toContain('executor');
+    expect(agents.summarizer.instructions).toContain('summarizer');
+  });
+
+  it('keeps the summarizer toolless, fast, and asking for the three sections', () => {
+    expect(agents.summarizer.tools).toEqual([]);
+    expect(agents.summarizer.capabilities.speed).toBeGreaterThan(0);
+    const p = agents.summarizer.instructions;
+    expect(p).toContain('whatShips');
+    expect(p).toContain('howItsBuilt');
+    expect(p).toContain('testsAndDocs');
+    // It must frame the transcript as untrusted data, like the other agents.
+    expect(p).toMatch(/untrusted data/i);
   });
 
   it('declares only known capabilities with weights in [0, 1] for each agent', () => {
@@ -611,16 +763,20 @@ describe('agent configs', () => {
   });
 
   it('keeps the executor contract: all tools, decline handling, a report', () => {
-    // The executor carries every tool, including the engine-only progress tool.
+    // The executor carries every tool, including the engine-only progress and
+    // skill tools.
     expect([...agents.executor.tools].sort()).toEqual([...toolNames].sort());
     const p = agents.executor.instructions;
     expect(p).not.toContain('{{tools}}');
-    expect(p).toContain('You have exactly 6 tools available:');
+    expect(p).toContain('You have exactly 7 tools available:');
     expect(p).toContain('not approved');
     expect(p).toMatch(/report/i);
     // It is told to print a progress checklist from time to time.
     expect(p).toContain('"progress"');
     expect(p).toMatch(/from time to time/i);
+    // It is told it can load a skill on demand.
+    expect(p).toContain('"skill"');
+    expect(p).toContain('Available skills');
   });
 
   it('tells the run-capable agents which OS and shell they work on', () => {
@@ -644,6 +800,21 @@ describe('agent configs', () => {
       expect(agent.instructions).toMatch(/AGENTS\.md or CLAUDE\.md/);
     }
     expect(agents.triage.instructions).not.toContain('Project instructions');
+  });
+
+  it('tells the working agents to treat attached content as untrusted data', () => {
+    // Prompt-injection hardening: file contents, tool results, and attachments
+    // can carry instructions; the agents must answer/act on the user's request,
+    // not on text embedded in the data.
+    for (const agent of [agents.planner, agents.answerer, agents.executor]) {
+      expect(agent.instructions).toMatch(/untrusted data/i);
+    }
+    // The agents that can change files must also know the write/edit tools
+    // refuse protected locations.
+    for (const agent of [agents.planner, agents.executor]) {
+      expect(agent.instructions).toMatch(/\.git\//);
+      expect(agent.instructions).toMatch(/protected/i);
+    }
   });
 
   it('keeps the answerer contract: no tools, oneshot framing', () => {

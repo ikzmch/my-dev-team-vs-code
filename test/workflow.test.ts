@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { RequestContext } from '@mastra/core/request-context';
 import {
   createDevTeamWorkflow,
@@ -19,13 +19,16 @@ import {
   UsageSink,
   usageSinkKey,
   triageShadowKey,
+  planReviewKey,
 } from '../src/engine/core/workflow';
-import { Intent } from '../src/protocol/types';
+import { Intent, PlanDecision } from '../src/protocol/types';
 import { UsageReporter } from '../src/engine/core/usage';
 import { TriageResult } from '../src/engine/core/triage';
 import { PartialPlan, PlanProgress, PlanResult } from '../src/engine/core/planner';
 import { AnswerProgress } from '../src/engine/core/answerer';
 import { ExecutionProgress, ExecutionResult, PartialExecution } from '../src/engine/core/executor';
+import { SummaryProgress, SummaryResult, PartialSummary } from '../src/engine/core/summarizer';
+import { __reset, __setConfig } from './mocks/vscode';
 
 function fakeTriage(
   impl: (prompt: string, onUsage?: UsageReporter) => Promise<TriageResult>
@@ -33,14 +36,21 @@ function fakeTriage(
   return { classify: impl } as any;
 }
 
+// createDevTeamWorkflow takes a planner *factory* (its model is sized by
+// triage's complexity, known only once the run is under way). The optional
+// `onComplexity` hook lets a test observe the tier the workflow built it with.
 function fakePlanner(
   impl: (
     prompt: string,
     onPartial?: PlanProgress,
     onUsage?: UsageReporter
-  ) => Promise<PlanResult>
+  ) => Promise<PlanResult>,
+  onComplexity?: (complexity?: string) => void
 ) {
-  return { plan: impl } as any;
+  return ((complexity?: string) => {
+    onComplexity?.(complexity);
+    return { plan: impl };
+  }) as any;
 }
 
 function fakeAnswerer(
@@ -53,16 +63,49 @@ function fakeAnswerer(
   return { answer: impl } as any;
 }
 
+// createDevTeamWorkflow takes an executor *factory* (its model is sized by the
+// request's complexity, known only once the run is under way). The optional
+// `onComplexity` hook lets a test observe the tier the workflow built it with.
 function fakeExecutor(
   impl: (
     prompt: string,
     onPartial?: ExecutionProgress,
     signal?: AbortSignal,
     onUsage?: UsageReporter
-  ) => Promise<ExecutionResult> = async () => anExecution
+  ) => Promise<ExecutionResult> = async () => anExecution,
+  onComplexity?: (complexity?: Intent | string) => void
 ) {
-  return { execute: impl } as any;
+  return ((complexity?: string) => {
+    onComplexity?.(complexity);
+    return { execute: impl };
+  }) as any;
 }
+
+// createDevTeamWorkflow takes a summarizer *factory* (optional). It returns a
+// summarizer whose `summarize` the execute step calls after a file-changing run.
+function fakeSummarizer(
+  impl: (
+    prompt: string,
+    onPartial?: SummaryProgress,
+    onUsage?: UsageReporter
+  ) => Promise<SummaryResult> = async () => aSummary
+) {
+  return (() => ({ summarize: impl })) as any;
+}
+
+const aSummary: SummaryResult = {
+  whatShips: 'A feature',
+  howItsBuilt: 'A small module',
+  testsAndDocs: 'New tests',
+};
+
+// An execution that actually wrote a file, so the summary gate opens.
+const anExecutionWithWrite: ExecutionResult = {
+  events: [
+    { kind: 'tool', tool: 'write', input: 'a.ts', result: 'Wrote a.ts (5 bytes).' },
+    { kind: 'text', text: 'Done.' },
+  ],
+};
 
 const aPlan: PlanResult = {
   summary: 'Add a feature',
@@ -160,6 +203,26 @@ describe('dev-team workflow routing', () => {
       expect(result.result.answer).toBeUndefined();
     }
     expect(answererCalled).toBe(false);
+  });
+
+  it('builds the executor with the complexity triage decided', async () => {
+    let builtWith: string | undefined = 'unset';
+    const workflow = createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', complexity: 'complex', reason: 'hard' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(undefined, (c) => {
+        builtWith = c as string | undefined;
+      })
+    );
+
+    const result = await runWorkflow(workflow, 'fix the race condition');
+
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.complexity).toBe('complex');
+    }
+    expect(builtWith).toBe('complex');
   });
 
   it('hands the original prompt to both the triage agent and the planner', async () => {
@@ -490,6 +553,7 @@ describe('dev-team workflow slash commands', () => {
     if (result.status === 'success') {
       expect(result.result).toEqual({
         intent: 'oneshot',
+        complexity: 'moderate',
         reason: 'Requested via /explain.',
         answer: 'an explanation',
       });
@@ -526,6 +590,7 @@ describe('dev-team workflow slash commands', () => {
     if (result.status === 'success') {
       expect(result.result).toEqual({
         intent: 'planning',
+        complexity: 'moderate',
         reason: 'Requested via /plan.',
         plan: aPlan,
       });
@@ -657,8 +722,150 @@ describe('dev-team workflow slash commands', () => {
 
     expect(seen[0]).toEqual({
       intent: 'planning',
+      complexity: 'moderate',
       reason: 'Requested via /plan.',
     });
+  });
+});
+
+describe('dev-team workflow plan approval', () => {
+  // The gate reads myDevTeam.planApproval live from the vscode config mock;
+  // reset it between cases so one case's setting cannot leak into the next.
+  beforeEach(() => __reset());
+
+  const complexPlan: PlanResult = {
+    summary: 'A big change',
+    steps: [{ title: 'Do it', detail: 'carefully' }],
+    complexity: 'complex',
+  };
+  const moderatePlan: PlanResult = { ...complexPlan, complexity: 'moderate' };
+
+  /**
+   * Build a planning workflow whose planner returns `plan` and whose reviewer
+   * answers from `decisions` in order (repeating the last). Tracks how often the
+   * executor and planner ran, the prompts the planner saw, and the reviewer's
+   * calls. `start` runs it with the review seam wired (unless `seam: false`).
+   */
+  function gate(plan: PlanResult) {
+    const state = { executor: 0, planner: 0, prompts: [] as string[], reviews: 0 };
+    const workflow = (decisions: PlanDecision[]) => {
+      let i = 0;
+      const review = async () => {
+        state.reviews += 1;
+        return decisions[Math.min(i++, decisions.length - 1)];
+      };
+      const wf = createDevTeamWorkflow(
+        fakeTriage(async () => ({ intent: 'planning', complexity: 'moderate', reason: 'x' })),
+        fakePlanner(async (p) => {
+          state.planner += 1;
+          state.prompts.push(p);
+          return plan;
+        }),
+        fakeAnswerer(),
+        fakeExecutor(async () => {
+          state.executor += 1;
+          return anExecution;
+        })
+      );
+      return { wf, review };
+    };
+    const start = async (opts: {
+      decisions?: PlanDecision[];
+      seam?: boolean;
+      command?: string;
+    } = {}) => {
+      const { wf, review } = workflow(opts.decisions ?? [{ kind: 'approve' }]);
+      const requestContext = new RequestContext();
+      if (opts.seam !== false) {
+        requestContext.set(planReviewKey, review);
+      }
+      const run = await wf.createRun();
+      return run.start({
+        inputData: { prompt: 'do the big thing', command: opts.command },
+        requestContext,
+      });
+    };
+    return { state, start };
+  }
+
+  it('gates a complex plan in auto mode and executes on approve', async () => {
+    const g = gate(complexPlan);
+    const result = await g.start({ decisions: [{ kind: 'approve' }] });
+    expect(g.state.reviews).toBe(1);
+    expect(g.state.executor).toBe(1);
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.execution).toEqual(anExecution);
+    }
+  });
+
+  it('delivers the plan only (no execution) when the user cancels at the gate', async () => {
+    const g = gate(complexPlan);
+    const result = await g.start({ decisions: [{ kind: 'cancel' }] });
+    expect(g.state.reviews).toBe(1);
+    expect(g.state.executor).toBe(0);
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.plan).toEqual(complexPlan);
+      expect(result.result.execution).toBeUndefined();
+    }
+  });
+
+  it('re-plans with the comment on revise, then executes once approved', async () => {
+    const g = gate(complexPlan);
+    const result = await g.start({
+      decisions: [{ kind: 'revise', comment: 'use fewer files' }, { kind: 'approve' }],
+    });
+    // Planner ran twice (initial + revision); the revision prompt carries the comment.
+    expect(g.state.planner).toBe(2);
+    expect(g.state.prompts[1]).toContain('use fewer files');
+    expect(g.state.prompts[1]).toContain('Plan review');
+    expect(g.state.reviews).toBe(2);
+    expect(g.state.executor).toBe(1);
+    expect(result.status).toBe('success');
+  });
+
+  it('does not gate a moderate plan in auto mode', async () => {
+    const g = gate(moderatePlan);
+    await g.start();
+    expect(g.state.reviews).toBe(0);
+    expect(g.state.executor).toBe(1);
+  });
+
+  it('gates every plan in always mode, even a moderate one', async () => {
+    __setConfig('myDevTeam.planApproval', 'always');
+    const g = gate(moderatePlan);
+    await g.start({ decisions: [{ kind: 'approve' }] });
+    expect(g.state.reviews).toBe(1);
+    expect(g.state.executor).toBe(1);
+  });
+
+  it('never gates in never mode, even a complex plan', async () => {
+    __setConfig('myDevTeam.planApproval', 'never');
+    const g = gate(complexPlan);
+    await g.start();
+    expect(g.state.reviews).toBe(0);
+    expect(g.state.executor).toBe(1);
+  });
+
+  it('does not gate when no review seam is offered, whatever the setting', async () => {
+    __setConfig('myDevTeam.planApproval', 'always');
+    const g = gate(complexPlan);
+    await g.start({ seam: false });
+    expect(g.state.reviews).toBe(0);
+    expect(g.state.executor).toBe(1);
+  });
+
+  it('skips the gate for a plan-only command and never executes', async () => {
+    __setConfig('myDevTeam.planApproval', 'always');
+    const g = gate(complexPlan);
+    const result = await g.start({ command: 'plan' });
+    expect(g.state.reviews).toBe(0);
+    expect(g.state.executor).toBe(0);
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.plan).toEqual(complexPlan);
+    }
   });
 });
 
@@ -810,6 +1017,25 @@ describe('prompt assembly', () => {
     expect(prompt).toContain('1. Find the file - locate it');
     expect(prompt).toContain('2. Think - reason about it');
     expect(prompt).not.toContain('(tool:');
+  });
+
+  it('lists the available skills before the plan, and omits the section when there are none', () => {
+    const plan: PlanResult = {
+      summary: 'Do it',
+      steps: [{ title: 'Edit', detail: 'change it' }],
+    };
+    const withSkills = executionPrompt({ prompt: 'refactor' }, plan, [
+      { name: 'demo', description: 'a demo skill' },
+    ]);
+    expect(withSkills).toContain('--- Available skills ---');
+    expect(withSkills).toContain('- "demo": a demo skill');
+    expect(withSkills.indexOf('--- Available skills ---')).toBeLessThan(
+      withSkills.indexOf('--- Drafted plan ---')
+    );
+    // No skills: the section is absent entirely.
+    expect(executionPrompt({ prompt: 'refactor' }, plan)).not.toContain(
+      '--- Available skills ---'
+    );
   });
 });
 
@@ -1200,5 +1426,140 @@ describe('dev-team workflow usage reporting', () => {
     const result = await runWorkflow(workflow, 'hi');
     expect(result.status).toBe('success');
     expect(received).toBeUndefined();
+  });
+});
+
+describe('dev-team workflow summary', () => {
+  // The setting is read live from the vscode config mock; reset it between
+  // tests so a "summary off" case cannot leak into the next.
+  beforeEach(() => __reset());
+
+  function planningWith(
+    execution: ExecutionResult,
+    summarizer?: ReturnType<typeof fakeSummarizer>
+  ) {
+    return createDevTeamWorkflow(
+      fakeTriage(async () => ({ intent: 'planning', reason: 'multi-step' })),
+      fakePlanner(async () => aPlan),
+      fakeAnswerer(),
+      fakeExecutor(async () => execution),
+      summarizer
+    );
+  }
+
+  it('summarizes a file-changing run and attaches the summary to the reply', async () => {
+    const result = await runWorkflow(
+      planningWith(anExecutionWithWrite, fakeSummarizer()),
+      'add a feature'
+    );
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.summary).toEqual(aSummary);
+    }
+  });
+
+  it('skips the summary when the run changed no files', async () => {
+    let summarizeCalled = false;
+    const summarizer = fakeSummarizer(async () => {
+      summarizeCalled = true;
+      return aSummary;
+    });
+    // anExecution only searches and reports - no write/edit.
+    const result = await runWorkflow(planningWith(anExecution, summarizer), 'just look');
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.summary).toBeUndefined();
+    }
+    expect(summarizeCalled).toBe(false);
+  });
+
+  it('skips the summary when the setting is off, sparing the model call', async () => {
+    __setConfig('myDevTeam.summary.showInChat', false);
+    let summarizeCalled = false;
+    const summarizer = fakeSummarizer(async () => {
+      summarizeCalled = true;
+      return aSummary;
+    });
+    const result = await runWorkflow(planningWith(anExecutionWithWrite, summarizer), 'add it');
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.summary).toBeUndefined();
+    }
+    expect(summarizeCalled).toBe(false);
+  });
+
+  it('produces no summary when no summarizer is wired', async () => {
+    const result = await runWorkflow(planningWith(anExecutionWithWrite), 'add a feature');
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.summary).toBeUndefined();
+    }
+  });
+
+  it('keeps the execution reply when the summarizer throws (best-effort)', async () => {
+    const summarizer = fakeSummarizer(async () => {
+      throw new Error('summarizer exploded');
+    });
+    const result = await runWorkflow(planningWith(anExecutionWithWrite, summarizer), 'add it');
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.result.summary).toBeUndefined();
+      expect(result.result.execution).toEqual(anExecutionWithWrite);
+    }
+  });
+
+  it('streams each summary snapshot through the reply sink', async () => {
+    const partials: PartialSummary[] = [
+      { whatShips: 'A feature' },
+      { whatShips: 'A feature', howItsBuilt: 'A small module' },
+    ];
+    const summarizer = fakeSummarizer(async (_p, onPartial) => {
+      for (const partial of partials) {
+        onPartial?.(partial);
+      }
+      return aSummary;
+    });
+    const seen: PartialSummary[] = [];
+    const requestContext = new RequestContext();
+    requestContext.set(replyProgressKey, (progress: ReplyProgress) => {
+      if (progress.summary) {
+        seen.push(progress.summary);
+      }
+    });
+    const run = await planningWith(anExecutionWithWrite, summarizer).createRun();
+    await run.start({ inputData: { prompt: 'add a feature' }, requestContext });
+    expect(seen).toEqual(partials);
+  });
+
+  it('briefs the summarizer with the plan and the execution transcript', async () => {
+    let seenPrompt = '';
+    const summarizer = fakeSummarizer(async (prompt) => {
+      seenPrompt = prompt;
+      return aSummary;
+    });
+    await runWorkflow(planningWith(anExecutionWithWrite, summarizer), 'add a feature');
+    expect(seenPrompt).toContain('--- Drafted plan ---');
+    expect(seenPrompt).toContain('Find the file');
+    expect(seenPrompt).toContain('--- Execution transcript ---');
+    // The write tool call is rendered into the transcript with its result.
+    expect(seenPrompt).toContain('write a.ts => Wrote a.ts (5 bytes).');
+  });
+
+  it('reports the summary step usage to the usage sink', async () => {
+    const summarizer = fakeSummarizer(async (_p, _onPartial, onUsage) => {
+      onUsage?.({ model: 'm-summary', inputTokens: 9, outputTokens: 4 });
+      return aSummary;
+    });
+    const seen: StepUsage[] = [];
+    const requestContext = new RequestContext();
+    requestContext.set(usageSinkKey, (usage: StepUsage) => seen.push(usage));
+    const run = await planningWith(anExecutionWithWrite, summarizer).createRun();
+    await run.start({ inputData: { prompt: 'add a feature' }, requestContext });
+    expect(seen).toContainEqual({
+      step: 'summarize',
+      model: 'm-summary',
+      inputTokens: 9,
+      outputTokens: 4,
+    });
   });
 });

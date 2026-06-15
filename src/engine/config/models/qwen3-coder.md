@@ -3,6 +3,7 @@ id: qwen3-coder
 label: Qwen3 Coder (Ollama)
 provider: ollama
 model: qwen3-coder:30b
+tier: complex
 capabilities:
   reasoning: 0.7
   coding: 0.9

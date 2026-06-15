@@ -88,6 +88,11 @@ export const messages = {
     currentSuffix: ' (current)',
     /** Detail shown on a picker entry whose model cannot run yet. */
     unavailableDetail: 'Not available - set its API key or pull the model first.',
+    /**
+     * Detail shown on a picker entry switched off by config (the build's floor
+     * or your `myDevTeam.disabled*` settings); it never runs even if pinned.
+     */
+    disabledDetail: 'Disabled by configuration - it will not run.',
     /** Placeholder in the `/model` quick pick. */
     pickerPlaceholder: 'Choose the model for @devteam (Auto routes by capability)',
     /** The whole reply to a `/model` turn that set the choice. */
@@ -136,6 +141,17 @@ export const messages = {
    * only the framing. The `~` prefix marks a figure that includes a
    * length-based estimate (a model call the provider gave no counts for).
    */
+  changes: {
+    /**
+     * The `**Changes:**` line appended under a reply that wrote files (gated by
+     * the setting; omitted when nothing changed), e.g.
+     * "1 file changed, +12 -0" or "4 files changed, +120 -30".
+     */
+    summary: (files: number, added: number, removed: number) =>
+      `\n\n**Changes:** ${files} ${files === 1 ? 'file' : 'files'} changed, ` +
+      `+${added} -${removed}`,
+  },
+
   usage: {
     /** The `**Tokens:**` line appended under a reply (gated by the setting). */
     chatLine: (input: string, output: string, estimated: boolean) =>
@@ -152,15 +168,39 @@ export const messages = {
   },
 
   /**
-   * Copy for the single "My Dev Team" status-bar button and the menu it opens.
-   * The one item replaces the former separate model and token-counter items:
-   * the bar is just the brand, and the live model label and running session
-   * token total ride in the two menu rows.
+   * Copy for the single "My Dev Team" status-bar button: its text, the rich
+   * hover (a trusted MarkdownString with command links, like Copilot's), and
+   * the quick-pick menu a click opens. The one item replaces the former
+   * separate model and token-counter items: the bar is just the brand, and the
+   * live model label and running session token total ride in the hover and the
+   * two menu rows.
    */
   status: {
     /** The status-bar button text - the brand, no live figures. */
     statusBar: '$(rocket) My Dev Team',
-    statusBarTooltip: 'My Dev Team - click for model and token usage',
+    /**
+     * The rich hover shown over the button: the live model and session token
+     * total, then clickable command links. The caller passes the command ids
+     * so the copy stays free of UI wiring; each link is a `command:` URI the
+     * trusted MarkdownString is allowed to invoke. Markdown, with `$(icon)`
+     * codicons (the hover sets `supportThemeIcons`).
+     */
+    tooltip: (opts: {
+      model: string;
+      tokens: string;
+      estimated: boolean;
+      selectModelCommand: string;
+      usageCommand: string;
+      setKeyCommand: string;
+    }): string =>
+      `**My Dev Team**\n\n` +
+      `---\n\n` +
+      `Model: **${opts.model}**  \n` +
+      `Tokens this session: **${opts.estimated ? '~' : ''}${opts.tokens}**\n\n` +
+      `---\n\n` +
+      `[$(sparkle) Select model](command:${opts.selectModelCommand} "Choose the model for @devteam")\n\n` +
+      `[$(symbol-number) Token usage report](command:${opts.usageCommand} "Open the token usage report")\n\n` +
+      `[$(key) Set API key](command:${opts.setKeyCommand} "Store a cloud provider API key")`,
     /** Placeholder atop the quick-pick menu the button opens. */
     menuPlaceholder: 'My Dev Team',
     /** The "change model" row, showing the currently-active model. */
@@ -171,12 +211,18 @@ export const messages = {
   },
 
   /**
-   * Copy for the `run` tool's approval gate. Only `run` is gated; `write` and
-   * `edit` are not (the workspace is git-backed, so their changes are
-   * recoverable - see DESIGN.md).
+   * Copy for the tool approval gates. `run` is always gated; `write` and `edit`
+   * are gated only when the user turns on `myDevTeam.approval.fileChanges` (off
+   * by default, since the workspace is git-backed - see DESIGN.md).
    */
   approval: {
     runCommandTitle: 'Run command',
+    /** Title of the write approval prompt (gated by myDevTeam.approval.fileChanges). */
+    writeFileTitle: 'Write file',
+    /** Title of the edit approval prompt (gated by myDevTeam.approval.fileChanges). */
+    editFileTitle: 'Edit file',
+    /** The preview shown for a write/edit approval: the target file path. */
+    fileChangeDetail: (path: string) => path,
     /**
      * The preview shown for a run approval: the command, prefixed with a
      * shell-comment naming its cwd folder in a multi-root workspace (where the
@@ -185,17 +231,42 @@ export const messages = {
      */
     runCommandDetail: (command: string, cwdFolder?: string) =>
       cwdFolder ? `# cwd: ${cwdFolder}\n$ ${command}` : `$ ${command}`,
+    /** Title of an MCP tool-call approval prompt (every MCP call is gated). */
+    mcpToolTitle: 'Call MCP tool',
+    /**
+     * The preview shown for an MCP tool-call approval: the namespaced tool name
+     * (which carries the server name) and a compact preview of its arguments.
+     */
+    mcpToolDetail: (tool: string, argsPreview: string) => `${tool}\n${argsPreview}`,
     /** The in-chat approval question: the action title plus its preview. */
     block: (title: string, detail: string) =>
       `\n\n**${title}?**\n\n${fence(detail, 3)}\n`,
-    /** Labels of the in-chat approval buttons. */
+    /** Labels of the approval choices (the modal fallback still uses Approve). */
     approve: 'Approve',
     decline: 'Decline',
+    /**
+     * The Approve/Decline choices rendered as inline trusted-markdown command
+     * links, so they appear on one line instead of as VS Code's stacked
+     * buttons. `command` is the approval command id and `id` identifies the
+     * pending approval; both links invoke the same command with the approval id
+     * and the chosen boolean. Command-link arguments must be URI-encoded JSON.
+     */
+    links: (command: string, id: string) => {
+      const arg = (approved: boolean) =>
+        encodeURIComponent(JSON.stringify([id, approved]));
+      return (
+        `[${messages.approval.approve}](command:${command}?${arg(true)}) | ` +
+        `[${messages.approval.decline}](command:${command}?${arg(false)})\n`
+      );
+    },
   },
 
-  /** Returned to the model when the user declines the (gated) run tool. */
+  /** Returned to the model when the user declines a gated tool. */
   notApproved: {
     run: 'Command was not approved by the user.',
+    write: 'Write was not approved by the user.',
+    edit: 'Edit was not approved by the user.',
+    mcp: 'MCP tool call was not approved by the user.',
   },
 
   /**
@@ -219,6 +290,24 @@ export const messages = {
       'This workspace is not trusted, so the edit tool is disabled. Trust the ' +
       'workspace (Restricted Mode banner, or the "Workspaces: Manage Workspace ' +
       'Trust" command) and try again.',
+  },
+
+  /**
+   * Returned to the model when `write`/`edit` refuse a path that, although
+   * inside the workspace, falls in a protected location (`.git/`, `.vscode/`,
+   * ...). These can run code on their own (git hooks, VS Code tasks) without
+   * passing the run tool's approval gate, so the agent must not change them; the
+   * model relays the reason and leaves the change to the user.
+   */
+  protected: {
+    write: (path: string) =>
+      `Refusing to write ${path}: it is in a protected location (it can run ` +
+      'code automatically, e.g. git hooks or VS Code tasks). If this change is ' +
+      'really needed, tell the user to make it themselves.',
+    edit: (path: string) =>
+      `Refusing to edit ${path}: it is in a protected location (it can run ` +
+      'code automatically, e.g. git hooks or VS Code tasks). If this change is ' +
+      'really needed, tell the user to make it themselves.',
   },
 
   /** Returned to the model when a tool cannot run in a virtual workspace. */
@@ -263,6 +352,10 @@ export const messages = {
     emptyRange: (start: number, end: number) =>
       `endLine ${end} is before startLine ${start}; nothing was read. ` +
       'Use an endLine at or after startLine.',
+    tooLarge: (path: string, bytes: number, cap: number) =>
+      `${path} is ${bytes} bytes, over the ${cap}-byte read limit; reading it ` +
+      'whole would risk the editor\'s memory. Use the search tool to find the ' +
+      'lines you need in it.',
   },
 
   /**
@@ -290,6 +383,18 @@ export const messages = {
     prompt: (command: string) => `$ ${command}`,
     /** Outcome note written after a command that finished cleanly. */
     completed: '(command completed)',
+  },
+
+  /** Copy for the `search` tool. */
+  search: {
+    /**
+     * Appended to a content search that stopped at the files-examined budget
+     * with candidate files still unscanned, so the model knows a short or empty
+     * result on a large repo is not authoritative and can narrow its query.
+     */
+    contentTruncated: (scanned: number) =>
+      `(search stopped after scanning ${scanned} files; more files were not ` +
+      'searched - narrow the query or use a glob search to look in fewer files)',
   },
 
   /** Copy for the chat handler's attachment resolution. */
@@ -321,6 +426,58 @@ export const messages = {
     changesEmpty: '(no uncommitted git changes, or git is not available here)',
   },
 
+  /**
+   * Copy for the editor entry points (ui/editorEntryPoints.ts): the quick fix
+   * on a diagnostic, the "explain selection" context-menu action, and the
+   * test-file CodeLens. Each is a thin shim that opens the chat with a pinned
+   * slash command, so the strings here are the chat prompt the shim submits
+   * (framed for the downstream agents) and the action/lens titles - the slash
+   * command itself is prepended by the shim, not spelled out here.
+   */
+  editor: {
+    /** Title of the "Fix with Dev Team" quick fix offered on a diagnostic. */
+    fixActionTitle: 'Fix with Dev Team',
+    /** One problem line for fixPrompt: where the diagnostic is and what it says. */
+    fixProblem: (line: number, message: string) => `line ${line}: ${message}`,
+    /**
+     * The chat prompt the fix action submits (behind `/fix`): names the file and
+     * each reported problem, and pulls in the uncommitted diff with `#changes`
+     * so the agent diagnoses against what actually changed.
+     */
+    fixPrompt: (relPath: string, problems: readonly string[]) =>
+      `#changes Fix the following problem${problems.length === 1 ? '' : 's'} ` +
+      `reported in ${relPath}:\n` +
+      problems.map((p) => `- ${p}`).join('\n'),
+    /** Title of the "Explain with Dev Team" editor context-menu action. */
+    explainActionTitle: 'Explain with Dev Team',
+    /** Shown when explain is invoked with nothing selected in the editor. */
+    explainNoSelection: 'My Dev Team: select some code first, then run Explain with Dev Team.',
+    /**
+     * The chat prompt the explain action submits (behind `/explain`), carrying
+     * the selected code inline so the answerer sees exactly what to explain.
+     */
+    explainPrompt: (relPath: string, startLine: number, endLine: number, code: string) => {
+      const where =
+        endLine > startLine
+          ? `${relPath} (lines ${startLine}-${endLine})`
+          : `${relPath} (line ${startLine})`;
+      return `Explain this code from ${where}:\n\n${fence(code, 3)}`;
+    },
+    /** Title of the test CodeLens when the file has no current failures. */
+    testLensWrite: '$(beaker) Write/update tests with Dev Team',
+    /** Title of the test CodeLens when the file has failing diagnostics. */
+    testLensRepair: '$(beaker) Repair tests with Dev Team',
+    /**
+     * The chat prompt the test CodeLens submits (behind `/test`): repair when
+     * the file currently has error diagnostics, otherwise write or update.
+     */
+    testPrompt: (relPath: string, failing: boolean) =>
+      failing
+        ? `Some tests in ${relPath} are failing. Diagnose why each fails and ` +
+          `repair them, then run them to confirm.`
+        : `Write or update the tests in ${relPath}, then run them.`,
+  },
+
   /** Copy for the client-side /clear command (it never starts a run). */
   clear: {
     /** The whole reply to a /clear turn. */
@@ -332,6 +489,10 @@ export const messages = {
   },
 
   triage: {
+    // Complexity is no longer shown here: the planner's (post-exploration)
+    // judgement is the one surfaced, and it rides in the plan block (see
+    // `plan.complexity`) so the value never changes after it is first rendered -
+    // the append-only chat stream needs every render to extend the last.
     block: (intent: string, reason: string) =>
       `**Detected intent:** \`${intent}\`\n\n` + `**Reason:** ${reason}\n\n`,
     error: (detail: string) => `**Triage error:** ${detail}\n\n`,
@@ -350,12 +511,52 @@ export const messages = {
     // behind it while the planner is still writing it.
     header: '**Plan:** ',
     /**
+     * The planner's complexity judgement, rendered as a line after the plan's
+     * steps (an append-only position, so a value that streams in late never
+     * breaks the prefix-extension the chat stream relies on). This is the one
+     * complexity shown - the planner's, not triage's.
+     */
+    complexity: (complexity: string) => `\n\n**Complexity:** \`${complexity}\``,
+    /**
      * Appended to a finished reply that drafted a plan but never executed it
-     * (the /plan command), so the user knows nothing has happened yet and how
-     * to proceed.
+     * (the /plan command, or a plan cancelled at the approval gate), so the
+     * user knows nothing has happened yet and how to proceed.
      */
     notExecuted:
       '\n\n_Plan only - nothing was executed. Say "go ahead" to carry it out._',
+  },
+
+  /**
+   * Copy for the plan-approval gate (`myDevTeam.planApproval`): the question
+   * shown after a plan that needs approving, its inline Approve/Cancel/Revise
+   * command links, and the input box the Revise choice opens. Mirrors the
+   * `approval` copy used for the run tool.
+   */
+  planApproval: {
+    /** The gate question, naming the planner's complexity judgement. */
+    block: (complexity: string) =>
+      `\n\n**Approve this plan before it runs?** (complexity: \`${complexity}\`)\n`,
+    approve: 'Approve',
+    cancel: 'Cancel',
+    revise: 'Revise',
+    /**
+     * The three choices as inline trusted-markdown command links (one line, like
+     * the run approval). `command` is the plan-review command id and `id`
+     * identifies the pending review; each link invokes the command with the id
+     * and the chosen action. Command-link arguments must be URI-encoded JSON.
+     */
+    links: (command: string, id: string) => {
+      const arg = (choice: 'approve' | 'cancel' | 'revise') =>
+        encodeURIComponent(JSON.stringify([id, choice]));
+      return (
+        `[${messages.planApproval.approve}](command:${command}?${arg('approve')}) | ` +
+        `[${messages.planApproval.cancel}](command:${command}?${arg('cancel')}) | ` +
+        `[${messages.planApproval.revise}](command:${command}?${arg('revise')})\n`
+      );
+    },
+    /** Title/placeholder of the input box the Revise choice opens. */
+    revisePrompt: 'How should the plan change?',
+    revisePlaceholder: 'Describe what to do differently; the plan is redrafted and shown again.',
   },
 
   execution: {
@@ -396,9 +597,31 @@ export const messages = {
         .join('\n'),
   },
 
+  summary: {
+    // Prefixes rather than templates: each section streams in behind its
+    // header while the summarizer is still writing it, so successive renders
+    // stay prefix-extensions of one another (the append-only streamer's
+    // requirement). All start with a blank line so the section sits apart from
+    // the execution transcript above and the previous section.
+    header: '\n\n**Summary:**',
+    whatShips: '\n\n**What ships:** ',
+    howItsBuilt: "\n\n**How it's built:** ",
+    testsAndDocs: '\n\n**Tests and docs:** ',
+  },
+
   run: {
     /** Shown when a run fails without a step the protocol could attribute it to. */
     error: (detail: string) => `**The run failed:** ${detail}\n\n`,
+  },
+
+  thinking: {
+    /**
+     * A condensed line of the model's reasoning, shown as transient chat
+     * progress (a spinner line) while it works - not appended to the reply, so
+     * it leaves no trace once real output streams in. The "Thinking:" lead
+     * tells the user the dimmed line is the model's reasoning, not its answer.
+     */
+    line: (text: string) => `Thinking: ${text}`,
   },
 
   /** Copy for the engine switch (client/engineFactory.ts). */

@@ -4,7 +4,7 @@ import { resolveModel, routeModel } from './models';
 import { resolveTokenCounts, UsageReporter } from './usage';
 import { parseWithRepair } from './repair';
 import { agents } from '../config/agents';
-import { PartialPlan, Plan } from '../../protocol/types';
+import { Complexity, ComplexitySchema, PartialPlan, Plan } from '../../protocol/types';
 
 export type { PartialPlan, PartialPlanStep } from '../../protocol/types';
 
@@ -39,6 +39,14 @@ export const PlanSchema = z.object({
     .min(1)
     .max(8)
     .describe('Ordered steps that accomplish the task. Keep it minimal.'),
+  complexity: ComplexitySchema.describe(
+    'How demanding the work in this plan actually is, now that you have seen ' +
+      'the request and any explored context: "simple" for a self-contained ' +
+      'change needing little reasoning (e.g. one small file); "moderate" for a ' +
+      'typical change touching a few files; "complex" for multi-file changes, ' +
+      'subtle debugging, or architectural/performance work. Be honest - a ' +
+      '"complex" plan is paused for the user to approve before it runs.'
+  ),
 });
 
 export type PlanStep = z.infer<typeof PlanStepSchema>;
@@ -53,18 +61,27 @@ export class Planner {
 
   /**
    * `modelPin` is the user's per-run model choice (a registry id, or "auto"/
-   * undefined to let the capability router pick the best available model). It
-   * is resolved once here because the LocalEngine builds a fresh Planner per
-   * run with the run request's choice.
+   * undefined to let the capability router pick the best available model).
+   * `complexity` is triage's pre-exploration judgement of how demanding the
+   * work is: it narrows the routed model to that tier (cheaper for simple work,
+   * stronger for complex), unless the user pinned a model or turned
+   * `complexityRouting` off - exactly like the executor. The planner is built
+   * once the triage complexity is known (the workflow's draft-plan step builds
+   * it), so both are resolved here.
    */
-  constructor(modelPin?: string) {
-    this.modelName = routeModel(agents.planner.capabilities, modelPin).model;
+  constructor(modelPin?: string, complexity?: Complexity) {
+    this.modelName = routeModel(
+      agents.planner.capabilities,
+      modelPin,
+      undefined,
+      complexity
+    ).model;
     this.agent = new Agent({
       id: agents.planner.id,
       name: agents.planner.name,
       description: agents.planner.description,
       instructions: agents.planner.instructions,
-      model: resolveModel(agents.planner.capabilities, modelPin),
+      model: resolveModel(agents.planner.capabilities, modelPin, undefined, complexity),
     });
   }
 

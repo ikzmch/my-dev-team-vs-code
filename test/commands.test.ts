@@ -26,6 +26,7 @@ describe('command configs', () => {
       description: 'Fix a bug.',
       intent: 'planning',
       execute: true,
+      complexity: 'moderate',
       preamble: 'Diagnose first.',
     });
   });
@@ -37,6 +38,23 @@ describe('command configs', () => {
     ]);
     expect(plan.execute).toBe(false);
     expect(doIt.execute).toBe(true);
+  });
+
+  it('defaults complexity to moderate and honours an explicit value', () => {
+    const [doIt, fix] = loadCommands([
+      commandFile('name: do\ndescription: Do it.\nintent: planning'),
+      commandFile('name: fix\ndescription: Fix.\nintent: planning\ncomplexity: complex'),
+    ]);
+    expect(doIt.complexity).toBe('moderate');
+    expect(fix.complexity).toBe('complex');
+  });
+
+  it('rejects a complexity the protocol does not know', () => {
+    expect(() =>
+      loadCommands([
+        commandFile('name: x\ndescription: X.\nintent: planning\ncomplexity: trivial'),
+      ])
+    ).toThrow();
   });
 
   it('rejects an intent the protocol does not know', () => {

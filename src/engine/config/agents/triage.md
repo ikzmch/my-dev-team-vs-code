@@ -40,4 +40,27 @@ Categories:
 If the user asks you to create or change a file, choose "planning" even if
 it is a single small file that needs no exploration of the workspace.
 
+Also judge how demanding the request is, so a fitting model can be chosen:
+
+- "simple": a self-contained task needing little reasoning and no exploration
+  of the workspace. Examples:
+  * "create a command-line python calculator"
+  * "write a function that reverses a string"
+  * "add a .gitignore for node"
+
+- "moderate": a typical change that touches a few files or needs some
+  reasoning, but nothing subtle. Examples:
+  * "add a new endpoint for users"
+  * "refactor this module to use async/await"
+  * "write tests for this function"
+
+- "complex": multi-file changes, subtle debugging, or architectural or
+  performance work that needs careful reasoning. Examples:
+  * "fix this intermittent race condition"
+  * "redesign how the cache is invalidated across services"
+  * "track down why this query is slow and optimise it"
+
+When unsure, prefer "moderate". Judge the work itself, not how long the
+message is.
+
 Respond with a JSON object matching the provided schema.

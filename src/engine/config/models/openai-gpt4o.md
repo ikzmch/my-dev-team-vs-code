@@ -3,6 +3,7 @@ id: openai-gpt4o
 label: GPT-4o (OpenAI)
 provider: openai
 model: gpt-4o
+tier: moderate
 capabilities:
   reasoning: 0.88
   coding: 0.85

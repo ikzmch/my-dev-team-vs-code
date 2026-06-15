@@ -5,9 +5,15 @@ import {
   localModels,
   availableModels,
   isModelAvailable,
+  isModelEnabled,
+  isProviderEnabled,
+  effectivePin,
+  ollamaEndpoint,
 } from '../src/engine/core/models';
+import { settings } from '../src/config/settings';
 import {
   selectModel,
+  tierPool,
   modelById,
   modelRegistry,
 } from '../src/engine/config/models';
@@ -62,6 +68,170 @@ describe('selectModel', () => {
   it('an unknown provider pin degrades to the candidate weighted fit', () => {
     const picked = selectModel(agents.planner.capabilities, 'provider:nope', localModels());
     expect(picked.provider).toBe('ollama');
+  });
+});
+
+describe('selectModel with an isEnabled predicate', () => {
+  it('drops a disabled model from a provider-pin pool', () => {
+    const enabled = (m: { id: string }) => m.id !== 'anthropic-opus';
+    const picked = selectModel(
+      agents.executor.capabilities,
+      'provider:anthropic',
+      undefined,
+      undefined,
+      enabled
+    );
+    expect(picked.provider).toBe('anthropic');
+    expect(picked.id).not.toBe('anthropic-opus');
+  });
+
+  it('falls through a disabled pinned model to the candidate weighted fit', () => {
+    const enabled = (m: { id: string }) => m.id !== 'anthropic-opus';
+    const picked = selectModel(
+      agents.executor.capabilities,
+      'anthropic-opus',
+      localModels(),
+      undefined,
+      enabled
+    );
+    // The disabled pin is ignored, so it routes among the (local) candidates.
+    expect(picked.provider).toBe('ollama');
+  });
+
+  it('throws when every candidate is disabled', () => {
+    expect(() =>
+      selectModel(agents.executor.capabilities, undefined, localModels(), undefined, () => false)
+    ).toThrow(/disabled/);
+  });
+});
+
+describe('disabling (user layer via settings)', () => {
+  it('isProviderEnabled / isModelEnabled honour the disabled-provider list', () => {
+    __setConfig('myDevTeam.disabledProviders', ['ollama']);
+    expect(isProviderEnabled('ollama')).toBe(false);
+    // A disabled provider disables its models too.
+    expect(isModelEnabled(modelById('qwen3-8b')!)).toBe(false);
+    expect(isProviderEnabled('anthropic')).toBe(true);
+  });
+
+  it('isModelEnabled honours the disabled-model list', () => {
+    __setConfig('myDevTeam.disabledModels', ['qwen3-coder']);
+    expect(isModelEnabled(modelById('qwen3-coder')!)).toBe(false);
+    expect(isModelEnabled(modelById('qwen3-8b')!)).toBe(true);
+  });
+
+  it('effectivePin drops a disabled model pin and a disabled provider pin', () => {
+    __setConfig('myDevTeam.disabledModels', ['qwen3-coder']);
+    __setConfig('myDevTeam.disabledProviders', ['anthropic']);
+    expect(effectivePin('qwen3-coder')).toBeUndefined();
+    expect(effectivePin('provider:anthropic')).toBeUndefined();
+    // An enabled choice (and Auto) passes through unchanged.
+    expect(effectivePin('qwen3-8b')).toBe('qwen3-8b');
+    expect(effectivePin('auto')).toBe('auto');
+  });
+
+  it('availableModels and localModels exclude a disabled model', () => {
+    __setConfig('myDevTeam.disabledModels', ['qwen3-coder']);
+    expect(localModels().some((m) => m.id === 'qwen3-coder')).toBe(false);
+    expect(availableModels().some((m) => m.id === 'qwen3-coder')).toBe(false);
+  });
+
+  it('routeModel hard-blocks a disabled pin, falling back to Auto', () => {
+    __setConfig('myDevTeam.disabledModels', ['qwen3-coder']);
+    const picked = routeModel(agents.executor.capabilities, 'qwen3-coder', localModels());
+    expect(picked.id).not.toBe('qwen3-coder');
+    expect(picked.provider).toBe('ollama');
+  });
+});
+
+describe('resolved provider endpoints', () => {
+  it('falls back to the user setting when the backend sets no override', () => {
+    // The shipped backend.json sets no overrides, so the resolved Ollama
+    // endpoint mirrors the user setting (the backend-wins path is covered by
+    // the schema tests).
+    expect(ollamaEndpoint()).toBe(settings.ollamaEndpoint);
+  });
+
+  it('tracks a change to the user Ollama endpoint setting', () => {
+    __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
+    expect(ollamaEndpoint()).toBe('http://gpu-box:11434');
+  });
+
+  it('reads a cloud provider base URL from its descriptor setting key', () => {
+    // The generic settings accessor the provider wiring uses (per descriptor
+    // baseUrlSetting); unset is undefined, set returns the normalised URL.
+    expect(settings.providerBaseUrl('openai.baseUrl')).toBeUndefined();
+    __setConfig('myDevTeam.openai.baseUrl', 'https://gateway.example.com/');
+    expect(settings.providerBaseUrl('openai.baseUrl')).toBe('https://gateway.example.com');
+  });
+});
+
+describe('tierPool', () => {
+  const byTier = (tier: string) => modelRegistry.filter((m) => m.tier === tier);
+
+  it('keeps only the matching tier when the pool has it', () => {
+    const picked = tierPool(modelRegistry, 'simple');
+    expect(picked.length).toBe(byTier('simple').length);
+    expect(picked.every((m) => m.tier === 'simple')).toBe(true);
+  });
+
+  it('falls back to the nearest available tier when the exact one is absent', () => {
+    // A pool of only moderate + complex models, asked for simple, narrows to the
+    // nearest available (moderate), not the strongest (complex).
+    const pool = [modelById('qwen3-14b')!, modelById('qwen3-coder')!];
+    const picked = tierPool(pool, 'simple');
+    expect(picked.every((m) => m.tier === 'moderate')).toBe(true);
+  });
+
+  it('breaks a distance tie toward the cheaper tier', () => {
+    // simple (distance 1) and complex (distance 1) are equidistant from a
+    // moderate request; the cheaper tier wins.
+    const pool = [modelById('qwen3-8b')!, modelById('qwen3-coder')!];
+    const picked = tierPool(pool, 'moderate');
+    expect(picked.every((m) => m.tier === 'simple')).toBe(true);
+  });
+});
+
+describe('selectModel with complexity', () => {
+  it('sizes the model to the request tier for one capability profile', () => {
+    const simple = selectModel(agents.executor.capabilities, undefined, localModels(), 'simple');
+    const moderate = selectModel(agents.executor.capabilities, undefined, localModels(), 'moderate');
+    const complex = selectModel(agents.executor.capabilities, undefined, localModels(), 'complex');
+    expect(simple.tier).toBe('simple');
+    expect(moderate.tier).toBe('moderate');
+    // The coding-heavy executor profile picks the local coder at the top tier.
+    expect(complex.id).toBe('qwen3-coder');
+  });
+
+  it('narrows a provider pin to the request tier', () => {
+    const simple = selectModel(agents.executor.capabilities, 'provider:anthropic', undefined, 'simple');
+    const complex = selectModel(agents.executor.capabilities, 'provider:anthropic', undefined, 'complex');
+    expect(simple.id).toBe('anthropic-haiku');
+    expect(complex.id).toBe('anthropic-opus');
+  });
+
+  it('a model pin bypasses the tier filter', () => {
+    const pinned = selectModel(
+      agents.executor.capabilities,
+      'anthropic-opus',
+      localModels(),
+      'simple'
+    );
+    expect(pinned.id).toBe('anthropic-opus');
+  });
+});
+
+describe('routeModel complexity gate', () => {
+  it('applies the request tier when complexityRouting is on (the default)', () => {
+    const picked = routeModel(agents.executor.capabilities, undefined, localModels(), 'simple');
+    expect(picked.tier).toBe('simple');
+  });
+
+  it('ignores complexity when complexityRouting is off', () => {
+    __setConfig('myDevTeam.complexityRouting', false);
+    const picked = routeModel(agents.executor.capabilities, undefined, localModels(), 'simple');
+    // Capability routing alone picks the coder, regardless of the simple tier.
+    expect(picked.id).toBe('qwen3-coder');
   });
 });
 

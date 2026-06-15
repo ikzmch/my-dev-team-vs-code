@@ -3,6 +3,7 @@ id: groq-qwen3-32b
 label: Qwen3 32B (Groq)
 provider: groq
 model: qwen/qwen3-32b
+tier: moderate
 capabilities:
   reasoning: 0.82
   coding: 0.8

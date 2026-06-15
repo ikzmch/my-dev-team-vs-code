@@ -14,7 +14,10 @@ optionally use **cloud models** (OpenAI, Anthropic, Groq) when you add an API ke
   conversation follow-ups, slash commands (`/explain`, `/review`, `/plan`,
   `/do`, `/fix`, `/test`, `/compact`, `/clear`, `/model`), and 👍/👎 feedback all
   work the way the rest of VS Code chat does. Your project's `AGENTS.md` or
-  `CLAUDE.md` is respected as standing instructions on every request.
+  `CLAUDE.md` is respected as standing instructions on every request. You can
+  also start from the editor: a **Fix with Dev Team** Quick Fix on a diagnostic,
+  an **Explain** action on a selection, and a write/repair-tests CodeLens on
+  test files.
 - **Pick a model, or let Auto choose.** Run on local Ollama models or cloud
   models (OpenAI, Anthropic, Groq) - choose one with `/model`, or leave it on **Auto**
   to route by capability among the models available to you. Every reply shows
@@ -23,15 +26,21 @@ optionally use **cloud models** (OpenAI, Anthropic, Groq) when you add an API ke
   request, a planner drafts a tool-aware checklist, an executor walks it in a
   tool-calling loop over five workspace tools, and an answerer handles plain
   questions - each on the model best suited to its job.
+- **Skills the agent loads on demand.** Package reusable know-how (how to write
+  a commit message, format a changelog entry, follow a team convention) as a
+  named, described skill; the agent pulls in its full instructions only when a
+  task matches. A few ship built-in, and you add your own by dropping a
+  `SKILL.md` into `.devteam/skills/` in your workspace.
 - **Capability-based model routing.** Agents never name models: they declare
   weighted capability requirements, and a router picks the best match from a
-  registry of scored models. Agents, models, tools, and commands are plain
-  `.md` config files - drop a file in to register one, no code change.
-- **You stay in control.** Running a shell command always asks first - it
-  shows the exact command and waits for your Approve/Decline - and approved
-  commands stream live into a read-only "Dev Team" terminal. File writes and
-  edits apply directly (your Git-backed workspace makes them easy to review
-  and revert), and the agent can only touch files inside your workspace.
+  registry of scored models. Agents, models, tools, commands, and skills are
+  plain `.md` config files - drop a file in to register one, no code change.
+- **You stay in control.** Demanding work pauses to let you approve the plan
+  first - Approve, Cancel, or Revise it with a comment - and running a shell
+  command always asks before it runs, streaming approved commands live into a
+  read-only "Dev Team" terminal. File writes and edits apply directly (your
+  Git-backed workspace makes them easy to review and revert), and the agent can
+  only touch files inside your workspace.
 - **Built to split.** The whole pipeline sits behind a wire-shaped engine
   protocol: today an in-process engine, later a remote backend speaking the
   same contract - without touching the UI or the tools.
@@ -45,20 +54,6 @@ optionally use **cloud models** (OpenAI, Anthropic, Groq) when you add an API ke
   router, the tools, development setup, and the roadmap.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - how to contribute.
 - **[CHANGELOG.md](CHANGELOG.md)** - what changed, release by release.
-
-## Getting started
-
-You need VS Code ^1.95, Node.js 20.x, and a local Ollama server with the
-registered models pulled (see [QUICKSTART.md](QUICKSTART.md) for the full
-walkthrough):
-
-```bash
-npm install
-npm run build
-# then press F5 in VS Code to launch the Extension Development Host
-```
-
-In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 
 ## Tech stack
 

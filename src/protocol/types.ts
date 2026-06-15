@@ -42,6 +42,41 @@ export const ProjectInstructionsSchema = z.object({
 });
 export type ProjectInstructions = z.infer<typeof ProjectInstructionsSchema>;
 
+/**
+ * One workspace skill the client discovered (a SKILL.md file under a configured
+ * skills directory): the raw file text plus its workspace-relative path. The
+ * client ships the raw text and the engine parses the frontmatter (name +
+ * description) and body - a single parser, and the client must not reach into
+ * the engine's config internals. A skill is a named, described block of
+ * instructions the executor loads on demand (see RunRequest.skills).
+ */
+export const WorkspaceSkillSchema = z.object({
+  /** The skill file's workspace-relative path, e.g. ".devteam/skills/demo/SKILL.md". */
+  source: z.string(),
+  /** The raw SKILL.md text (frontmatter + body), already size-capped by the client. */
+  text: z.string(),
+});
+export type WorkspaceSkill = z.infer<typeof WorkspaceSkillSchema>;
+
+/**
+ * One tool the client discovered from a configured MCP server, shipped on the
+ * run request so the engine can offer it to the executor. The client owns the
+ * connection and the execution: the engine reaches the tool back through the
+ * ToolHost exactly like a built-in tool, so this carries only what the engine
+ * needs to present the tool to the model. `name` is namespaced by the client
+ * ("mcp__<server>__<tool>") so it cannot collide with a built-in tool, and the
+ * same string is what `offeredTools` lists and the ToolHost dispatches.
+ * `inputSchema` is the JSON Schema the server published; the engine converts it
+ * to a model-facing argument schema (best effort), but the MCP server is what
+ * actually validates a call's arguments.
+ */
+export const DynamicToolDefSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  inputSchema: z.unknown(),
+});
+export type DynamicToolDef = z.infer<typeof DynamicToolDefSchema>;
+
 /** One prior turn of the conversation, already capped by the client. */
 export const HistoryTurnSchema = z.object({
   role: z.enum(['user', 'assistant']),
@@ -90,6 +125,23 @@ export const RunRequestSchema = z.object({
   instructions: ProjectInstructionsSchema.optional(),
   attachments: z.array(AttachmentSchema).optional(),
   history: z.array(HistoryTurnSchema).optional(),
+  /**
+   * Workspace skills the client read from the configured skills directories
+   * (raw SKILL.md text). The engine merges them with its built-in skills and
+   * lists each skill's name + description to the executor, which loads a skill's
+   * full body on demand via its `skill` tool (progressive disclosure). Optional,
+   * so an engine that predates the field simply ignores it.
+   */
+  skills: z.array(WorkspaceSkillSchema).optional(),
+  /**
+   * Tools the client discovered from configured MCP servers (their names,
+   * descriptions, and JSON Schemas). The engine builds a model-facing tool for
+   * each and lets the executor call it; the call is dispatched back to the
+   * client's ToolHost and gated by the user's Approver, exactly like a built-in
+   * side-effecting tool. Their namespaced names also appear in `offeredTools`.
+   * Optional, so an engine that predates the field simply ignores it.
+   */
+  dynamicTools: z.array(DynamicToolDefSchema).optional(),
   environment: EnvironmentFactsSchema.optional(),
   offeredTools: z.array(z.string()),
   /**
@@ -109,12 +161,17 @@ export type RunRequest = z.infer<typeof RunRequestSchema>;
  * client sends back on `RunRequest.model` ("auto" for the router); `available`
  * is false when the model cannot run yet (a missing API key, or - probed at
  * call time - an Ollama model that is not pulled), so the picker can flag it.
+ * `disabled` is set when the model or its provider was switched off by config
+ * (the backend floor or the user's `myDevTeam.disabled*` settings): such a
+ * choice never runs even if pinned, so the picker shows it greyed out with a
+ * distinct reason. A disabled choice is always reported `available: false`.
  */
 export const ModelChoiceSchema = z.object({
   id: z.string(),
   label: z.string(),
   description: z.string(),
   available: z.boolean(),
+  disabled: z.boolean().optional(),
 });
 export type ModelChoice = z.infer<typeof ModelChoiceSchema>;
 
@@ -148,6 +205,17 @@ export const IntentSchema = z.enum(['oneshot', 'planning']);
 export type Intent = z.infer<typeof IntentSchema>;
 
 /**
+ * How demanding the request is, decided by triage alongside the intent. It
+ * sizes the executor's model (see the model registry's `tier`): "simple" work
+ * (a self-contained script) routes to a cheaper/smaller model, "complex" work
+ * (multi-file changes, subtle debugging) to the strongest one. Only the
+ * executor consumes it, and only on the planning route; a pinned model and the
+ * `complexityRouting` opt-out both bypass it.
+ */
+export const ComplexitySchema = z.enum(['simple', 'moderate', 'complex']);
+export type Complexity = z.infer<typeof ComplexitySchema>;
+
+/**
  * A drafted plan step: a short title and one sentence of detail. Steps carry
  * no tool label - which tool (if any) a step needs is the executor's call at
  * run time, not something the plan commits to.
@@ -161,8 +229,29 @@ export type PlanStep = z.infer<typeof PlanStepSchema>;
 export const PlanSchema = z.object({
   summary: z.string(),
   steps: z.array(PlanStepSchema).min(1),
+  /**
+   * How demanding the planner judged the work once it had explored the
+   * workspace - a more informed read than triage's pre-exploration guess. It
+   * sizes the executor's model and drives the plan-approval gate (a `complex`
+   * plan is what the `auto` gate pauses on). Optional so an engine that predates
+   * the field, or a model that omitted it, simply degrades to triage's value.
+   */
+  complexity: ComplexitySchema.optional(),
 });
 export type Plan = z.infer<typeof PlanSchema>;
+
+/**
+ * The user's verdict at the plan-approval gate (see RunClient.reviewPlan):
+ * approve and execute, cancel the run (deliver the plan only), or revise -
+ * carry a free-text comment back to the planner, which re-drafts and asks
+ * again.
+ */
+export const PlanDecisionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('approve') }),
+  z.object({ kind: z.literal('cancel') }),
+  z.object({ kind: z.literal('revise'), comment: z.string() }),
+]);
+export type PlanDecision = z.infer<typeof PlanDecisionSchema>;
 
 /**
  * A snapshot of the plan while the engine is still drafting it. Field values
@@ -177,6 +266,8 @@ export type PartialPlanStep = {
 export type PartialPlan = {
   summary?: string;
   steps?: Array<PartialPlanStep | undefined>;
+  /** The planner's complexity judgement, set once the model reaches the field. */
+  complexity?: Complexity;
 };
 
 /**
@@ -258,6 +349,32 @@ export type Execution = z.infer<typeof ExecutionSchema>;
 export type PartialExecution = Execution;
 
 /**
+ * The end-of-run recap of an executed plan, in three fixed sections so the user
+ * can skim a change the way they would a pull request: what was delivered, how
+ * it was built, and what tests/docs cover it. Produced by the Summarizer agent
+ * after the executor finishes; present only on a planning run that actually
+ * changed files. This is the wire shape; the Summarizer's generation schema
+ * (engine/core/summarizer.ts) carries the prompt material.
+ */
+export const SummarySchema = z.object({
+  whatShips: z.string(),
+  howItsBuilt: z.string(),
+  testsAndDocs: z.string(),
+});
+export type Summary = z.infer<typeof SummarySchema>;
+
+/**
+ * A snapshot of the summary while the model streams it: each section's string
+ * grows over time and the later sections are missing until the model reaches
+ * them, so every field is optional.
+ */
+export type PartialSummary = {
+  whatShips?: string;
+  howItsBuilt?: string;
+  testsAndDocs?: string;
+};
+
+/**
  * What a run produces: the routing decision plus, for "planning" requests,
  * the drafted plan and the execution transcript, or, for "oneshot" requests,
  * the direct answer. Rendering this into chat markdown is the client's job.
@@ -265,11 +382,15 @@ export type PartialExecution = Execution;
 export const ReplySchema = z.object({
   intent: IntentSchema,
   reason: z.string(),
+  /** How demanding triage judged the request; surfaced and sizes the executor. */
+  complexity: ComplexitySchema.optional(),
   /** Which model(s) ran the request, for the "which model answered" line. */
   selection: ModelSelectionSchema.optional(),
   plan: PlanSchema.optional(),
   answer: z.string().optional(),
   execution: ExecutionSchema.optional(),
+  /** The three-section recap of an executed plan; absent when nothing changed. */
+  summary: SummarySchema.optional(),
 });
 export type Reply = z.infer<typeof ReplySchema>;
 
@@ -283,8 +404,10 @@ export type Reply = z.infer<typeof ReplySchema>;
 export type ReplyProgress = {
   intent: Intent;
   reason: string;
+  complexity?: Complexity;
   selection?: ModelSelection;
   plan?: PartialPlan;
   answer?: string;
   execution?: PartialExecution;
+  summary?: PartialSummary;
 };

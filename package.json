@@ -2,10 +2,15 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.32.0",
+  "version": "0.44.0",
+  "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bobrovsky420/my-dev-team-vs-code.git"
+  },
   "engines": {
     "vscode": "^1.95.0"
   },
@@ -21,7 +26,7 @@
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": "limited",
-      "description": "Triage, oneshot answers, /explain, and the read/search tools work in an untrusted folder; the side-effecting tools (run, write, edit) are disabled until you trust the workspace."
+      "description": "Triage, oneshot answers, /explain, and the read/search tools work in an untrusted folder; the side-effecting tools (run, write, edit) are disabled and MCP servers are not contacted until you trust the workspace."
     },
     "virtualWorkspaces": {
       "supported": "limited",
@@ -49,6 +54,42 @@
           "type": "string",
           "default": "auto",
           "description": "What @devteam uses for the planner, answerer, and executor: a model id, a \"provider:<name>\" to route among one provider's models (best per task), or \"auto\" to let the router pick the best available model per agent. Triage always uses a local Ollama model. Use the /model command or the status-bar item to change it from a list."
+        },
+        "myDevTeam.complexityRouting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Size the executor's model to how demanding triage judges the request: simpler work routes to a cheaper/smaller model, harder work to a stronger one (within whatever provider applies). Turn off to route the executor by capability alone. A pinned model is never affected."
+        },
+        "myDevTeam.planApproval": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Pause for approval only when the planner judges the work complex.",
+            "Pause for approval after every drafted plan.",
+            "Never pause: run drafted plans straight through (the pre-gate behaviour)."
+          ],
+          "description": "When @devteam pauses to let you approve a drafted plan before it runs. At the gate you can Approve (execute), Cancel (keep the plan, run nothing), or Revise (type a comment and have the plan redrafted)."
+        },
+        "myDevTeam.disabledProviders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Providers @devteam must never use (e.g. [\"anthropic\"]). The router skips their models and the /model picker shows them as disabled, even if an API key is set. A disabled provider never runs even when pinned. This is your personal layer on top of any providers the build itself disables, which you cannot re-enable here."
+        },
+        "myDevTeam.disabledModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Individual model ids @devteam must never use (e.g. [\"qwen3-coder\"]). The router skips them and the /model picker shows them as disabled; a disabled model never runs even when pinned (the run falls back to Auto). On top of any models the build itself disables, which you cannot re-enable here."
         },
         "myDevTeam.ollama.endpoint": {
           "type": "string",
@@ -123,10 +164,82 @@
           ],
           "description": "Project instruction files probed in the workspace root, in order; the first one found is given to the agents as standing instructions on every request. Plain file names only (no folders). An empty list turns the feature off."
         },
+        "myDevTeam.skills.directories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".devteam/skills",
+            ".claude/skills"
+          ],
+          "description": "Root-relative directories scanned for skills, each at <dir>/<name>/SKILL.md. A skill is a named, described block of instructions the agent loads on demand when a task matches its description (built-in skills ship with the extension regardless). An empty list turns workspace skills off; an entry that is absolute or contains .. makes the whole list fall back to the default."
+        },
+        "myDevTeam.mcp.servers": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The executable to launch the MCP server (e.g. \"npx\")."
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Arguments passed to the command."
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Environment variables for the server process."
+              }
+            },
+            "required": [
+              "command"
+            ]
+          },
+          "markdownDescription": "MCP (Model Context Protocol) servers whose tools @devteam may call, as a name -> definition map, e.g. `{ \"filesystem\": { \"command\": \"npx\", \"args\": [\"-y\", \"@modelcontextprotocol/server-filesystem\", \".\"] } }`. Each server is launched over stdio; its tools are offered to the model namespaced as `mcp__<server>__<tool>`, and every call is approved through the same prompt the run tool uses. Server names must be plain identifiers (letters, digits, _ , -); invalid entries are ignored. No server is contacted in an untrusted workspace. New or changed servers take effect on a window reload."
+        },
+        "myDevTeam.write.protectedPaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            ".vscode"
+          ],
+          "description": "Root-relative locations the write and edit tools refuse to touch, on top of the always-protected .git/ (these can run code automatically, e.g. VS Code tasks). Matched per path segment, so .git does not catch .gitignore. An empty list keeps only .git protected; an entry with .. makes the whole list fall back to the default."
+        },
+        "myDevTeam.approval.fileChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Require approval before the write and edit tools change a file. Off by default: changes apply immediately, since a git-backed workspace makes them recoverable. Turn this on to confirm every write and edit with the same Approve/Decline prompt the run tool uses (the run tool is always gated, regardless of this setting). Read live; takes effect on the next request."
+        },
         "myDevTeam.usage.showInChat": {
           "type": "boolean",
           "default": true,
           "description": "Append a Tokens line under each reply summing the run's input and output tokens. The status-bar session total and the My Dev Team: Show Token Usage report are independent of this setting."
+        },
+        "myDevTeam.changes.showInChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Append a Changes line under a reply that wrote files, summing them as \"N files changed, +X -Y\". The line only appears when a turn actually changed files."
+        },
+        "myDevTeam.summary.showInChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "After an executed plan that changed files, add a Summary recap in three sections (What ships, How it's built, Tests and docs). Turning this off skips the extra summarizer model call entirely."
+        },
+        "myDevTeam.thinking.showInChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a reasoning model's thinking live as a transient progress line while @devteam works, condensed to its latest line. The thinking is never kept past the run; turning this off skips capturing reasoning entirely."
         },
         "myDevTeam.telemetry.evalLog": {
           "type": "boolean",
@@ -141,6 +254,12 @@
       }
     },
     "commands": [
+      {
+        "command": "myDevTeam.explainSelection",
+        "title": "Explain with Dev Team",
+        "category": "My Dev Team",
+        "enablement": "editorHasSelection"
+      },
       {
         "command": "myDevTeam.selectModel",
         "title": "Select Model",
@@ -157,6 +276,15 @@
         "category": "My Dev Team"
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "myDevTeam.explainSelection",
+          "when": "editorHasSelection && !inDiffEditor",
+          "group": "1_modification@100"
+        }
+      ]
+    },
     "chatParticipants": [
       {
         "id": "myDevTeam.agent",
@@ -364,8 +492,10 @@
     "@ai-sdk/groq": "^3.0.41",
     "@ai-sdk/openai": "^3.0.71",
     "@mastra/core": "^1.41.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "ai": "^6.0.198",
     "ollama-ai-provider-v2": "^3.5.1",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "zod-from-json-schema": "^0.5.2"
   }
 }

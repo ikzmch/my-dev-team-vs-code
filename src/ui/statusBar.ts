@@ -1,15 +1,17 @@
 /**
- * The single "My Dev Team" status-bar button. Clicked, it opens a small menu (a
- * quick pick) with two actions - change the active model, and open the
- * token-usage report - that delegate to the existing select-model and
- * show-usage commands. It folds together what used to be two separate
- * status-bar items (the model picker and the session token counter): the bar
- * itself is just the brand, while the live model label and the running session
- * token total ride in the two menu rows.
+ * The single "My Dev Team" status-bar button. Hovering it shows a rich popup (a
+ * trusted MarkdownString, the same approach as Copilot's status item) with the
+ * live model and session token total plus clickable command links; clicking it
+ * opens a quick-pick menu with the same two main actions, delegating to the
+ * existing select-model and show-usage commands. It folds together what used to
+ * be two separate status-bar items (the model picker and the session token
+ * counter): the bar itself is just the brand, while the live figures ride in
+ * the hover and the menu rows.
  *
- * It keeps the live state the menu shows: `add` accumulates each finished run's
- * tokens (independent of the opt-in eval log, exactly as the old counter did),
- * and `refresh` re-reads the engine catalogue for the current model's label.
+ * It keeps the live state both surfaces show: `add` accumulates each finished
+ * run's tokens (independent of the opt-in eval log, exactly as the old counter
+ * did), and `refresh` re-reads the engine catalogue for the current model's
+ * label; each redraws the hover so it never goes stale.
  */
 import * as vscode from 'vscode';
 import { UsageEntry } from '../client/evalLog';
@@ -23,7 +25,11 @@ import {
 import { Engine } from '../protocol/engine';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
-import { currentModelLabel, SELECT_MODEL_COMMAND_ID } from './modelCommands';
+import {
+  currentModelLabel,
+  SELECT_MODEL_COMMAND_ID,
+  SET_API_KEY_COMMAND_ID,
+} from './modelCommands';
 import { SHOW_USAGE_COMMAND_ID } from './usageView';
 
 /** Command id the status-bar button fires to open its menu. */
@@ -46,13 +52,14 @@ export class StatusBar {
     this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     this.item.command = menuCommandId;
     this.item.text = messages.status.statusBar;
-    this.item.tooltip = messages.status.statusBarTooltip;
+    this.renderTooltip();
     this.item.show();
   }
 
   /** Fold one finished run's per-step usage into the session total. */
   add(usage: readonly UsageEntry[]): void {
     addSummary(this.session, sumUsage(usage));
+    this.renderTooltip();
   }
 
   /** Re-read the catalogue and remember the current model's label for the menu. */
@@ -62,6 +69,35 @@ export class StatusBar {
     } catch {
       this.modelLabel = settings.model;
     }
+    this.renderTooltip();
+  }
+
+  /**
+   * Build the hover popup: a trusted MarkdownString (so its `command:` links
+   * fire) limited to exactly the three commands it links, with theme-icon
+   * support for the `$(icon)` codicons. Rebuilt whenever the model label or the
+   * token total changes so the figures stay current.
+   */
+  private renderTooltip(): void {
+    const tooltip = new vscode.MarkdownString(
+      messages.status.tooltip({
+        model: this.modelLabel,
+        tokens: formatTokenCount(this.session.totalTokens),
+        estimated: this.session.hasEstimates,
+        selectModelCommand: SELECT_MODEL_COMMAND_ID,
+        usageCommand: SHOW_USAGE_COMMAND_ID,
+        setKeyCommand: SET_API_KEY_COMMAND_ID,
+      }),
+      true // supportThemeIcons
+    );
+    tooltip.isTrusted = {
+      enabledCommands: [
+        SELECT_MODEL_COMMAND_ID,
+        SHOW_USAGE_COMMAND_ID,
+        SET_API_KEY_COMMAND_ID,
+      ],
+    };
+    this.item.tooltip = tooltip;
   }
 
   /**

@@ -3,6 +3,7 @@ id: qwen3-14b
 label: Qwen3 14B (Ollama)
 provider: ollama
 model: qwen3:14b
+tier: moderate
 capabilities:
   reasoning: 0.75
   coding: 0.6

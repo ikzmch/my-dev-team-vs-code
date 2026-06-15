@@ -2,10 +2,16 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { exec, ChildProcess, ExecOptions } from 'child_process';
 import { promisify } from 'util';
-import { Approver, RunMirror } from './types';
+import { Approver, ChangeReporter, RunMirror } from './types';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
 import { environment } from '../config/environment';
+import { searchContent } from './contentSearch';
+
+// Re-exported so existing importers (client/references.ts) keep their import
+// from this module while the content-search engine lives in its own file.
+export { searchContent } from './contentSearch';
+export type { ContentMatch, ContentSearchResult } from './contentSearch';
 
 const execAsync = promisify(exec);
 
@@ -36,6 +42,16 @@ function isVirtualWorkspace(): boolean {
   );
 }
 
+/** Whether a path exists (a stat that does not throw), used for disambiguation. */
+async function pathExists(uri: vscode.Uri): Promise<boolean> {
+  try {
+    await vscode.workspace.fs.stat(uri);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Split a tool-supplied path into the workspace folder it targets and the path
  * relative to that folder. In a multi-root workspace `asRelativePath` prefixes
@@ -44,46 +60,62 @@ function isVirtualWorkspace(): boolean {
  * folder; a bare path - and every single-folder workspace - resolves against
  * the first folder, exactly as before. This keeps the tools consistent: a path
  * the search tool lists (it scans all roots) is one read/write/edit can open.
+ *
+ * The head segment is ambiguous: it can name an open folder *or* a real
+ * top-level directory in the first folder that happens to share that name (a
+ * `backend/` directory while a `backend` root also exists). To avoid silently
+ * shadowing a real file, an existing path in the first folder wins - the head
+ * resolves to the named folder only when nothing exists at that path in the
+ * first folder (which covers the `asRelativePath` prefixed form and a
+ * not-yet-created write target alike).
  */
-function resolveFolder(relPath: string): { root: vscode.Uri; rel: string } {
+async function resolveFolder(
+  relPath: string
+): Promise<{ root: vscode.Uri; rel: string }> {
   const folders = workspaceFolders();
   if (folders.length > 1) {
     const slash = relPath.search(/[\\/]/);
     const head = slash === -1 ? relPath : relPath.slice(0, slash);
     const match = folders.find((f) => f.name === head);
     if (match) {
+      const inFirst = vscode.Uri.joinPath(folders[0].uri, ...relPath.split(/[\\/]/));
+      if (await pathExists(inFirst)) {
+        return { root: folders[0].uri, rel: relPath };
+      }
       return { root: match.uri, rel: slash === -1 ? '' : relPath.slice(slash + 1) };
     }
   }
   return { root: folders[0].uri, rel: relPath };
 }
 
+/** A resolved, contained workspace path plus what `revalidateContainment` needs. */
+interface ResolvedPath {
+  /** The Uri to read/write/edit. */
+  uri: vscode.Uri;
+  /** The workspace folder the path resolved against. */
+  root: vscode.Uri;
+  /** The path relative to `root` (the protected-path check operates on this). */
+  relInRoot: string;
+  /** The original tool path, kept only for error messages. */
+  relPath: string;
+}
+
 /**
- * Resolve a workspace-relative path to a Uri, rejecting anything that points
- * outside the workspace (absolute paths, `..` traversal). Tool inputs come
- * from a model and the tools are callable by any chat model in the editor,
- * so the path is untrusted. The path is first mapped to its workspace folder
- * (see `resolveFolder`), then checked against that folder's root.
- *
- * The lexical check alone is not enough: a symlink that lives inside the
- * workspace can still point outside it, so every component of the resolved
- * path - ancestors included, since a symlinked *directory* escapes just as a
- * symlinked file does - is stat'ed and rejected when it is a symbolic link.
- * Otherwise `read` could follow a link to exfiltrate a file and `write` could
- * clobber one through it. A component that does not exist yet (a new `write`
- * target) has nothing to follow, so a stat that fails is not an error here.
+ * Reject the path if any component - the target or an ancestor - is a symbolic
+ * link, since a link inside the workspace can still point outside it. Otherwise
+ * `read` could follow a link to exfiltrate a file and `write` could clobber one
+ * through it; a symlinked *directory* escapes just as a symlinked file does, so
+ * every ancestor is checked, not only the final component. A component that
+ * does not exist yet (a new `write` target) has nothing to follow, so a stat
+ * that fails is not an error here.
  */
-async function resolveWorkspaceUri(relPath: string): Promise<vscode.Uri> {
-  const { root, rel: relativeToRoot } = resolveFolder(relPath);
-  const rootPath = path.resolve(root.fsPath);
-  const target = path.resolve(rootPath, relativeToRoot);
-  const rel = path.relative(rootPath, target);
-  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
-    throw new Error(`Path is outside the workspace: ${relPath}`);
-  }
-  const segments = rel.split(/[\\/]/);
+async function assertNoSymlink(
+  root: vscode.Uri,
+  relInRoot: string,
+  relPath: string
+): Promise<void> {
   let prefix = root;
-  for (const segment of segments) {
+  for (const segment of relInRoot.split(/[\\/]/)) {
     prefix = vscode.Uri.joinPath(prefix, segment);
     let stat: vscode.FileStat | undefined;
     try {
@@ -95,14 +127,117 @@ async function resolveWorkspaceUri(relPath: string): Promise<vscode.Uri> {
       throw new Error(`Path is a symbolic link, which is not allowed: ${relPath}`);
     }
   }
-  return vscode.Uri.joinPath(root, ...segments);
 }
 
-/** Backstop on the read tool's output, so a few enormous lines cannot flood the context. */
-function capReadChars(text: string): string {
-  return text.length > settings.read.maxChars
-    ? text.slice(0, settings.read.maxChars) + '\n…(truncated)'
-    : text;
+/**
+ * Resolve a workspace-relative path to a Uri, rejecting anything that points
+ * outside the workspace (absolute paths, `..` traversal, or a symbolic link
+ * anywhere in the resolved path). Tool inputs come from a model and the tools
+ * are callable by any chat model in the editor, so the path is untrusted. The
+ * path is first mapped to its workspace folder (see `resolveFolder`), then
+ * checked against that folder's root.
+ *
+ * This is **check-then-use, not atomic**: the symlink check stats each path
+ * component, but the fs API offers no "open without following links", so a
+ * component could in principle be swapped for a link between the check here and
+ * the later read/write. Callers shrink that window by re-validating with
+ * `revalidateContainment` right against the operation; the residual race needs
+ * a local attacker and is documented as low-severity rather than fully closed.
+ */
+async function resolveWorkspaceUri(relPath: string): Promise<ResolvedPath> {
+  const { root, rel: relativeToRoot } = await resolveFolder(relPath);
+  const rootPath = path.resolve(root.fsPath);
+  const target = path.resolve(rootPath, relativeToRoot);
+  const rel = path.relative(rootPath, target);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Path is outside the workspace: ${relPath}`);
+  }
+  await assertNoSymlink(root, rel, relPath);
+  return { uri: vscode.Uri.joinPath(root, ...rel.split(/[\\/]/)), root, relInRoot: rel, relPath };
+}
+
+/**
+ * Re-run the symlink containment check on an already-resolved path, to be
+ * called right before a write (and right after a read) so the window in which
+ * a component could be swapped for an escaping symlink between
+ * `resolveWorkspaceUri` and the operation is as small as the fs API allows. A
+ * read re-validates *after* reading so bytes that may have come through a
+ * swapped-in link are discarded rather than returned.
+ */
+async function revalidateContainment(resolved: ResolvedPath): Promise<void> {
+  await assertNoSymlink(resolved.root, resolved.relInRoot, resolved.relPath);
+}
+
+/**
+ * Root-relative path prefix `write`/`edit` always refuse, on top of the
+ * user-configurable `settings.write.protectedPaths`. `.git/` is hardcoded and
+ * not user-removable: it is not git-tracked (so the "recoverable via source
+ * control" reason for leaving write/edit ungated does not hold there) and a
+ * write to `.git/hooks/*` runs on the next git command - code execution that
+ * never passes the run tool's approval gate.
+ */
+const ALWAYS_PROTECTED = '.git';
+
+/**
+ * Whether a workspace-folder-relative path falls inside a protected location.
+ * The match is segment by segment (so `.git` does not catch `.gitignore`) and
+ * case-insensitive (so a case-insensitive filesystem cannot bypass it with
+ * `.GIT`). `relInRoot` is the path already resolved relative to its workspace
+ * folder, with the multi-root folder prefix stripped.
+ */
+function isProtectedWritePath(relInRoot: string): boolean {
+  const segments = relInRoot
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .map((segment) => segment.toLowerCase());
+  return [ALWAYS_PROTECTED, ...settings.write.protectedPaths].some((prefix) => {
+    const prefixSegments = prefix
+      .split(/[\\/]/)
+      .filter(Boolean)
+      .map((segment) => segment.toLowerCase());
+    return (
+      prefixSegments.length > 0 &&
+      prefixSegments.every((segment, i) => segments[i] === segment)
+    );
+  });
+}
+
+/**
+ * Backstop on the read tool's output, so a few enormous lines cannot flood the
+ * context. Caps `lines` at `settings.read.maxChars`, cutting at a line boundary
+ * so the result always ends on a whole line, and reports how many of the input
+ * lines actually survived - the caller computes its range header from that, so
+ * the header can never claim lines the char cap dropped (a single line longer
+ * than the cap is the one exception: it is char-cut and still counted as one,
+ * since dropping it would return nothing).
+ */
+function capReadLines(lines: string[]): {
+  text: string;
+  lineCount: number;
+  truncated: boolean;
+} {
+  const max = settings.read.maxChars;
+  let used = 0;
+  for (let i = 0; i < lines.length; i++) {
+    // +1 for the newline joining this line to the previous one.
+    const addition = (i === 0 ? 0 : 1) + lines[i].length;
+    if (used + addition > max) {
+      if (i === 0) {
+        return {
+          text: lines[0].slice(0, max) + '\n. . . (truncated)',
+          lineCount: 1,
+          truncated: true,
+        };
+      }
+      return {
+        text: lines.slice(0, i).join('\n') + '\n. . . (truncated)',
+        lineCount: i,
+        truncated: true,
+      };
+    }
+    used += addition;
+  }
+  return { text: lines.join('\n'), lineCount: lines.length, truncated: false };
 }
 
 /**
@@ -120,8 +255,21 @@ export async function readFile(
   startLine?: number,
   endLine?: number
 ): Promise<string> {
-  const uri = await resolveWorkspaceUri(relPath);
-  const bytes = await vscode.workspace.fs.readFile(uri);
+  const resolved = await resolveWorkspaceUri(relPath);
+  // Stat before reading so an oversized file is refused by its size rather than
+  // pulled whole into the extension host: the line/char caps below only bound
+  // the result, but the whole file is loaded before they apply, so without this
+  // a read of a multi-GB or giant minified file would exhaust memory. The
+  // attachment reader and the content scan guard the same way.
+  const stat = await vscode.workspace.fs.stat(resolved.uri);
+  if (stat.size > settings.read.maxFileSizeBytes) {
+    return messages.readFailed.tooLarge(relPath, stat.size, settings.read.maxFileSizeBytes);
+  }
+  const bytes = await vscode.workspace.fs.readFile(resolved.uri);
+  // Re-check containment after the read: if a component was swapped for a
+  // symlink between the resolve and the read, discard the bytes rather than
+  // return data that may have come from outside the workspace.
+  await revalidateContainment(resolved);
   const text = Buffer.from(bytes).toString('utf8');
 
   const start = startLine ?? 1;
@@ -140,97 +288,17 @@ export async function readFile(
     return messages.readFailed.pastEnd(relPath, start, total);
   }
   const end = Math.min(endLine ?? Infinity, start + settings.read.maxLines - 1, total);
-  if (start === 1 && end === total) {
+  // Apply the char cap before deciding the end line, so the header reports the
+  // range actually returned rather than the range requested - when the char cap
+  // drops the tail, `actualEnd` is the last line that survived it.
+  const capped = capReadLines(lines.slice(start - 1, end));
+  const actualEnd = start + capped.lineCount - 1;
+  if (start === 1 && actualEnd === total && !capped.truncated) {
     // The whole file fits in one call: return it verbatim (trailing newline
     // included), with no range header to strip.
-    return capReadChars(text);
+    return text;
   }
-  return (
-    messages.read.range(start, end, total) +
-    '\n' +
-    capReadChars(lines.slice(start - 1, end).join('\n'))
-  );
-}
-
-/** One content-search hit: a 1-based line number and a trimmed preview of that line. */
-export interface ContentMatch {
-  path: string;
-  line: number;
-  preview: string;
-}
-
-/**
- * Trim a matched line for the preview and cap its length, so one very long
- * line (a minified bundle, a data blob) cannot flood the result. The trailing
- * CR of a CRLF line is stripped first, since the file is split on `\n`.
- */
-function previewLine(line: string): string {
-  const trimmed = line.replace(/\r$/, '').trim();
-  const max = settings.search.contentPreviewMaxChars;
-  return trimmed.length > max ? trimmed.slice(0, max) + '…' : trimmed;
-}
-
-/**
- * Scan candidate files for `query` and return one match per line that contains
- * it (1-based line number + a trimmed line preview). Keeps the same scan,
- * size, and binary guards as before: an oversized file is rejected by its stat
- * size and never read into memory, and a NUL byte marks binary content that is
- * skipped. A per-file match cap (`contentMaxMatchesPerFile`) stops one busy
- * file (a log) from eating the whole budget, and the overall
- * `contentMaxMatches` cap stops the scan early. Used both by the `search` tool
- * (content mode) and by the client's `#codebase` resolver.
- */
-export async function searchContent(query: string): Promise<ContentMatch[]> {
-  const uris = await vscode.workspace.findFiles(
-    '**/*',
-    settings.search.excludeGlob,
-    settings.search.contentScanLimit
-  );
-  const matches: ContentMatch[] = [];
-  for (const uri of uris) {
-    if (matches.length >= settings.search.contentMaxMatches) {
-      break;
-    }
-    try {
-      // Check the size via stat before reading, so an oversized file is never
-      // pulled into memory just to be discarded - the cap bounds memory, not
-      // only the result set.
-      const stat = await vscode.workspace.fs.stat(uri);
-      if (stat.size > settings.search.maxFileSizeBytes) {
-        continue;
-      }
-      const bytes = await vscode.workspace.fs.readFile(uri);
-      // Skip binaries (a NUL byte marks binary content; decoding never throws,
-      // so this cannot be left to the catch below).
-      if (bytes.includes(0)) {
-        continue;
-      }
-      const text = Buffer.from(bytes).toString('utf8');
-      // A cheap whole-file reject before the per-line scan.
-      if (!text.includes(query)) {
-        continue;
-      }
-      const relPath = vscode.workspace.asRelativePath(uri);
-      const lines = text.split('\n');
-      let perFile = 0;
-      for (let i = 0; i < lines.length; i++) {
-        if (!lines[i].includes(query)) {
-          continue;
-        }
-        matches.push({ path: relPath, line: i + 1, preview: previewLine(lines[i]) });
-        perFile++;
-        if (perFile >= settings.search.contentMaxMatchesPerFile) {
-          break;
-        }
-        if (matches.length >= settings.search.contentMaxMatches) {
-          break;
-        }
-      }
-    } catch {
-      // Skip unreadable files.
-    }
-  }
-  return matches;
+  return messages.read.range(start, actualEnd, total) + '\n' + capped.text;
 }
 
 /**
@@ -253,8 +321,14 @@ export async function searchFiles(
     return uris.map((u) => vscode.workspace.asRelativePath(u));
   }
 
-  const matches = await searchContent(query);
-  return matches.map((m) => `${m.path}:${m.line}: ${m.preview}`);
+  const { matches, truncated } = await searchContent(query);
+  const lines = matches.map((m) => `${m.path}:${m.line}: ${m.preview}`);
+  if (truncated) {
+    // The scan stopped at the budget with files unexamined; tell the model so a
+    // short (or empty) result on a large repo is not read as authoritative.
+    lines.push(messages.search.contentTruncated(settings.search.contentScanLimit));
+  }
+  return lines;
 }
 
 /**
@@ -418,7 +492,9 @@ function combineOutput(stdout: string, stderr: string): string {
 export async function writeFile(
   relPath: string,
   contents: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  reporter?: ChangeReporter,
+  approver?: Approver
 ): Promise<string> {
   // An untrusted folder (Restricted Mode) disables writing; refuse with a
   // reason the model can relay rather than touching disk.
@@ -427,13 +503,53 @@ export async function writeFile(
   }
   // Resolve (and so validate) the path first: a traversal or symlink target
   // is rejected outright before anything touches disk.
-  const uri = await resolveWorkspaceUri(relPath);
+  const resolved = await resolveWorkspaceUri(relPath);
+  // A protected in-workspace location (.git/, .vscode/, ...) can run code on
+  // its own, sidestepping the run tool's approval gate, so write refuses it
+  // even though it is inside the workspace.
+  if (isProtectedWritePath(resolved.relInRoot)) {
+    return messages.protected.write(relPath);
+  }
   // A cancelled request (the chat stop button) must not land a file on disk.
   if (signal?.aborted) {
     return messages.cancelled.write;
   }
-  await vscode.workspace.fs.writeFile(uri, Buffer.from(contents, 'utf8'));
+  // Optional approval gate (myDevTeam.approval.fileChanges, off by default):
+  // when on, every write asks first, like the run tool. Asked after the path
+  // is validated and the protected/cancel checks pass, so the user is never
+  // prompted for a write that would be refused anyway.
+  if (settings.approval.fileChanges && approver) {
+    const ok = await approver.confirm(
+      messages.approval.writeFileTitle,
+      messages.approval.fileChangeDetail(relPath)
+    );
+    if (!ok) {
+      return messages.notApproved.write;
+    }
+    // The prompt can sit open for a while; a cancel during it must still drop
+    // the write.
+    if (signal?.aborted) {
+      return messages.cancelled.write;
+    }
+  }
+  // Read the prior contents for the change summary before overwriting them; a
+  // file that does not exist yet is a create, so its "before" is empty.
+  const before = await readTextOrEmpty(resolved.uri);
+  // Re-check containment immediately before writing, so a symlink swapped in
+  // after the resolve cannot redirect the write outside the workspace.
+  await revalidateContainment(resolved);
+  await vscode.workspace.fs.writeFile(resolved.uri, Buffer.from(contents, 'utf8'));
+  reporter?.report(relPath, before, contents);
   return `Wrote ${relPath} (${Buffer.byteLength(contents, 'utf8')} bytes).`;
+}
+
+/** A file's text, or '' when it does not exist - used to seed a write's "before". */
+async function readTextOrEmpty(uri: vscode.Uri): Promise<string> {
+  try {
+    return Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+  } catch {
+    return '';
+  }
 }
 
 /**
@@ -495,7 +611,9 @@ export async function editFile(
   relPath: string,
   oldText: string,
   newText: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  reporter?: ChangeReporter,
+  approver?: Approver
 ): Promise<string> {
   // An untrusted folder (Restricted Mode) disables editing; refuse with a
   // reason the model can relay rather than touching disk.
@@ -504,7 +622,13 @@ export async function editFile(
   }
   // Resolve (and so validate) the path first: a traversal or symlink target
   // is rejected outright before anything touches disk.
-  const uri = await resolveWorkspaceUri(relPath);
+  const resolved = await resolveWorkspaceUri(relPath);
+  // A protected in-workspace location (.git/, .vscode/, ...) can run code on
+  // its own, sidestepping the run tool's approval gate, so edit refuses it even
+  // though it is inside the workspace.
+  if (isProtectedWritePath(resolved.relInRoot)) {
+    return messages.protected.edit(relPath);
+  }
   if (oldText === newText) {
     return messages.editFailed.identical;
   }
@@ -514,7 +638,7 @@ export async function editFile(
   }
   let bytes: Uint8Array;
   try {
-    bytes = await vscode.workspace.fs.readFile(uri);
+    bytes = await vscode.workspace.fs.readFile(resolved.uri);
   } catch {
     return messages.editFailed.missingFile(relPath);
   }
@@ -523,9 +647,31 @@ export async function editFile(
   if ('failure' in located) {
     return located.failure;
   }
+  // Optional approval gate (myDevTeam.approval.fileChanges, off by default):
+  // asked only once the edit is known to apply (the file exists and oldText
+  // matched a single place), so the user is never prompted for an edit that
+  // then fails to locate its target.
+  if (settings.approval.fileChanges && approver) {
+    const ok = await approver.confirm(
+      messages.approval.editFileTitle,
+      messages.approval.fileChangeDetail(relPath)
+    );
+    if (!ok) {
+      return messages.notApproved.edit;
+    }
+    if (signal?.aborted) {
+      return messages.cancelled.edit;
+    }
+  }
+  // Re-check containment immediately before writing the edit back, so a symlink
+  // swapped in after the resolve cannot redirect the write outside the
+  // workspace. This only stats path components, so the snapshot the match was
+  // computed against is still the one the write lands on.
+  await revalidateContainment(resolved);
   // The replacement goes through a function so replace() cannot interpret
   // `$&`-style patterns inside model-written code as substitutions.
   const updated = text.replace(located.needle, () => located.replacement);
-  await vscode.workspace.fs.writeFile(uri, Buffer.from(updated, 'utf8'));
+  await vscode.workspace.fs.writeFile(resolved.uri, Buffer.from(updated, 'utf8'));
+  reporter?.report(relPath, text, updated);
   return `Edited ${relPath} (1 replacement).`;
 }

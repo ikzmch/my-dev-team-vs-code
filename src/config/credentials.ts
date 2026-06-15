@@ -7,31 +7,29 @@
  * `ANTHROPIC_API_KEY` / `GROQ_API_KEY` works with no setup (and tests need no
  * SecretStorage).
  *
- * The provider wiring (engine/core/models.ts) reads these the same "single
- * source of truth, read live" way it reads the Ollama endpoint. Phase C moves
- * keys server-side behind the AuthProvider seam; until then they stay on the
- * user's machine and never travel on the protocol.
+ * Which providers take a key, and the SecretStorage / env-var names per
+ * provider, all derive from the single provider registry (config/providers.ts):
+ * a cloud provider is any descriptor that is not keyless. The provider wiring
+ * (engine/core/models.ts) reads these the same "single source of truth, read
+ * live" way it reads the Ollama endpoint. Phase C moves keys server-side behind
+ * the AuthProvider seam; until then they stay on the user's machine and never
+ * travel on the protocol.
  */
 import * as vscode from 'vscode';
+import {
+  cloudProviderDescriptors,
+  ProviderDescriptor,
+  ProviderName,
+} from './providers';
 
 /** The cloud providers that take an API key (Ollama is keyless and local). */
-export type CloudProvider = 'openai' | 'anthropic' | 'groq';
+export type CloudProvider = ProviderName;
 
-/** SecretStorage keys the editor stores the API keys under. */
-const SECRET_KEYS: Record<CloudProvider, string> = {
-  openai: 'myDevTeam.openai.apiKey',
-  anthropic: 'myDevTeam.anthropic.apiKey',
-  groq: 'myDevTeam.groq.apiKey',
-};
+const cloudById = new Map<ProviderName, ProviderDescriptor>(
+  cloudProviderDescriptors.map((d) => [d.id, d])
+);
 
-/** Environment-variable fallbacks, used when SecretStorage holds no key. */
-const ENV_KEYS: Record<CloudProvider, string> = {
-  openai: 'OPENAI_API_KEY',
-  anthropic: 'ANTHROPIC_API_KEY',
-  groq: 'GROQ_API_KEY',
-};
-
-const stored: Partial<Record<CloudProvider, string>> = {};
+const stored: Partial<Record<ProviderName, string>> = {};
 
 /**
  * Load any stored keys from SecretStorage into the in-memory cache. Call once
@@ -39,11 +37,11 @@ const stored: Partial<Record<CloudProvider, string>> = {};
  * startup (the env-var fallback still applies).
  */
 export async function loadStoredApiKeys(secrets: vscode.SecretStorage): Promise<void> {
-  for (const provider of Object.keys(SECRET_KEYS) as CloudProvider[]) {
+  for (const descriptor of cloudProviderDescriptors) {
     try {
-      const value = await secrets.get(SECRET_KEYS[provider]);
+      const value = await secrets.get(descriptor.secretKey!);
       if (value && value.trim()) {
-        stored[provider] = value.trim();
+        stored[descriptor.id] = value.trim();
       }
     } catch {
       // Leave the cache empty for this provider; the env fallback still works.
@@ -60,35 +58,35 @@ export async function setApiKey(
   provider: CloudProvider,
   key: string
 ): Promise<void> {
+  const secretKey = cloudById.get(provider)?.secretKey;
+  if (!secretKey) {
+    return;
+  }
   const trimmed = key.trim();
   if (trimmed) {
-    await secrets.store(SECRET_KEYS[provider], trimmed);
+    await secrets.store(secretKey, trimmed);
     stored[provider] = trimmed;
   } else {
-    await secrets.delete(SECRET_KEYS[provider]);
+    await secrets.delete(secretKey);
     delete stored[provider];
   }
 }
 
-function keyFor(provider: CloudProvider): string | undefined {
-  return stored[provider] ?? process.env[ENV_KEYS[provider]]?.trim() ?? undefined;
+function keyFor(provider: ProviderName): string | undefined {
+  const descriptor = cloudById.get(provider);
+  if (!descriptor) {
+    return undefined;
+  }
+  return stored[provider] ?? process.env[descriptor.envKey!]?.trim() ?? undefined;
 }
 
 export const credentials = {
-  /** The OpenAI API key (SecretStorage first, then `OPENAI_API_KEY`). */
-  get openaiApiKey(): string | undefined {
-    return keyFor('openai');
+  /** The configured API key for a cloud provider (SecretStorage first, then its env var). */
+  apiKey(provider: ProviderName): string | undefined {
+    return keyFor(provider);
   },
-  /** The Anthropic API key (SecretStorage first, then `ANTHROPIC_API_KEY`). */
-  get anthropicApiKey(): string | undefined {
-    return keyFor('anthropic');
-  },
-  /** The Groq API key (SecretStorage first, then `GROQ_API_KEY`). */
-  get groqApiKey(): string | undefined {
-    return keyFor('groq');
-  },
-  /** Whether a usable key exists for the given cloud provider. */
-  has(provider: CloudProvider): boolean {
+  /** Whether a usable key exists for the given provider (always false for a keyless one). */
+  has(provider: ProviderName): boolean {
     return keyFor(provider) !== undefined;
   },
 };

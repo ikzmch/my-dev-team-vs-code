@@ -16,7 +16,7 @@ import {
   RunFailedError,
   RunClient,
 } from '../src/protocol/engine';
-import { __reset } from './mocks/vscode';
+import { __reset, __setConfig } from './mocks/vscode';
 import { beforeEach } from 'vitest';
 
 beforeEach(() => {
@@ -164,6 +164,52 @@ describe('LocalEngine.startRun', () => {
     ]);
   });
 
+  it('emits summary snapshots after a file-changing run and folds them back', async () => {
+    const executionWithWrite = {
+      events: [
+        { kind: 'tool' as const, tool: 'write', input: 'a.ts', result: 'Wrote a.ts (5 bytes).' },
+        { kind: 'text' as const, text: 'Done.' },
+      ],
+    };
+    const summaryPartials = [
+      { whatShips: 'A feature' },
+      { whatShips: 'A feature', howItsBuilt: 'a module', testsAndDocs: 'tests' },
+    ];
+    const summary = { whatShips: 'A feature', howItsBuilt: 'a module', testsAndDocs: 'tests' };
+    const engine = new LocalEngine(
+      fakes({
+        createExecutor: () => ({ execute: async () => executionWithWrite } as any),
+        createSummarizer: () =>
+          ({
+            summarize: async (_p: string, onPartial?: (s: unknown) => void) => {
+              for (const partial of summaryPartials) {
+                onPartial?.(partial);
+              }
+              return summary;
+            },
+          } as any),
+      })
+    );
+
+    const events: RunEvent[] = [];
+    const reply = await engine.startRun(request(), client(events)).result;
+
+    expect(reply.summary).toEqual(summary);
+    const summaryEvents = events.filter((e) => e.type === 'summary-snapshot');
+    expect(summaryEvents).toEqual([
+      { type: 'summary-snapshot', summary: summaryPartials[0] },
+      { type: 'summary-snapshot', summary: summaryPartials[1] },
+    ]);
+
+    // Folding the whole stream reproduces the summary on the snapshot.
+    const folder = new ReplyFolder();
+    let folded;
+    for (const event of events) {
+      folded = folder.apply(event) ?? folded;
+    }
+    expect(folded?.summary).toEqual(summary);
+  });
+
   it('emits answer deltas, not snapshots, for the oneshot path', async () => {
     const engine = new LocalEngine(
       fakes({
@@ -231,15 +277,19 @@ describe('LocalEngine.startRun', () => {
 
     expect(triageCalled).toBe(false);
     // /plan stops after drafting: the reply carries the plan, no transcript.
+    // The command supplies the complexity (moderate by default) since triage
+    // is skipped.
     expect(reply).toEqual({
       intent: 'planning',
+      complexity: 'moderate',
       reason: 'Requested via /plan.',
-      selection: modelSelection('planning'),
+      selection: modelSelection('planning', undefined, 'moderate'),
       plan: aPlan,
     });
     expect(events[0]).toEqual({
       type: 'triaged',
       intent: 'planning',
+      complexity: 'moderate',
       reason: 'Requested via /plan.',
     });
   });
@@ -416,6 +466,59 @@ describe('LocalEngine.startRun', () => {
   });
 });
 
+describe('modelSelection complexity', () => {
+  const entryId = (sel: ReturnType<typeof modelSelection>, step: string) =>
+    sel.models.find((m) => m.step === step)!.id;
+
+  it('sizes the executor by the plan complexity (the 4th arg), not triage', () => {
+    // Same planner judgement, different triage guess: the executor is the same.
+    const a = modelSelection('planning', undefined, 'simple', 'complex');
+    const b = modelSelection('planning', undefined, 'complex', 'complex');
+    expect(entryId(a, 'execute')).toBe(entryId(b, 'execute'));
+    // A different planner judgement moves the executor model.
+    const simplePlan = modelSelection('planning', undefined, 'simple', 'simple');
+    expect(entryId(simplePlan, 'execute')).not.toBe(entryId(a, 'execute'));
+  });
+
+  it('falls back to the triage complexity for the executor before a plan exists', () => {
+    // The streamed model-selected event (emitted right after triage) has only
+    // triage's tier; it must match what a plan of the same tier would route to.
+    const byTriage = modelSelection('planning', undefined, 'complex');
+    const byPlan = modelSelection('planning', undefined, 'simple', 'complex');
+    expect(entryId(byTriage, 'execute')).toBe(entryId(byPlan, 'execute'));
+  });
+
+  it('sizes the planner by the triage complexity, independent of the plan complexity', () => {
+    // The plan entry tracks the 3rd arg (triage) and ignores the 4th (plan).
+    const a = modelSelection('planning', undefined, 'simple', 'simple');
+    const b = modelSelection('planning', undefined, 'simple', 'complex');
+    expect(entryId(a, 'plan')).toBe(entryId(b, 'plan'));
+  });
+
+  it('ignores complexity on the oneshot route (no executor runs)', () => {
+    const answer = modelSelection('oneshot', undefined, 'complex');
+    expect(answer.models.some((m) => m.step === 'execute')).toBe(false);
+  });
+
+  it('reports auto when a pinned model is disabled (hard-blocked)', () => {
+    // Pinning anthropic-opus would normally be mode "pinned"; disabling it drops
+    // the pin so the reported mode and the routed model both become Auto.
+    const pinned = modelSelection('oneshot', 'anthropic-opus');
+    expect(pinned.mode).toBe('pinned');
+    __setConfig('myDevTeam.disabledModels', ['anthropic-opus']);
+    const blocked = modelSelection('oneshot', 'anthropic-opus');
+    expect(blocked.mode).toBe('auto');
+    expect(blocked.models.find((m) => m.step === 'answer')!.id).not.toBe('anthropic-opus');
+  });
+
+  it('reports auto when a pinned provider is disabled', () => {
+    __setConfig('myDevTeam.disabledProviders', ['anthropic']);
+    const blocked = modelSelection('oneshot', 'provider:anthropic');
+    expect(blocked.mode).toBe('auto');
+    expect(blocked.provider).toBeUndefined();
+  });
+});
+
 describe('LocalEngine.listModels', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -448,5 +551,40 @@ describe('LocalEngine.listModels', () => {
     expect(choices.find((c) => c.id === 'openai-gpt4o')?.available).toBe(
       credentials.has('openai')
     );
+  });
+
+  it('marks a disabled provider and its models as disabled and unavailable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('down');
+      })
+    );
+    __setConfig('myDevTeam.disabledProviders', ['anthropic']);
+    const choices = await new LocalEngine(fakes()).listModels();
+
+    const provider = choices.find((c) => c.id === 'provider:anthropic');
+    expect(provider?.disabled).toBe(true);
+    expect(provider?.available).toBe(false);
+    const opus = choices.find((c) => c.id === 'anthropic-opus');
+    expect(opus?.disabled).toBe(true);
+    expect(opus?.available).toBe(false);
+    // An enabled model carries no disabled flag.
+    expect(choices.find((c) => c.id === 'qwen3-coder')?.disabled).toBeUndefined();
+  });
+
+  it('marks a single disabled model without touching its provider', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('down');
+      })
+    );
+    __setConfig('myDevTeam.disabledModels', ['qwen3-coder']);
+    const choices = await new LocalEngine(fakes()).listModels();
+
+    expect(choices.find((c) => c.id === 'qwen3-coder')?.disabled).toBe(true);
+    expect(choices.find((c) => c.id === 'qwen3-coder')?.available).toBe(false);
+    expect(choices.find((c) => c.id === 'provider:ollama')?.disabled).toBeUndefined();
   });
 });

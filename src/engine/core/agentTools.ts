@@ -15,12 +15,27 @@
  */
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
+import { convertJsonSchemaToZod } from 'zod-from-json-schema';
 import { toolConfigs } from '../config/tools';
-import { ProgressStatusSchema } from '../../protocol/types';
+import { DynamicToolDef, ProgressStatusSchema } from '../../protocol/types';
 import { clientTools, ClientToolName, ToolHost } from '../../protocol/toolContract';
 
 /** Name of the engine-only progress tool (see ../config/tools/progress.md). */
 export const PROGRESS_TOOL = 'progress';
+
+/** Name of the engine-only skill tool (see ../config/tools/skill.md). */
+export const SKILL_TOOL = 'skill';
+
+/**
+ * Input the executor's `skill` tool takes: the name of the skill to load. Like
+ * `progress` this never reaches the client - the executor resolves the body
+ * from the per-run skill set the engine assembled (built-in + workspace skills,
+ * see ../config/skills.ts), so the schema lives here rather than in the
+ * protocol's client tool contract.
+ */
+export const SkillInputSchema = z.object({
+  name: z.string().describe('The name of the skill to load, as listed in "Available skills".'),
+});
 
 /**
  * Input the executor's `progress` tool takes: the plan steps to show and their
@@ -53,9 +68,33 @@ export const ProgressReportSchema = z.object({
  * per Executor, so it is read through a getter the Executor updates each run
  * rather than captured here.
  */
+/**
+ * Convert an MCP tool's published JSON Schema to a zod schema for Mastra, so
+ * the model is told the tool's argument shape. Best effort: a schema that fails
+ * to convert (or is not object-shaped) falls back to a permissive object, since
+ * the client's MCP server is what actually validates the call's arguments - the
+ * engine-side schema is only there to brief the model.
+ */
+function dynamicInputSchema(jsonSchema: unknown): z.ZodTypeAny {
+  try {
+    const schema = convertJsonSchemaToZod(jsonSchema as Record<string, unknown>);
+    return schema as z.ZodTypeAny;
+  } catch {
+    return z.object({}).passthrough();
+  }
+}
+
 export function buildAgentTools(
   host: ToolHost,
-  getSignal?: () => AbortSignal | undefined
+  getSignal?: () => AbortSignal | undefined,
+  // The per-run skill bodies the `skill` tool returns by name (built-in +
+  // workspace skills, resolved by the workflow). Absent or empty means no
+  // skills are available, and the tool says so when called.
+  skillBodies?: ReadonlyMap<string, string>,
+  // The run's discovered MCP tools (client/mcp.ts), each surfaced as a proxy
+  // that delegates to the host like the built-in tools. Absent or empty means
+  // no MCP tools this run.
+  dynamicTools?: readonly DynamicToolDef[]
 ) {
   const proxy = (name: ClientToolName) => {
     const config = toolConfigs[name];
@@ -85,6 +124,46 @@ export function buildAgentTools(
     execute: async () => 'Progress shown to the user.',
   });
 
+  // The skill tool is engine-only like progress: no client implementation and
+  // no approval gate. Its execute returns the loaded skill's body, which Mastra
+  // feeds back to the model as the tool result (progressive disclosure - the
+  // body enters the model's context only when a skill is actually loaded). An
+  // unknown name returns a short notice rather than throwing, so the run keeps
+  // going.
+  const skillConfig = toolConfigs[SKILL_TOOL];
+  if (!skillConfig) {
+    throw new Error(`Tool "${SKILL_TOOL}" has no engine-side config in config/tools.`);
+  }
+  const skill = createTool({
+    id: skillConfig.name,
+    description: skillConfig.description,
+    inputSchema: SkillInputSchema,
+    execute: async ({ name }) => {
+      const body = skillBodies?.get(name);
+      if (body !== undefined) {
+        return body;
+      }
+      const available = skillBodies && skillBodies.size > 0
+        ? `Available skills: ${[...skillBodies.keys()].join(', ')}.`
+        : 'No skills are available.';
+      return `No skill named "${name}". ${available}`;
+    },
+  });
+
+  // MCP tools have no engine-side `.md` config; their name, description, and
+  // input schema all come from the run request (the server published them).
+  // Each is a plain proxy onto the host - the host gates the call through the
+  // Approver, exactly like a side-effecting built-in tool.
+  const dynamic: Record<string, ReturnType<typeof createTool>> = {};
+  for (const def of dynamicTools ?? []) {
+    dynamic[def.name] = createTool({
+      id: def.name,
+      description: def.description,
+      inputSchema: dynamicInputSchema(def.inputSchema),
+      execute: async (args) => host.execute(def.name, args, getSignal?.()),
+    });
+  }
+
   return {
     read: proxy('read'),
     search: proxy('search'),
@@ -92,7 +171,29 @@ export function buildAgentTools(
     write: proxy('write'),
     edit: proxy('edit'),
     progress,
+    skill,
+    ...dynamic,
   };
 }
 
 export type AgentTools = ReturnType<typeof buildAgentTools>;
+
+/**
+ * Render the executor prompt's "Additional tools" section from the run's MCP
+ * tools: one line per tool naming it and what it does, flagged as requiring
+ * approval (every MCP call is gated). Empty string when there are none, so the
+ * section is omitted entirely. Mirrors `renderSkillsSection`.
+ */
+export function renderDynamicToolsSection(defs: readonly DynamicToolDef[]): string {
+  if (defs.length === 0) {
+    return '';
+  }
+  const lines = defs.map(
+    (def) => `- "${def.name}": ${def.description} Requires user approval.`
+  );
+  return (
+    '--- Additional tools (from connected MCP servers) ---\n' +
+    lines.join('\n') +
+    '\n--- End of additional tools ---'
+  );
+}

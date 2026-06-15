@@ -3,6 +3,7 @@ id: groq-gpt-oss-120b
 label: GPT-OSS 120B (Groq)
 provider: groq
 model: openai/gpt-oss-120b
+tier: complex
 capabilities:
   reasoning: 0.86
   coding: 0.83

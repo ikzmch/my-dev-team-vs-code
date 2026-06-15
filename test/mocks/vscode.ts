@@ -49,6 +49,36 @@ export class Location {
   constructor(public readonly uri: Uri, public readonly range: Range) {}
 }
 
+/** Mirrors vscode.CodeActionKind: only the QuickFix value the source uses. */
+export class CodeActionKind {
+  private constructor(public readonly value: string) {}
+  static readonly QuickFix = new CodeActionKind('quickfix');
+}
+
+/** Mirrors vscode.CodeAction: title + kind, with command/diagnostics set later. */
+export class CodeAction {
+  command: { command: string; title: string; arguments?: unknown[] } | undefined;
+  diagnostics: unknown[] | undefined;
+  isPreferred: boolean | undefined;
+  constructor(public readonly title: string, public readonly kind?: CodeActionKind) {}
+}
+
+/** Mirrors vscode.CodeLens: a range plus the command it invokes. */
+export class CodeLens {
+  constructor(
+    public readonly range: Range,
+    public readonly command?: { command: string; title: string; arguments?: unknown[] }
+  ) {}
+}
+
+/** Mirrors vscode.DiagnosticSeverity (Error is 0, as in the real API). */
+export enum DiagnosticSeverity {
+  Error = 0,
+  Warning = 1,
+  Information = 2,
+  Hint = 3,
+}
+
 export class LanguageModelTextPart {
   constructor(public readonly value: string) {}
 }
@@ -106,6 +136,27 @@ export enum FileType {
   File = 1,
   Directory = 2,
   SymbolicLink = 64,
+}
+
+/**
+ * Minimal vscode.MarkdownString: accumulates appended markdown into `value`,
+ * and carries the `isTrusted`/`supportThemeIcons` flags a rich status-bar
+ * hover sets so `command:` links and `$(icon)` codicons render.
+ */
+export class MarkdownString {
+  value: string;
+  isTrusted: boolean | { enabledCommands: string[] } = false;
+  supportThemeIcons: boolean;
+
+  constructor(value = '', supportThemeIcons = false) {
+    this.value = value;
+    this.supportThemeIcons = supportThemeIcons;
+  }
+
+  appendMarkdown(value: string): this {
+    this.value += value;
+    return this;
+  }
 }
 
 export class EventEmitter<T> {
@@ -168,6 +219,10 @@ interface MockState {
   inputBoxResponse: string | undefined;
   /** SecretStorage values by key. */
   secrets: Map<string, string>;
+  /** Diagnostics by `uri.path`, returned from languages.getDiagnostics. */
+  diagnostics: Map<string, unknown[]>;
+  /** The fake active text editor, read by window.activeTextEditor. */
+  activeTextEditor: unknown;
 }
 
 export const __state: MockState = {
@@ -187,6 +242,8 @@ export const __state: MockState = {
   quickPickResponse: undefined,
   inputBoxResponse: undefined,
   secrets: new Map(),
+  diagnostics: new Map(),
+  activeTextEditor: undefined,
 };
 
 export function __reset(): void {
@@ -206,6 +263,18 @@ export function __reset(): void {
   __state.quickPickResponse = undefined;
   __state.inputBoxResponse = undefined;
   __state.secrets = new Map();
+  __state.diagnostics = new Map();
+  __state.activeTextEditor = undefined;
+}
+
+/** Seed the diagnostics languages.getDiagnostics returns for a uri. */
+export function __setDiagnostics(uri: Uri, diagnostics: unknown[]): void {
+  __state.diagnostics.set(uri.path, diagnostics);
+}
+
+/** Set the fake active text editor window.activeTextEditor returns. */
+export function __setActiveEditor(editor: unknown): void {
+  __state.activeTextEditor = editor;
 }
 
 /** Choose which quick-pick item index showQuickPick returns next. */
@@ -231,7 +300,7 @@ export const secrets = {
 
 export interface FakeStatusBarItem {
   text: string;
-  tooltip: string | undefined;
+  tooltip: string | MarkdownString | undefined;
   command: string | undefined;
   show: ReturnType<typeof vi.fn>;
   hide: ReturnType<typeof vi.fn>;
@@ -288,6 +357,16 @@ export function __setFile(relPath: string, contents: string): Uri {
 }
 
 /**
+ * Seed a file at an absolute path (outside any workspace root), e.g. under a
+ * mocked home directory. The path is interpreted as a `file:` Uri.
+ */
+export function __setFileAbs(absPath: string, contents: string): Uri {
+  const uri = Uri.file(absPath);
+  __state.files.set(uri.path, contents);
+  return uri;
+}
+
+/**
  * Seed a path that fs.stat reports as a symbolic link (it still has readable
  * bytes, standing in for a link whose target is outside the workspace).
  */
@@ -333,6 +412,32 @@ export const workspace = {
 
     createDirectory: vi.fn(async (_uri: Uri): Promise<void> => {
       // Directories are implicit in the flat file map.
+    }),
+
+    readDirectory: vi.fn(async (uri: Uri): Promise<[string, number][]> => {
+      // Derive the immediate children of `uri` from the flat file map: a path
+      // with no further separator is a File, one with more is a Directory.
+      const prefix = uri.path.replace(/\/+$/, '') + '/';
+      const children = new Map<string, number>();
+      for (const filePath of __state.files.keys()) {
+        if (!filePath.startsWith(prefix)) {
+          continue;
+        }
+        const rest = filePath.slice(prefix.length);
+        const slash = rest.indexOf('/');
+        const name = slash === -1 ? rest : rest.slice(0, slash);
+        const type = slash === -1 ? FileType.File : FileType.Directory;
+        // A directory wins over a file entry of the same name (a path both has
+        // children and, hypothetically, exists as a file).
+        if (!children.has(name) || type === FileType.Directory) {
+          children.set(name, type);
+        }
+      }
+      if (children.size === 0) {
+        // Mirror the real API: reading a directory that does not exist throws.
+        throw new Error(`ENOENT: ${uri.path}`);
+      }
+      return [...children.entries()];
     }),
 
     stat: vi.fn(async (uri: Uri): Promise<{ type: number; size: number }> => {
@@ -412,6 +517,10 @@ export const workspace = {
 };
 
 export const window = {
+  get activeTextEditor() {
+    return __state.activeTextEditor;
+  },
+
   showWarningMessage: vi.fn(
     async (..._args: unknown[]): Promise<string | undefined> =>
       __state.warningResponse
@@ -467,6 +576,15 @@ export const window = {
   ),
 };
 
+/**
+ * Mirrors vscode.env. `appRoot` is undefined by default so the bundled-ripgrep
+ * lookup finds nothing and content search falls back to the JavaScript scan;
+ * the ripgrep path itself is tested by injecting its dependencies.
+ */
+export const env = {
+  appRoot: undefined as string | undefined,
+};
+
 export const commands = {
   registerCommand: vi.fn((id: string, fn: (...args: unknown[]) => unknown) => {
     __state.registeredCommands.set(id, fn);
@@ -487,6 +605,12 @@ export const lm = {
     __state.registeredTools.set(name, impl);
     return { dispose: vi.fn() };
   }),
+};
+
+export const languages = {
+  registerCodeActionsProvider: vi.fn((..._args: unknown[]) => ({ dispose: vi.fn() })),
+  registerCodeLensProvider: vi.fn((..._args: unknown[]) => ({ dispose: vi.fn() })),
+  getDiagnostics: vi.fn((uri: Uri): unknown[] => __state.diagnostics.get(uri.path) ?? []),
 };
 
 export const chat = {

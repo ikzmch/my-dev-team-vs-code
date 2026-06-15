@@ -15,6 +15,19 @@ import * as vscode from 'vscode';
 const CONFIG_SECTION = 'myDevTeam';
 
 /**
+ * One configured MCP server (stdio transport): a name (used to namespace its
+ * tools and to label its approval prompts) plus the command, arguments, and
+ * environment to launch it with. Parsed from the `myDevTeam.mcp.servers` object
+ * map by `settings.mcp.servers`.
+ */
+export interface McpServerConfig {
+  name: string;
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/**
  * Fallbacks for the user-tunable settings. Keep these in sync with the
  * `default` values declared in package.json `contributes.configuration` so
  * the Settings UI shows the values actually in effect.
@@ -22,6 +35,13 @@ const CONFIG_SECTION = 'myDevTeam';
 export const defaults = {
   engine: 'local' as const,
   model: 'auto',
+  complexityRouting: true,
+  planApproval: 'auto' as const,
+  approval: {
+    fileChanges: false,
+  },
+  disabledProviders: [] as readonly string[],
+  disabledModels: [] as readonly string[],
   ollamaEndpoint: 'http://localhost:11434',
   requestsPerMinute: 0,
   runCommandTimeoutMs: 60_000,
@@ -36,11 +56,29 @@ export const defaults = {
   chat: {
     toolSnippetLines: 5,
   },
+  write: {
+    protectedPaths: ['.vscode'],
+  },
   usage: {
+    showInChat: true,
+  },
+  changes: {
+    showInChat: true,
+  },
+  summary: {
+    showInChat: true,
+  },
+  thinking: {
     showInChat: true,
   },
   instructions: {
     files: ['AGENTS.md', 'CLAUDE.md'],
+  },
+  skills: {
+    directories: ['.devteam/skills', '.claude/skills'],
+  },
+  mcp: {
+    servers: {} as Readonly<Record<string, unknown>>,
   },
   telemetry: {
     evalLog: false,
@@ -87,6 +125,22 @@ function userBaseUrl(key: string): string | undefined {
   return /^https?:\/\/.+/.test(trimmed) ? trimmed : undefined;
 }
 
+/**
+ * Read a user-set list of identifiers (provider names / model ids), keeping only
+ * the non-blank string entries and trimming them. A non-array (unset or wrong
+ * type) yields the empty list, so a typo can never disable everything by
+ * accident - the caller then treats nothing as disabled.
+ */
+function userStringList(key: string): readonly string[] {
+  const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<unknown>(key);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    .map((entry) => entry.trim());
+}
+
 export const settings = {
   /**
    * Which engine handles `@devteam` runs (`myDevTeam.engine`): the
@@ -115,6 +169,82 @@ export const settings = {
   },
 
   /**
+   * Whether triage's complexity judgement sizes the executor's model
+   * (`myDevTeam.complexityRouting`). On by default: simple work routes to a
+   * cheaper/smaller model and complex work to the strongest in the candidate
+   * pool (the model registry's `tier`). When off, the executor routes by
+   * capability alone, as before. A pinned model bypasses it regardless. Read
+   * live; anything but the literal `false` counts as on.
+   */
+  get complexityRoutingEnabled(): boolean {
+    return (
+      vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .get<unknown>('complexityRouting') !== false
+    );
+  },
+
+  /**
+   * When a drafted plan must be approved before it executes
+   * (`myDevTeam.planApproval`). `auto` (the default) pauses only when the
+   * planner judged the work `complex`; `always` pauses on every plan; `never`
+   * runs straight through (the pre-gate behaviour). The gate offers Approve,
+   * Cancel, and Revise (re-plan with a comment). Read live; only the literal
+   * `always`/`never` switch off `auto`, so a typo is the safe default.
+   */
+  get planApproval(): 'auto' | 'always' | 'never' {
+    const value = vscode.workspace
+      .getConfiguration(CONFIG_SECTION)
+      .get<unknown>('planApproval');
+    return value === 'always' || value === 'never' ? value : defaults.planApproval;
+  },
+
+  /**
+   * Approval gates the user can switch on. Only `run` is gated unconditionally
+   * (a shell command reaches outside the workspace and is not git-recoverable);
+   * the file-changing tools are gated only when the user opts in here.
+   */
+  approval: {
+    /**
+     * Whether `write`/`edit` must be approved before they change a file
+     * (`myDevTeam.approval.fileChanges`). Off by default: a git-backed workspace
+     * makes a write recoverable, and prompting on every file would make a
+     * routine multi-file change unusable, so changes apply straight away. Turn
+     * it on to confirm every write and edit with the same Approve/Decline prompt
+     * the `run` tool uses. Read live, so flipping it takes effect on the next
+     * request; anything but the literal `true` counts as off.
+     */
+    get fileChanges(): boolean {
+      return (
+        vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<unknown>('approval.fileChanges') === true
+      );
+    },
+  },
+
+  /**
+   * Providers the user switched off (`myDevTeam.disabledProviders`): the router
+   * never routes to their models and the `/model` picker shows them disabled,
+   * even when a key is set. This is the per-user layer on top of the backend's
+   * own floor (engine/config/backend.json); it narrows further but can never
+   * re-enable a provider the backend disabled. Read live. Names that are not
+   * registered providers are simply harmless.
+   */
+  get disabledProviders(): readonly string[] {
+    return userStringList('disabledProviders');
+  },
+
+  /**
+   * Individual model ids the user switched off (`myDevTeam.disabledModels`),
+   * same two-layer semantics as `disabledProviders` but per model. A disabled
+   * model never runs even if pinned; the run falls back to Auto. Read live.
+   */
+  get disabledModels(): readonly string[] {
+    return userStringList('disabledModels');
+  },
+
+  /**
    * Where the Ollama server listens (`myDevTeam.ollama.endpoint`). The
    * provider wiring (core/models.ts), the chat error hints (messages.ts), and
    * the activation health check (ui/startupCheck.ts) all derive from this one
@@ -125,30 +255,15 @@ export const settings = {
   },
 
   /**
-   * Optional custom base URL for the OpenAI provider
-   * (`myDevTeam.openai.baseUrl`): an Azure / OpenAI-compatible gateway.
-   * Undefined uses the OpenAI default endpoint.
+   * Optional custom base URL for a cloud provider, read from the VS Code
+   * setting named by the provider descriptor's `baseUrlSetting`
+   * (`myDevTeam.<provider>.baseUrl`): an Azure / OpenAI-compatible gateway or a
+   * proxy. Undefined (unset or invalid) uses the provider's own default
+   * endpoint. Generic over the provider so adding one needs no new getter -
+   * the provider wiring (engine/core/models.ts) passes the descriptor's key.
    */
-  get openaiBaseUrl(): string | undefined {
-    return userBaseUrl('openai.baseUrl');
-  },
-
-  /**
-   * Optional custom base URL for the Anthropic provider
-   * (`myDevTeam.anthropic.baseUrl`): a proxy or gateway. Undefined uses the
-   * Anthropic default endpoint.
-   */
-  get anthropicBaseUrl(): string | undefined {
-    return userBaseUrl('anthropic.baseUrl');
-  },
-
-  /**
-   * Optional custom base URL for the Groq provider
-   * (`myDevTeam.groq.baseUrl`): a proxy or gateway. Undefined uses the Groq
-   * default endpoint.
-   */
-  get groqBaseUrl(): string | undefined {
-    return userBaseUrl('groq.baseUrl');
+  providerBaseUrl(settingKey: string): string | undefined {
+    return userBaseUrl(settingKey);
   },
 
   /** Outgoing model-request rate limiting and rate-limit retry behaviour. */
@@ -214,6 +329,16 @@ export const settings = {
     },
     /** Backstop in characters, so a few enormous lines cannot flood the context. */
     maxChars: 200_000,
+    /**
+     * Max size, in bytes, of a file the `read` tool will load. The line/char
+     * caps bound the *result*, but the whole file is read into the extension
+     * host before they apply, so without this a `read` of a multi-GB or giant
+     * minified file (the executor can be steered to one by injected workspace
+     * text) would exhaust memory. Over this, `read` refuses by its stat instead
+     * of loading the file, mirroring the attachment reader and the content scan.
+     * Generous (10 MB) so every ordinary source file passes; compile-time.
+     */
+    maxFileSizeBytes: 10 * 1024 * 1024,
   },
 
   /** Caps on the `search` tool's file scans. */
@@ -248,6 +373,16 @@ export const settings = {
     excludeGlob: '{**/node_modules/**,**/.git/**,**/dist/**,**/out/**,**/coverage/**}',
     /** Files larger than this are skipped by a content search. */
     maxFileSizeBytes: 1024 * 1024,
+    /**
+     * Ceiling on the candidate file list the JavaScript content scan (the
+     * no-ripgrep fallback) materialises from `findFiles`. The files-examined
+     * budget (`contentScanLimit`) bounds the *work*, but `findFiles('**\/*')`
+     * with no `maxResults` first builds one Uri per workspace file, so on a very
+     * large repo the array itself is the cost. Generous (far above the scan
+     * budget) so it never drops files the budget would have reached; when the
+     * candidate list is capped here the scan reports `truncated`. Compile-time.
+     */
+    scanCandidateLimit: 25_000,
   },
 
   /**
@@ -284,6 +419,43 @@ export const settings = {
     },
   },
 
+  /**
+   * Containment for the ungated `write`/`edit` tools (tools/workspaceTools.ts).
+   * The tools are deliberately ungated because a git-backed workspace makes
+   * their changes recoverable - but that reasoning fails for locations that are
+   * not git-tracked and that the system executes on its own, so those are
+   * refused outright regardless of approval.
+   */
+  write: {
+    /**
+     * Root-relative path prefixes `write`/`edit` refuse to touch
+     * (`myDevTeam.write.protectedPaths`), *in addition to* the always-protected
+     * `.git/` (hardcoded in workspaceTools.ts, not user-removable: a write to
+     * `.git/hooks/*` runs on the next git command, code execution that never
+     * passes the run tool's approval gate). The configurable entries cover the
+     * other auto-running locations (the default `.vscode`, whose tasks.json can
+     * run on folder open). Each entry is matched segment by segment, so `.git`
+     * does not catch `.gitignore`. Invalid entries (non-string, empty, or
+     * containing `..`) make the whole list fall back to the default. An empty
+     * array drops the configurable prefixes but keeps `.git` protected.
+     */
+    get protectedPaths(): readonly string[] {
+      const value = vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .get<unknown>('write.protectedPaths');
+      if (!Array.isArray(value)) {
+        return defaults.write.protectedPaths;
+      }
+      const valid = value.every(
+        (entry) =>
+          typeof entry === 'string' && entry.trim().length > 0 && !entry.includes('..')
+      );
+      return valid
+        ? (value as string[]).map((entry) => entry.trim())
+        : defaults.write.protectedPaths;
+    },
+  },
+
   /** How per-run token usage is surfaced to the user (client/usageStats.ts). */
   usage: {
     /**
@@ -299,6 +471,66 @@ export const settings = {
           .get<unknown>('usage.showInChat') !== false
       );
     },
+  },
+
+  changes: {
+    /**
+     * Whether a reply that changed files ends with a `**Changes:**` line
+     * summing them ("N files changed, +X -Y", `myDevTeam.changes.showInChat`).
+     * On by default; the line only appears when a turn actually wrote files, so
+     * it is far less chatty than the per-turn token line. Anything but the
+     * literal `false` counts as on.
+     */
+    get showInChatEnabled(): boolean {
+      return (
+        vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<unknown>('changes.showInChat') !== false
+      );
+    },
+  },
+
+  summary: {
+    /**
+     * Whether an executed plan ends with a three-section **Summary** recap
+     * (what ships / how it's built / tests and docs, `myDevTeam.summary.showInChat`).
+     * On by default. This gates the work, not just the display: when off, the
+     * engine skips the extra summarizer model call entirely, and it is skipped
+     * anyway on a run that changed no files. Anything but the literal `false`
+     * counts as on.
+     */
+    get showInChatEnabled(): boolean {
+      return (
+        vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<unknown>('summary.showInChat') !== false
+      );
+    },
+  },
+
+  thinking: {
+    /**
+     * Whether a reasoning model's thinking is surfaced live as transient
+     * progress while `@devteam` works (`myDevTeam.thinking.showInChat`). On by
+     * default. The engine condenses the model's verbose `<think>` output to its
+     * latest line before showing it, and never keeps it past the run. Like the
+     * summary flag this gates the work, not just the display: when off, the
+     * executor and answerer skip capturing reasoning entirely. Anything but the
+     * literal `false` counts as on.
+     */
+    get showInChatEnabled(): boolean {
+      return (
+        vscode.workspace
+          .getConfiguration(CONFIG_SECTION)
+          .get<unknown>('thinking.showInChat') !== false
+      );
+    },
+    /**
+     * Max characters of one condensed thinking line shown to the user; a longer
+     * line is trimmed with an ellipsis. Compile-time: it bounds a transient
+     * status line, not something an end user tunes.
+     */
+    lineMaxChars: 200,
   },
 
   /** The local eval log run/feedback records land in (client/evalLog.ts). */
@@ -368,6 +600,113 @@ export const settings = {
      * small local model.
      */
     maxChars: 8_000,
+  },
+
+  /**
+   * The workspace's skills (named, described instruction packages the executor
+   * loads on demand), read by the client per request from the configured
+   * directories and shipped on the run request.
+   */
+  skills: {
+    /**
+     * Root-relative directories scanned for `<dir>/<name>/SKILL.md` files
+     * (`myDevTeam.skills.directories`). An empty array disables workspace
+     * skills (the built-in skills still ship). An entry that is absolute or
+     * contains ".." would escape the workspace, so such a list falls back to
+     * the default.
+     */
+    get directories(): readonly string[] {
+      const value = vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .get<unknown>('skills.directories');
+      if (!Array.isArray(value)) {
+        return defaults.skills.directories;
+      }
+      const valid = value.every(
+        (dir) =>
+          typeof dir === 'string' &&
+          dir.trim().length > 0 &&
+          !dir.includes('..') &&
+          !/^([a-zA-Z]:[\\/]|[\\/])/.test(dir.trim())
+      );
+      return valid
+        ? (value as string[]).map((dir) => dir.trim().replace(/[\\/]+$/, ''))
+        : defaults.skills.directories;
+    },
+    /** Max skills read from the workspace in one request. */
+    maxSkills: 24,
+    /**
+     * Max characters of one skill file: the client caps the raw text it ships
+     * and the engine caps the parsed body, so a large skill cannot crowd the
+     * executor's context window.
+     */
+    maxChars: 8_000,
+  },
+
+  /**
+   * User-configured MCP (Model Context Protocol) servers whose tools the
+   * executor may call (client/mcp.ts). Servers are launched over stdio, their
+   * tools discovered and offered to the model, and every call is approved
+   * through the same gate as the `run` tool. Untrusted input, so no server is
+   * contacted in an untrusted workspace.
+   */
+  mcp: {
+    /**
+     * The configured servers (`myDevTeam.mcp.servers`): a name -> definition
+     * object map (Claude-Desktop-shaped). Each value must carry a non-empty
+     * string `command`, with optional string-array `args` and string-map `env`;
+     * the name must be a plain identifier (letters, digits, `_`, `-`) so it can
+     * namespace the server's tools cleanly. Invalid entries are dropped rather
+     * than failing - a typo in one server must not disable the rest. Empty (the
+     * default, or a non-object value) turns the feature off. Read live; new
+     * servers take effect on a window reload (a server is a launched process the
+     * hub connects once and reuses).
+     */
+    get servers(): readonly McpServerConfig[] {
+      const value = vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .get<unknown>('mcp.servers');
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+        return [];
+      }
+      const out: McpServerConfig[] = [];
+      for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+        const trimmed = name.trim();
+        if (!/^[\w-]+$/.test(trimmed) || typeof raw !== 'object' || raw === null) {
+          continue;
+        }
+        const entry = raw as Record<string, unknown>;
+        if (typeof entry.command !== 'string' || !entry.command.trim()) {
+          continue;
+        }
+        const args =
+          Array.isArray(entry.args) && entry.args.every((a) => typeof a === 'string')
+            ? (entry.args as string[])
+            : undefined;
+        const env =
+          entry.env &&
+          typeof entry.env === 'object' &&
+          !Array.isArray(entry.env) &&
+          Object.values(entry.env).every((v) => typeof v === 'string')
+            ? (entry.env as Record<string, string>)
+            : undefined;
+        out.push({
+          name: trimmed,
+          command: entry.command.trim(),
+          ...(args ? { args } : {}),
+          ...(env ? { env } : {}),
+        });
+      }
+      return out;
+    },
+    /** Max MCP tools offered to the model across all servers in one run. */
+    maxTools: 64,
+    /** How long to wait for a server to connect before skipping it, in ms. */
+    connectTimeoutMs: 10_000,
+    /** How long a single MCP tool call may run before it is abandoned, in ms. */
+    callTimeoutMs: 60_000,
+    /** Cap on an MCP tool result handed back to the model, in characters. */
+    resultMaxChars: 50_000,
   },
 
   /**

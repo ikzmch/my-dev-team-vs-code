@@ -3,6 +3,7 @@ id: gemma3-4b
 label: Gemma 3 4B (Ollama)
 provider: ollama
 model: gemma3:4b
+tier: simple
 capabilities:
   reasoning: 0.3
   coding: 0.3

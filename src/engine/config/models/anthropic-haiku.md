@@ -3,6 +3,7 @@ id: anthropic-haiku
 label: Claude Haiku 4.5 (Anthropic)
 provider: anthropic
 model: claude-haiku-4-5-20251001
+tier: simple
 capabilities:
   reasoning: 0.72
   coding: 0.72

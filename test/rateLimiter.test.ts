@@ -213,4 +213,40 @@ describe('rateLimitMiddleware', () => {
     await expect(second).resolves.toEqual({ value: 'ok' });
     expect(doGenerate).toHaveBeenCalledTimes(2);
   });
+
+  it('hands a reserved slot back when the throttle wait is aborted', async () => {
+    vi.useFakeTimers();
+    __setConfig('myDevTeam.provider.requestsPerMinute', 60); // 1 request / 1000ms
+    const mw = rateLimitMiddleware('groq');
+    const doGenerate = vi.fn(async () => ({ value: 'ok' }));
+    const call = (signal?: AbortSignal) =>
+      mw.wrapGenerate!({
+        doGenerate,
+        doStream: (async () => ({})) as any,
+        params: (signal ? { abortSignal: signal } : {}) as any,
+        model: {} as any,
+      });
+
+    // First call consumes the immediate slot (reserves the 1000ms one next).
+    await expect(call()).resolves.toEqual({ value: 'ok' });
+    expect(doGenerate).toHaveBeenCalledTimes(1);
+
+    // Second call must wait ~1000ms; abort it mid-wait. It should never issue
+    // and should release the slot it reserved.
+    const controller = new AbortController();
+    const aborted = call(controller.signal).catch((e) => e);
+    await vi.advanceTimersByTimeAsync(200);
+    controller.abort(new Error('cancelled'));
+    expect((await aborted).message).toBe('cancelled');
+    expect(doGenerate).toHaveBeenCalledTimes(1); // never issued
+
+    // The released slot was rolled back, so a third call waits only the
+    // remaining ~800ms (to the 1000ms slot), not 1800ms (to a pushed-out 2000ms
+    // slot). Advancing 800ms therefore resolves it; without the release it would
+    // still be throttled here.
+    const third = call();
+    await vi.advanceTimersByTimeAsync(800);
+    await expect(third).resolves.toEqual({ value: 'ok' });
+    expect(doGenerate).toHaveBeenCalledTimes(2);
+  });
 });

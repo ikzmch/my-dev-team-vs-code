@@ -51,16 +51,22 @@ describe('activate', () => {
       'myDevTeam.agent',
       expect.any(Function)
     );
-    // The approval command + the run-mirror terminal + five tools + the
-    // participant, plus the unified status-bar button and its status-menu
-    // command, the select-model and set-api-key commands, the config-change
-    // listener, and the show-usage command, get pushed for disposal.
-    expect(context.subscriptions).toHaveLength(14);
+    // The approval command + the plan-review command + the MCP hub disposable +
+    // the run-mirror terminal + five tools + the participant, plus the unified
+    // status-bar button and its status-menu command, the select-model and
+    // set-api-key commands, the config-change listener, the show-usage command,
+    // and the five editor entry points (three shim commands + the code-action
+    // and CodeLens providers), get pushed for disposal.
+    expect(context.subscriptions).toHaveLength(21);
     expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.planReview')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.statusMenu')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.selectModel')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.setApiKey')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.showUsage')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.fixDiagnostic')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.explainSelection')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.writeOrRepairTests')).toBe(true);
   });
 
   it('fires the Ollama health check without blocking activation', () => {
@@ -129,7 +135,7 @@ describe('activate', () => {
 
   it('the wired handler drives the workflow and streams the reply', async () => {
     generateMock.mockResolvedValue({
-      object: { intent: 'oneshot', reason: 'simple' },
+      object: { intent: 'oneshot', complexity: 'simple', reason: 'simple' },
     });
     const participant = {
       followupProvider: undefined as unknown,

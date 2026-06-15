@@ -26,6 +26,7 @@ import triage from './agents/triage.md';
 import planner from './agents/planner.md';
 import answerer from './agents/answerer.md';
 import executor from './agents/executor.md';
+import summarizer from './agents/summarizer.md';
 
 const TOOLS_PLACEHOLDER = '{{tools}}';
 const ENVIRONMENT_PLACEHOLDER = '{{environment}}';
@@ -74,6 +75,7 @@ export const agents = {
   planner: loadAgent(planner),
   answerer: loadAgent(answerer),
   executor: loadAgent(executor),
+  summarizer: loadAgent(summarizer),
 } as const;
 
 export type AgentName = keyof typeof agents;
