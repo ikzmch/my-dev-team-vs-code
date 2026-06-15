@@ -25,16 +25,31 @@ not require a DESIGN.md update.
 ## Keep README.md high-level
 
 README.md is the front page, written to attract developers and end users: a
-short pitch, the highlights, links to QUICKSTART.md (end users) and DESIGN.md
-(developers), a minimal getting-started snippet, the tech stack, and the
-license. Keep it at that altitude - detail belongs in DESIGN.md or
-QUICKSTART.md, never here. Update it only when the pitch-level facts change:
-what the extension is and does, a headline feature, the tech stack, the
-build/launch one-liner, the license, or the set of documents it links to.
+short pitch, the highlights, links to QUICKSTART.md and HOWTO.md (end users)
+and DESIGN.md (developers), a minimal getting-started snippet, the tech stack,
+and the license. Keep it at that altitude - detail belongs in DESIGN.md,
+HOWTO.md, or QUICKSTART.md, never here. Update it only when the pitch-level
+facts change: what the extension is and does, a headline feature, the tech
+stack, the build/launch one-liner, the license, or the set of documents it
+links to.
 
 ## Keep QUICKSTART.md in sync
 
-QUICKSTART.md is the end-user guide: it tells a non-developer how to set up,
+QUICKSTART.md is the short post-install guide: the shortest path from a
+downloaded `.vsix` to a working chat, written as explicit numbered GUI steps
+(which button to press, what to type and where). It targets a corporate end
+user who cannot run the AI locally, so connecting to a hosted AI service is the
+central step, with two options - an Ollama server reached by endpoint, or an
+Azure OpenAI deployment (base URL + API key via the Set API Key command or
+`OPENAI_API_KEY`). Keep it narrow - install, connect, open a folder, say hello.
+Anything beyond that first-run path belongs in HOWTO.md, not here. Update it
+when the post-install flow changes: the install steps, the connection options
+(endpoint / base URL / API-key setup), or the first-run experience. Keep both
+QUICKSTART.md and HOWTO.md pointing at each other.
+
+## Keep HOWTO.md in sync
+
+HOWTO.md is the full end-user guide: it tells a non-developer how to set up,
 launch, and use the extension. Every time a change affects what an end user
 sees or does, update it in the same piece of work - do not leave it for a
 follow-up. That means changes to:

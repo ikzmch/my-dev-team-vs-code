@@ -6,7 +6,8 @@ fit together, and how to build, run, and test it from source.
 
 For what the extension is and why, start at [README.md](README.md); for the
 end-user guide (setup, slash commands, approvals, settings), see
-[QUICKSTART.md](QUICKSTART.md).
+[HOWTO.md](HOWTO.md), or [QUICKSTART.md](QUICKSTART.md) for the shortest
+post-install setup.
 
 The agent routes each request through a **local triage agent** (Ollama via
 the Vercel AI SDK + Mastra) before deciding how to respond. Agents don't name

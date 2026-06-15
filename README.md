@@ -47,8 +47,10 @@ optionally use **cloud models** (OpenAI, Anthropic, Groq) when you add an API ke
 
 ## Documentation
 
-- **[QUICKSTART.md](QUICKSTART.md)** - the end-user guide: setup, first
-  steps, slash commands, approvals, settings, and troubleshooting.
+- **[QUICKSTART.md](QUICKSTART.md)** - the shortest path for a new user: what
+  to do right after installing the `.vsix` to get a working chat.
+- **[HOWTO.md](HOWTO.md)** - the full end-user guide: setup, first steps,
+  slash commands, approvals, settings, and troubleshooting.
 - **[DESIGN.md](DESIGN.md)** - the developer documentation: architecture,
   the request flow, the engine protocol, the configuration system, the model
   router, the tools, development setup, and the roadmap.
