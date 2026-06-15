@@ -332,9 +332,20 @@ three buttons:
 - **Revise** - type a comment ("split this into smaller steps", "don't touch the
   config") and the plan is redrafted and shown again.
 
-You can change when this happens with the `myDevTeam.planApproval` setting:
-`auto` (the default, complex plans only), `always` (every plan), or `never` (run
-plans straight through). The `/plan` command always stops at the plan regardless.
+For a big or complex plan, the full plan also opens as a **read-only preview** in
+the editor beside the chat, so you can read all the steps - and, for a complex
+change, the key design decisions behind them - on a proper page while you decide.
+The preview is just for reading; the Approve/Cancel/Revise buttons stay in the
+chat, and it closes itself once you choose. Nothing is saved to your project.
+
+You can change when this happens with two settings:
+
+- `myDevTeam.planApproval` - when My Dev Team pauses for approval at all: `auto`
+  (the default, complex plans only), `always` (every plan), or `never` (run plans
+  straight through). The `/plan` command always stops at the plan regardless.
+- `myDevTeam.planApproval.preview` - when the editor preview opens: `auto` (the
+  default, only a big plan), `always` (every plan it pauses on), or `never`
+  (review in the chat only).
 
 **Approving a command.** Running a shell command stops and asks you first, right in the chat: a
 **Run Command** prompt shows the exact command, and you click **Approve** to
@@ -393,6 +404,7 @@ likely to touch:
 | `myDevTeam.triage.model`         | `""`                     | What the quick triage step uses, kept separate from the model above. Empty uses the build's default (a local Ollama model); set `provider:openai` (or `anthropic`/`groq`), `auto`, or a model id when you have no Ollama server. A provider/model the build disabled cannot be chosen |
 | `myDevTeam.complexityRouting`    | `true`                   | Let Auto size the model to how hard the task is (cheaper for simple work, stronger for complex). Turn off to ignore difficulty; a pinned model is never affected |
 | `myDevTeam.planApproval`         | `auto`                   | When to pause for you to approve a plan before it runs: `auto` (complex plans only), `always` (every plan), or `never`. At the prompt you can Approve, Cancel, or Revise (comment and redraft) |
+| `myDevTeam.planApproval.preview` | `auto`                   | When a paused plan also opens as a read-only preview in the editor: `auto` (only a big plan), `always` (every plan it pauses on), or `never` (review in the chat only). The Approve/Cancel/Revise buttons always stay in the chat |
 | `myDevTeam.disabledProviders`    | `[]`                     | Providers to never use (e.g. `["anthropic"]`); shown disabled in `/model` and never run, even if pinned or keyed |
 | `myDevTeam.disabledModels`       | `[]`                     | Individual models to never use (e.g. `["qwen3-coder"]`); same as above but per model |
 | `myDevTeam.ollama.endpoint`      | unset (uses `http://localhost:11434`) | Where your Ollama server listens. Leave blank for the default your install ships with (localhost if none); set it to point at your own server |

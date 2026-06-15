@@ -226,9 +226,27 @@ export const PlanStepSchema = z.object({
 });
 export type PlanStep = z.infer<typeof PlanStepSchema>;
 
+/**
+ * A pivotal design or architectural decision behind the plan, with its reason.
+ * The planner emits these only for a complex change where the choice matters to
+ * approval; the client surfaces them at the plan-approval gate so the user can
+ * judge the approach, not just the steps. Plain data, like the rest of the plan.
+ */
+export const PlanDecisionNoteSchema = z.object({
+  decision: z.string(),
+  rationale: z.string(),
+});
+export type PlanDecisionNote = z.infer<typeof PlanDecisionNoteSchema>;
+
 export const PlanSchema = z.object({
   summary: z.string(),
   steps: z.array(PlanStepSchema).min(1),
+  /**
+   * Pivotal design decisions behind the plan, surfaced at the approval gate.
+   * Optional and usually absent - the planner includes them only for a complex
+   * change whose approach is worth seeing before approving.
+   */
+  decisions: z.array(PlanDecisionNoteSchema).optional(),
   /**
    * How demanding the planner judged the work once it had explored the
    * workspace - a more informed read than triage's pre-exploration guess. It
@@ -263,9 +281,15 @@ export type PartialPlanStep = {
   title?: string;
   detail?: string;
 };
+export type PartialPlanDecisionNote = {
+  decision?: string;
+  rationale?: string;
+};
 export type PartialPlan = {
   summary?: string;
   steps?: Array<PartialPlanStep | undefined>;
+  /** Pivotal design decisions, streamed in once the model reaches the field. */
+  decisions?: Array<PartialPlanDecisionNote | undefined>;
   /** The planner's complexity judgement, set once the model reaches the field. */
   complexity?: Complexity;
 };

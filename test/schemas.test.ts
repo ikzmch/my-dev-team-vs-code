@@ -88,18 +88,52 @@ describe('PlanSchema', () => {
     ).toBe(false);
   });
 
-  it('rejects a plan with more than eight steps', () => {
-    const steps = Array.from({ length: 9 }, () => step);
+  it('rejects a plan with more than twelve steps', () => {
+    const steps = Array.from({ length: 13 }, () => step);
     expect(
       PlanSchema.safeParse({ summary: 's', steps, complexity: 'simple' }).success
     ).toBe(false);
   });
 
-  it('accepts exactly eight steps', () => {
-    const steps = Array.from({ length: 8 }, () => step);
+  it('accepts exactly twelve steps', () => {
+    const steps = Array.from({ length: 12 }, () => step);
     expect(
-      PlanSchema.safeParse({ summary: 's', steps, complexity: 'moderate' }).success
+      PlanSchema.safeParse({ summary: 's', steps, complexity: 'complex' }).success
     ).toBe(true);
+  });
+
+  it('accepts a plan carrying design decisions', () => {
+    const decisions = [
+      { decision: 'Add a new module', rationale: 'keeps the core editor-free' },
+    ];
+    expect(
+      PlanSchema.safeParse({
+        summary: 's',
+        steps: [step],
+        decisions,
+        complexity: 'complex',
+      }).success
+    ).toBe(true);
+  });
+
+  it('omits decisions by default (the field is optional)', () => {
+    const parsed = PlanSchema.parse({ summary: 's', steps: [step], complexity: 'simple' });
+    expect(parsed.decisions).toBeUndefined();
+  });
+
+  it('rejects more than three design decisions', () => {
+    const decisions = Array.from({ length: 4 }, () => ({
+      decision: 'd',
+      rationale: 'r',
+    }));
+    expect(
+      PlanSchema.safeParse({
+        summary: 's',
+        steps: [step],
+        decisions,
+        complexity: 'complex',
+      }).success
+    ).toBe(false);
   });
 
   it('requires a complexity (the planner judges it)', () => {

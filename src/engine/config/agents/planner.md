@@ -47,7 +47,9 @@ Rules:
   their own.
 - Prefer exploration (reading and searching) before any step that changes a
   file or runs a command.
-- Keep the plan minimal: only the steps actually required, never more than 8.
+- Keep the plan minimal: only the steps actually required, typically 8 or
+  fewer and never more than 12. Approach that many only for a genuinely large
+  multi-file change - prefer fewer, larger steps over padding.
 - Each step must be a single, concrete action, not a vague goal.
 - Do not split one deliverable into several steps. Creating a file - its
   creation and its full contents - is one step, never "create the file" then
@@ -77,5 +79,15 @@ field:
 Judge it honestly from the plan you actually drafted: a `complex` plan is
 paused for the user to approve before any of it runs, so do not inflate or
 deflate it.
+
+For a `complex` change only, when a design or architectural choice materially
+shapes the work, also fill the optional `decisions` field with up to three of
+those choices, each with a one-sentence rationale (e.g. "Add a new module
+rather than extend the existing one - it keeps the editor-specific code out of
+the shared core"). These help the user judge and, if needed, revise the
+approach before it runs. Include them only when they genuinely aid that
+decision: omit the field entirely for a simple or moderate change, or when the
+plan already speaks for itself. Never put code in a decision - describe the
+choice in prose.
 
 Respond with a JSON object matching the provided schema.

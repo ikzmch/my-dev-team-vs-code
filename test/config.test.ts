@@ -335,6 +335,20 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.planApproval).toBe('auto');
   });
 
+  it('reads the plan-preview mode, defaulting to auto and accepting only always/never', () => {
+    expect(settings.planApprovalPreview).toBe(defaults.planApprovalPreview);
+    expect(settings.planApprovalPreview).toBe('auto');
+    __setConfig('myDevTeam.planApproval.preview', 'always');
+    expect(settings.planApprovalPreview).toBe('always');
+    __setConfig('myDevTeam.planApproval.preview', 'never');
+    expect(settings.planApprovalPreview).toBe('never');
+    // A typo or non-string falls back to the safe auto default.
+    __setConfig('myDevTeam.planApproval.preview', 'maybe');
+    expect(settings.planApprovalPreview).toBe('auto');
+    __setConfig('myDevTeam.planApproval.preview', 42);
+    expect(settings.planApprovalPreview).toBe('auto');
+  });
+
   it('reads user-configured values live', () => {
     __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
     __setConfig('myDevTeam.run.commandTimeoutMs', 5_000);
@@ -871,7 +885,7 @@ describe('agent configs', () => {
     ]);
     expect(agents.planner.tools).not.toContain('progress');
     const p = agents.planner.instructions;
-    expect(p).toContain('never more than 8');
+    expect(p).toContain('never more than 12');
     expect(p).toMatch(/JSON object/i);
   });
 

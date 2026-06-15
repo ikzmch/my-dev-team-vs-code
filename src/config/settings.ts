@@ -41,6 +41,7 @@ export const defaults = {
   triageModel: '',
   complexityRouting: true,
   planApproval: 'auto' as const,
+  planApprovalPreview: 'auto' as const,
   approval: {
     fileChanges: false,
   },
@@ -218,6 +219,24 @@ export const settings = {
       .getConfiguration(CONFIG_SECTION)
       .get<unknown>('planApproval');
     return value === 'always' || value === 'never' ? value : defaults.planApproval;
+  },
+
+  /**
+   * When a paused plan also opens as a read-only editor preview
+   * (`myDevTeam.planApproval.preview`). `auto` (the default) opens it only for a
+   * big plan (complex, or carrying design decisions, many steps, or a long
+   * write-up); `always` opens it whenever a plan is paused; `never` keeps review
+   * in the chat only. Client-only - the engine never sees it (the preview is a
+   * pure rendering choice), so it does not ride on the runtime-config seam. Read
+   * live; only the literal `always`/`never` switch off `auto`.
+   */
+  get planApprovalPreview(): 'auto' | 'always' | 'never' {
+    const value = vscode.workspace
+      .getConfiguration(CONFIG_SECTION)
+      .get<unknown>('planApproval.preview');
+    return value === 'always' || value === 'never'
+      ? value
+      : defaults.planApprovalPreview;
   },
 
   /**

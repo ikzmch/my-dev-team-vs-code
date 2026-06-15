@@ -12,6 +12,7 @@ import {
   createHandler,
   TurnMetadata,
 } from './ui/chatParticipant';
+import { PlanPreview } from './ui/planPreview';
 import { TerminalRunMirror } from './ui/runTerminal';
 import { checkEngineAtStartup } from './ui/startupCheck';
 import {
@@ -49,11 +50,18 @@ export function activate(context: vscode.ExtensionContext) {
   const approver = new ChatApprover();
   approver.register(context);
 
+  // --- Plan-preview seam: a big paused plan opens beside the chat ---
+  // Serves the plan markdown as a read-only virtual document; the reviewer
+  // opens/closes it per review. Registered before the reviewer it backs.
+  const planPreview = new PlanPreview();
+  planPreview.register(context);
+
   // --- Plan-approval seam: the gate shown before a plan executes ---
   // Like the approver, registered up front so its in-chat Approve/Cancel/Revise
   // links work; the engine calls it via the run client's reviewPlan when the
-  // myDevTeam.planApproval setting asks to pause.
-  const planReviewer = new ChatPlanReviewer();
+  // myDevTeam.planApproval setting asks to pause. The preview seam lets a big
+  // plan also open in the editor per myDevTeam.planApproval.preview.
+  const planReviewer = new ChatPlanReviewer(planPreview);
   planReviewer.register(context);
 
   // --- Run-transparency seam: mirror executed commands into a terminal ---

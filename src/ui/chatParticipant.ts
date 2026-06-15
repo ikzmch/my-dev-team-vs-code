@@ -25,6 +25,7 @@ import { collectSkills } from '../client/skills';
 import { collectReferences } from '../client/references';
 import { CLEAR_COMMAND, COMPACT_COMMAND, MODEL_COMMAND } from '../config/clientCommands';
 import { handleModelChatCommand } from './modelCommands';
+import { PlanPreview, formatPlanDocument, isBigPlan } from './planPreview';
 import { environment } from '../config/environment';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
@@ -177,6 +178,13 @@ export class ChatApprover implements Approver {
  * engine sends back to the planner to re-draft. When there is no stream (e.g. a
  * future non-chat front-end) it falls back to a modal. A WebviewReviewer would
  * implement the same `review` shape with a richer dialog.
+ *
+ * When a `PlanPreview` is supplied, a big plan (or every paused plan, per the
+ * `myDevTeam.planApproval.preview` setting) also opens as a read-only markdown
+ * preview beside the chat for the duration of the review - the richer reading
+ * surface for the full plan and its design decisions, while the choices stay in
+ * the chat. The preview is closed when the review settles (a click, a cancel, or
+ * the request ending), so each verdict cleans up its own tab.
  */
 export class ChatPlanReviewer {
   /** Active request sessions, in open order; review uses the most recent. */
@@ -190,6 +198,13 @@ export class ChatPlanReviewer {
   >();
   private nextReviewId = 0;
   private nextSessionId = 0;
+
+  /**
+   * The read-only editor preview seam. When supplied, a paused plan may also
+   * open beside the chat per the `myDevTeam.planApproval.preview` setting; absent
+   * (e.g. in a test), the review is chat-only as before.
+   */
+  constructor(private readonly preview?: PlanPreview) {}
 
   /** Register the command the review links invoke. Call once on activation. */
   register(context: vscode.ExtensionContext): void {
@@ -226,29 +241,61 @@ export class ChatPlanReviewer {
   }
 
   /** Ask the user to approve the drafted plan; resolves with their verdict. */
-  async review(_plan: Plan, complexity: Complexity): Promise<PlanDecision> {
-    const session = this.sessions[this.sessions.length - 1];
-    if (session) {
-      try {
-        const id = String(this.nextReviewId++);
-        // The question plus Approve/Cancel/Revise as inline command links, one
-        // trusted-markdown block (isTrusted scoped to just the review command).
-        const md = new vscode.MarkdownString(
-          messages.planApproval.block(complexity) +
-            '\n' +
-            messages.planApproval.links(PLAN_REVIEW_COMMAND_ID, id)
-        );
-        md.isTrusted = { enabledCommands: [PLAN_REVIEW_COMMAND_ID] };
-        session.stream.markdown(md);
-        return await new Promise<PlanDecision>((resolve) =>
-          this.pending.set(id, { sessionId: session.id, resolve })
-        );
-      } catch {
-        // The stream's request has ended mid-render; the modal keeps the gate
-        // working.
+  async review(plan: Plan, complexity: Complexity): Promise<PlanDecision> {
+    const id = String(this.nextReviewId++);
+    // A big (or, per the setting, every) plan also opens as a read-only preview
+    // beside the chat. Tied to this review by id, it is disposed in the finally
+    // below, so the tab closes whichever way the verdict lands - a click, the
+    // modal, or the request ending.
+    const preview = this.maybeOpenPreview(plan, complexity, id);
+    try {
+      const session = this.sessions[this.sessions.length - 1];
+      if (session) {
+        try {
+          // The question plus Approve/Cancel/Revise as inline command links, one
+          // trusted-markdown block (isTrusted scoped to just the review command).
+          // A note points at the preview when one was opened.
+          const md = new vscode.MarkdownString(
+            messages.planApproval.block(complexity) +
+              (preview ? messages.planApproval.previewNote : '') +
+              '\n' +
+              messages.planApproval.links(PLAN_REVIEW_COMMAND_ID, id)
+          );
+          md.isTrusted = { enabledCommands: [PLAN_REVIEW_COMMAND_ID] };
+          session.stream.markdown(md);
+          return await new Promise<PlanDecision>((resolve) =>
+            this.pending.set(id, { sessionId: session.id, resolve })
+          );
+        } catch {
+          // The stream's request has ended mid-render; the modal keeps the gate
+          // working.
+        }
       }
+      return await this.modalReview(complexity);
+    } finally {
+      preview?.dispose();
     }
-    return this.modalReview(complexity);
+  }
+
+  /**
+   * Open the editor preview for a plan when the seam is wired and the
+   * `myDevTeam.planApproval.preview` setting calls for it: `always` on every
+   * paused plan, `auto` only for a big one, `never` not at all. Returns the
+   * disposable that closes it, or undefined when no preview was opened.
+   */
+  private maybeOpenPreview(
+    plan: Plan,
+    complexity: Complexity,
+    id: string
+  ): vscode.Disposable | undefined {
+    if (!this.preview || settings.planApprovalPreview === 'never') {
+      return undefined;
+    }
+    const document = formatPlanDocument(plan, complexity);
+    if (settings.planApprovalPreview === 'auto' && !isBigPlan(plan, complexity, document)) {
+      return undefined;
+    }
+    return this.preview.open(document, id);
   }
 
   /** Fallback gate when there is no chat stream to render links into. */

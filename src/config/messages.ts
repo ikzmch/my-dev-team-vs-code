@@ -559,6 +559,39 @@ export const messages = {
     /** Title/placeholder of the input box the Revise choice opens. */
     revisePrompt: 'How should the plan change?',
     revisePlaceholder: 'Describe what to do differently; the plan is redrafted and shown again.',
+    /**
+     * The note shown in the chat, above the Approve/Cancel/Revise links, when a
+     * big plan has also been opened as a read-only editor preview - so the user
+     * knows where to read the full plan while the terse checklist stays in chat.
+     */
+    previewNote: '\n_The full plan opened in a preview to the side for review._\n',
+  },
+
+  /**
+   * Copy for the read-only plan preview document (ui/planPreview.ts): the
+   * markdown a big or design-bearing plan renders into when it opens beside the
+   * chat for approval. This is a standalone document the user reads, not a chat
+   * fragment, so it carries its own headings; the Approve/Cancel/Revise choices
+   * stay in the chat, not here.
+   */
+  planDocument: {
+    /** Tab/file name of the preview (the id keeps concurrent reviews apart). */
+    fileName: (id: string) => `Plan review ${id}.md`,
+    /** Document title. */
+    title: '# Plan review\n',
+    /** The one-sentence goal restatement, under the title. */
+    summary: (summary: string) => `\n${summary}\n`,
+    /** Heading above the design-decision list (omitted when there are none). */
+    decisionsHeading: '\n## Key design decisions\n',
+    /** One decision line: the choice in bold, then its rationale. */
+    decision: (n: number, decision: string, rationale: string) =>
+      `${n}. **${decision}** - ${rationale}`,
+    /** Heading above the numbered steps. */
+    stepsHeading: '\n## Steps\n',
+    /** One step line: the title in bold, then its detail. */
+    step: (n: number, title: string, detail: string) => `${n}. **${title}** - ${detail}`,
+    /** The planner's complexity judgement, at the foot of the document. */
+    complexity: (complexity: string) => `\n**Complexity:** \`${complexity}\`\n`,
   },
 
   execution: {

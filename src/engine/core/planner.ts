@@ -30,6 +30,22 @@ export const PlanStepSchema = z.object({
     ),
 });
 
+/**
+ * One pivotal design or architectural choice behind the plan, with its reason.
+ * Surfaced at the approval gate so the user can judge (and, via Revise, veto)
+ * the *approach* before it runs, not just the list of steps. Populated only for
+ * genuinely complex changes where the choice matters - see the field's
+ * describe() on `PlanSchema.decisions`.
+ */
+export const PlanDecisionNoteSchema = z.object({
+  decision: z
+    .string()
+    .describe('One key design or architectural choice, stated plainly. Never code.'),
+  rationale: z
+    .string()
+    .describe('One sentence on why this choice over the alternative.'),
+});
+
 export const PlanSchema = z.object({
   summary: z
     .string()
@@ -37,8 +53,23 @@ export const PlanSchema = z.object({
   steps: z
     .array(PlanStepSchema)
     .min(1)
-    .max(8)
-    .describe('Ordered steps that accomplish the task. Keep it minimal.'),
+    .max(12)
+    .describe(
+      'Ordered steps that accomplish the task. Keep it minimal - only the ' +
+        'steps actually required, typically 8 or fewer, and never more than 12.'
+    ),
+  decisions: z
+    .array(PlanDecisionNoteSchema)
+    .max(3)
+    .optional()
+    .describe(
+      'Up to three pivotal design or architectural decisions behind this plan, ' +
+        'each with a one-sentence rationale. Include them ONLY for a complex ' +
+        'change where a design choice materially shapes the work and the user ' +
+        'benefits from seeing it before approving. Omit the field entirely for a ' +
+        'simple or moderate change, or when the plan is self-explanatory. Never ' +
+        'code - describe the choice in prose.'
+    ),
   complexity: ComplexitySchema.describe(
     'How demanding the work in this plan actually is, now that you have seen ' +
       'the request and any explored context: "simple" for a self-contained ' +

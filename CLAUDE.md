@@ -137,11 +137,15 @@ version first, `## [x.y.z] - date`, changes under `### Added` / `### Changed`
   and why it matters, no commit hashes, no implementation detail
 - skip negligible changes entirely: pure renames, documentation-only changes,
   test-only changes, formatting, and minor tweaks get no entry
-- propose the version with the entry: bump the minor version when the change
-  is significant (a new feature, a behavior change, an architecture change),
-  bump only the patch version for fixes, hardening, and refactors; propose a
-  major version bump only when it is really justified (e.g. a breaking change
-  or a milestone like the first stable release)
+- propose the version with the entry. The three numbers move independently:
+  - **major version** (the first number) is **never bumped automatically** -
+    only when the user explicitly requests it. Even a breaking change or a
+    milestone like the first stable release does not bump major on its own;
+    surface it and let the user decide.
+  - **minor version** (the middle number) is bumped **only for significant
+    changes** - a new feature, a behavior change, or an architecture change.
+  - **patch version** (the last number) is bumped for **everything else** -
+    fixes, hardening, and refactors.
 - the rule below turns on whether the version in `package.json` has already
   been **committed**. Check `git status`/`git log` first:
   - **the current version is already committed** (a clean tree, or your change

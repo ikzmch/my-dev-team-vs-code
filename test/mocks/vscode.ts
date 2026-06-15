@@ -22,9 +22,13 @@ export class Uri {
     return new Uri('file', p, p);
   }
 
-  /** Build a Uri on an arbitrary scheme (a virtual filesystem in tests). */
-  static from(scheme: string, p: string): Uri {
-    return new Uri(scheme, p, p);
+  /**
+   * Mirrors the real `Uri.from(components)`: build a Uri from a scheme and path
+   * (a virtual filesystem in tests, e.g. the read-only plan preview's scheme).
+   */
+  static from(components: { scheme: string; path?: string }): Uri {
+    const p = components.path ?? '';
+    return new Uri(components.scheme, p, p);
   }
 
   static joinPath(base: Uri, ...segments: string[]): Uri {
@@ -223,6 +227,21 @@ interface MockState {
   diagnostics: Map<string, unknown[]>;
   /** The fake active text editor, read by window.activeTextEditor. */
   activeTextEditor: unknown;
+  /** Virtual-document content providers by scheme (registerTextDocumentContentProvider). */
+  contentProviders: Map<string, FakeContentProvider>;
+  /** Open editor tabs (window.tabGroups), e.g. previews opened by markdown commands. */
+  tabs: FakeTab[];
+}
+
+/** A registered TextDocumentContentProvider, enough to serve content in tests. */
+export interface FakeContentProvider {
+  provideTextDocumentContent(uri: Uri): string | undefined;
+  onDidChange?: (listener: (uri: Uri) => void) => { dispose: () => void };
+}
+
+/** A fake editor tab; only the label the close heuristic matches on is modelled. */
+export interface FakeTab {
+  label: string;
 }
 
 export const __state: MockState = {
@@ -244,6 +263,8 @@ export const __state: MockState = {
   secrets: new Map(),
   diagnostics: new Map(),
   activeTextEditor: undefined,
+  contentProviders: new Map(),
+  tabs: [],
 };
 
 export function __reset(): void {
@@ -265,6 +286,18 @@ export function __reset(): void {
   __state.secrets = new Map();
   __state.diagnostics = new Map();
   __state.activeTextEditor = undefined;
+  __state.contentProviders = new Map();
+  __state.tabs = [];
+}
+
+/** The content provider registered for a scheme (registerTextDocumentContentProvider). */
+export function __getContentProvider(scheme: string): FakeContentProvider | undefined {
+  return __state.contentProviders.get(scheme);
+}
+
+/** The labels of the currently-open editor tabs (previews opened in tests). */
+export function __openTabLabels(): string[] {
+  return __state.tabs.map((t) => t.label);
 }
 
 /** Seed the diagnostics languages.getDiagnostics returns for a uri. */
@@ -334,7 +367,7 @@ export function __setWorkspaceFolders(
 ): void {
   __state.workspaceFolders = specs.map((s) => ({
     name: s.name,
-    uri: s.scheme ? Uri.from(s.scheme, s.path) : Uri.file(s.path),
+    uri: s.scheme ? Uri.from({ scheme: s.scheme, path: s.path }) : Uri.file(s.path),
   }));
 }
 
@@ -514,6 +547,19 @@ export const workspace = {
         .join('\n');
     },
   })),
+
+  registerTextDocumentContentProvider: vi.fn(
+    (scheme: string, provider: FakeContentProvider) => {
+      __state.contentProviders.set(scheme, provider);
+      return {
+        dispose: () => {
+          if (__state.contentProviders.get(scheme) === provider) {
+            __state.contentProviders.delete(scheme);
+          }
+        },
+      };
+    }
+  ),
 };
 
 export const window = {
@@ -574,6 +620,18 @@ export const window = {
   showInputBox: vi.fn(
     async (..._args: unknown[]): Promise<string | undefined> => __state.inputBoxResponse
   ),
+
+  // One tab group holding every open tab; `close` removes the given tab(s).
+  tabGroups: {
+    get all() {
+      return [{ tabs: __state.tabs }];
+    },
+    close: vi.fn(async (tab: FakeTab | FakeTab[]): Promise<boolean> => {
+      const targets = Array.isArray(tab) ? tab : [tab];
+      __state.tabs = __state.tabs.filter((t) => !targets.includes(t));
+      return true;
+    }),
+  },
 };
 
 /**
@@ -592,6 +650,15 @@ export const commands = {
   }),
 
   executeCommand: vi.fn(async (id: string, ...args: unknown[]) => {
+    // Built-in markdown preview commands have no registered handler; simulate
+    // them by opening a tab VS Code labels "Preview <fileName>", so the plan
+    // preview's open/close round-trip is observable in tests.
+    if (id === 'markdown.showPreview' || id === 'markdown.showPreviewToSide') {
+      const uri = args[0] as Uri | undefined;
+      const name = uri ? uri.path.split('/').pop() ?? uri.path : '';
+      __state.tabs.push({ label: `Preview ${name}` });
+      return undefined;
+    }
     const fn = __state.registeredCommands.get(id);
     if (!fn) {
       throw new Error(`command '${id}' not found`);

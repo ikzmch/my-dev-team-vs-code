@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.49.0] - 2026-06-15
+
+### Added
+
+- **Plan preview in the editor.** A big plan paused for approval now also opens
+  as a read-only markdown preview beside the chat, so you can read the whole
+  plan and its design decisions on a proper reading surface while the
+  Approve/Cancel/Revise choices stay in the chat. Controlled by the new
+  `myDevTeam.planApproval.preview` setting (`auto` opens it only for a big plan,
+  `always` for every paused plan, `never` keeps review in the chat). The preview
+  is a virtual document - nothing is written to your workspace.
+- **Design decisions in a plan.** For a complex change, the planner can now
+  surface the pivotal design or architectural choices behind its plan, each with
+  a one-sentence rationale, so you can judge - and, via Revise, redirect - the
+  approach before it runs, not just the list of steps.
+
+### Changed
+
+- **Plans may run to twelve steps.** The plan step cap was raised from 8 to 12
+  for the occasional genuinely large change; plans still aim for 8 or fewer, so
+  typical plans are unchanged.
+
 ## [0.48.1] - 2026-06-15
 
 ### Fixed

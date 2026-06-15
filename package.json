@@ -2,7 +2,7 @@
   "name": "my-dev-team",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.48.1",
+  "version": "0.49.0",
   "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,
@@ -81,6 +81,21 @@
             "Never pause: run drafted plans straight through (the pre-gate behaviour)."
           ],
           "description": "When @devteam pauses to let you approve a drafted plan before it runs. At the gate you can Approve (execute), Cancel (keep the plan, run nothing), or Revise (type a comment and have the plan redrafted)."
+        },
+        "myDevTeam.planApproval.preview": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "auto",
+          "enumDescriptions": [
+            "Open the preview only for a big plan (complex, or with design decisions, many steps, or a long write-up).",
+            "Always open the preview when a plan is paused for approval.",
+            "Never open a preview: review the plan inline in the chat only."
+          ],
+          "description": "When a plan paused for approval also opens as a read-only preview in the editor, so you can read the full plan and its design decisions beside the chat. The Approve/Cancel/Revise choices stay in the chat. Only applies when myDevTeam.planApproval pauses for approval."
         },
         "myDevTeam.disabledProviders": {
           "type": "array",

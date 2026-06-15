@@ -119,7 +119,8 @@ src/
     registerTools.ts      registers the tools with vscode.lm, delegating to the same host
     types.ts              the client seams: Approver (approval) + RunMirror (run transparency) + ChangeReporter (change tracking)
   ui/
-    chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover
+    chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover + ChatPlanReviewer (plan-approval gate)
+    planPreview.ts        read-only editor preview of a big paused plan: a virtual-document content provider opened beside the chat for review (myDevTeam.planApproval.preview)
     modelCommands.ts      model selection UI: the /model picker and the Set API Key command (SecretStorage; used by the local engine)
     statusBar.ts          the single "My Dev Team" status-bar button: a rich hover (trusted markdown with command links) and a click menu to change the model or open the usage report; holds the live model label and session token total
     usageView.ts          the "Show Token Usage" command: rolls the eval log up into a markdown report
@@ -624,6 +625,7 @@ see [CONFIG.md](CONFIG.md); the table below is the user-settings summary:
 | `myDevTeam.disabledModels`           | `[]`                     | Individual model ids the router must never use (e.g. `["qwen3-coder"]`), same two-layer hard-block semantics as `disabledProviders`: a disabled model never runs even when pinned (the run falls back to Auto) |
 | `myDevTeam.complexityRouting`        | `true`                   | Size models to how demanding the work is (the model registry's `tier`): triage's guess sizes the planner, the planner's judgement sizes the executor; simpler work routes to a cheaper/smaller model, harder work to a stronger one. Off routes by capability alone; a pinned model is never affected |
 | `myDevTeam.planApproval`             | `auto`                   | When `@devteam` pauses to let you approve a drafted plan before it executes: `auto` only when the planner judged the work `complex`, `always` on every plan, `never` straight through. The gate offers Approve (execute), Cancel (keep the plan, run nothing), or Revise (comment, re-plan, ask again) |
+| `myDevTeam.planApproval.preview`     | `auto`                   | When a paused plan also opens as a read-only markdown preview beside the chat: `auto` only for a big plan (complex, or carrying design decisions, many steps, or a long write-up), `always` on every paused plan, `never` keeps review in the chat. Client-only - a pure rendering choice the engine never sees, so it does not ride the runtime-config seam; the Approve/Cancel/Revise choices stay in the chat |
 | `myDevTeam.approval.fileChanges`     | `false`                  | Require approval before the `write`/`edit` tools change a file. Off by default (changes apply directly, since the workspace is git-backed); on routes every write and edit through the same Approve/Decline gate as `run`. `run` stays gated regardless |
 | `myDevTeam.ollama.endpoint`          | `""` (unset)             | Ollama server origin (no `/api` suffix). Unset uses the deployment default in `config/backend.json`, then the built-in `http://localhost:11434`; set, your value wins over the deployment default |
 | `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key comes from `OPENAI_API_KEY`, not here |
@@ -759,6 +761,22 @@ the plan is delivered alone (reusing the `/plan` "nothing was executed" note);
 comment appended like a repair re-ask, re-streaming over the snapshots shown) and
 the gate asks again. The complexity shown at the gate, and the one that sizes the
 executor, is the planner's.
+
+Beside the chat links, a **read-only editor preview** of the plan can open for
+the duration of the review (`ui/planPreview.ts`, gated by
+`myDevTeam.planApproval.preview`). It is a pure client rendering choice - the
+engine never learns an editor opened, so nothing crosses the protocol. A
+`TextDocumentContentProvider` serves the plan markdown (the goal, any **design
+decisions**, the numbered steps, the complexity) from memory under a virtual
+`devteam-plan` scheme, so nothing is written to the workspace; the reviewer opens
+it per review (keyed by id) and disposes it when the verdict settles, which
+closes the tab. Under `auto` it opens only for a "big" plan - `complex`, carrying
+decisions, a long rendered document, or many steps - while `always`/`never`
+force or suppress it. The Approve/Cancel/Revise choices stay in the chat; the
+preview is only the richer reading surface, and the inline chat checklist is
+unchanged. The optional `decisions` the planner emits for a complex change (a few
+pivotal design choices, each with a rationale) are surfaced here so the user can
+judge - and, via Revise, redirect - the approach, not just the steps.
 
 #### The provider registry (`config/providers.ts`)
 
