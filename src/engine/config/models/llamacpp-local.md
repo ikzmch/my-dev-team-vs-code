@@ -1,0 +1,31 @@
+---
+id: llamacpp-local
+label: Qwen2.5 Coder 1.5B (llama.cpp)
+provider: llamacpp
+model: ggml-org/Qwen2.5-Coder-1.5B-Instruct-Q8_0-GGUF
+tier: simple
+triageOnly: true
+capabilities:
+  reasoning: 0.4
+  coding: 0.5
+  classification: 0.7
+  planning: 0.4
+  speed: 0.85
+  structured-output: 0.7
+---
+
+A small Qwen2.5-Coder model served locally by `llama-server` (llama.cpp) over its
+OpenAI-compatible endpoint - no Ollama install required. At 1.5B it is fast and
+cheap, fit for the lightweight triage/classification role but not for real work.
+
+It is marked `triageOnly`, so Auto only ever routes the internal triage step to
+it - never the planner, answerer, or executor, even when no other model is
+available (those then fail with a "no model" hint rather than doing real work on
+a 1.5B model). To use it for actual work anyway, pin it explicitly with
+`myDevTeam.model` set to `llamacpp-local` or `provider:llamacpp`; a pin always
+wins over the `triageOnly` guard.
+
+The `model` field is the id sent to `llama-server`; it matches what the server
+advertises at `/v1/models` for the `-hf ggml-org/Qwen2.5-Coder-1.5B-Instruct-Q8_0-GGUF`
+launch. In its usual single-model mode the server answers regardless of the name,
+so change this if you serve a different model.

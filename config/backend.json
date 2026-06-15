@@ -5,6 +5,7 @@
   },
   "providers": {
     "ollama": { "endpoint": "", "requestsPerMinute": 0 },
+    "llamacpp": { "endpoint": "", "requestsPerMinute": 0 },
     "openai": { "baseUrl": "", "requestsPerMinute": 0 },
     "anthropic": { "baseUrl": "", "requestsPerMinute": 0 },
     "groq": { "baseUrl": "", "requestsPerMinute": 0 }

@@ -178,6 +178,13 @@ the in-memory fake in `test/mocks/vscode.ts`, and Mastra agents are stubbed so
 tests never construct a model or reach Ollama. Follow those patterns rather
 than introducing real I/O or network calls.
 
+## Propose a commit message
+
+After every change, propose a short, concise one-line commit message for the
+work, written in the repository's existing style (a sentence-case noun phrase,
+no conventional-commit prefix). Only propose it - never create the commit or
+apply it yourself unless the user explicitly asks.
+
 ## No en/em dashes
 
 Never use the en dash (–) or em dash (—) in anything written: code strings,

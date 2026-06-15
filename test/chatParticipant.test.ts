@@ -623,6 +623,9 @@ describe('createHandler', () => {
   });
 
   it('surfaces a triage failure with the Ollama hint', async () => {
+    // Pin triage to Ollama so the hint is deterministic regardless of the
+    // backend's shipped triage default (the user setting wins over it).
+    __setConfig('myDevTeam.triage.model', 'ollama');
     const { engine } = makeEngine(async () => {
       throw new Error('connection refused');
     });

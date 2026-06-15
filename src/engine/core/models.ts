@@ -61,31 +61,64 @@ function backendEndpointDefault(id: ProviderName): string | undefined {
 }
 
 /**
+ * Built-in fallback origin per keyless (local) provider, used when neither the
+ * user's base-URL setting nor the deployment default (config/backend.json) names
+ * one. The keyless analogue of a cloud provider's SDK-default endpoint.
+ */
+const keylessDefaultEndpoint: Record<string, string> = {
+  ollama: limits.defaultOllamaEndpoint,
+  llamacpp: limits.defaultLlamacppEndpoint,
+};
+
+/**
+ * The server origin actually used for a keyless (local) provider: the user's
+ * base-URL setting (`myDevTeam.<provider>.endpoint`) wins, else the deployment
+ * default (config/backend.json), else the provider's built-in localhost. Each
+ * keyless provider resolves its *own* endpoint, so a second one (llama.cpp) does
+ * not inherit Ollama's - the assumption "keyless means Ollama" stays out of the
+ * wiring.
+ */
+function keylessEndpoint(descriptor: ProviderDescriptor): string {
+  return (
+    runtimeConfig().providerBaseUrls[descriptor.baseUrlSetting] ??
+    backendEndpointDefault(descriptor.id) ??
+    keylessDefaultEndpoint[descriptor.id]
+  );
+}
+
+/**
  * The Ollama server origin actually used: the user's `myDevTeam.ollama.endpoint`
  * when set, else the deployment default (config/backend.json), else the built-in
  * localhost. The single source the provider wiring, the startup probe, and the
  * error hints all read, so they can never disagree. The user wins over the
  * deployment default - a request endpoint is the user's to point wherever they
- * run Ollama.
+ * run Ollama. A thin wrapper over the generic keyless resolver above.
  */
 export function ollamaEndpoint(): string {
-  return (
-    runtimeConfig().ollamaEndpoint ??
-    backendEndpointDefault('ollama') ??
-    limits.defaultOllamaEndpoint
-  );
+  return keylessEndpoint(providerDescriptor('ollama'));
+}
+
+/**
+ * The llama.cpp (`llama-server`) origin actually used, resolved the same way as
+ * the Ollama one (user setting, deployment default, built-in localhost). The
+ * server-origin only (no `/v1` suffix); the provider build adds `/v1`. Read by
+ * the failure hint so it names the endpoint the wiring actually uses.
+ */
+export function llamacppEndpoint(): string {
+  return keylessEndpoint(providerDescriptor('llamacpp'));
 }
 
 /**
  * A provider's resolved runtime config, fed to its descriptor's `build`: the
  * API key (keyless providers get none) and the resolved base URL. The user's
- * setting wins, then the deployment default; for Ollama the base URL is the
- * endpoint, which always resolves to at least the built-in localhost; for a
- * cloud provider it may be undefined (use the SDK's own endpoint).
+ * setting wins, then the deployment default; for a keyless local provider the
+ * base URL is its server origin, which always resolves to at least the built-in
+ * localhost; for a cloud provider it may be undefined (use the SDK's own
+ * endpoint).
  */
 function resolveProviderConfig(descriptor: ProviderDescriptor): ProviderConfig {
   if (descriptor.keyless) {
-    return { baseUrl: ollamaEndpoint() };
+    return { baseUrl: keylessEndpoint(descriptor) };
   }
   return {
     apiKey: credentials.apiKey(descriptor.id),
@@ -191,9 +224,21 @@ export function effectivePin(pin?: string): string | undefined {
 }
 
 /** The models Auto may route to right now (Ollama plus any keyed cloud models),
- * minus anything disabled at either layer. */
+ * minus anything disabled at either layer. The triage pool; the work agents use
+ * the `workModels()` subset. */
 export function availableModels(): ModelInfo[] {
   return modelRegistry.filter((m) => isModelAvailable(m) && isModelEnabled(m));
+}
+
+/**
+ * The models Auto may route the *work* agents to (planner/answerer/executor/
+ * summarizer): the available models minus any tagged `triageOnly` (eligible
+ * only for the internal triage classifier). This is `routeModel`'s default
+ * candidate pool, so a triage-only model is never handed real work by Auto - but
+ * an explicit pin still reaches it, since `selectModel` returns a pin outright.
+ */
+export function workModels(): ModelInfo[] {
+  return availableModels().filter((m) => !m.triageOnly);
 }
 
 /** The local Ollama models, minus anything disabled at either layer. The
@@ -260,8 +305,10 @@ export function resolveTriageModel(requirements: CapabilityScores): RoutedModel 
  * The registry entry an agent will use: a `pin` naming a registered model wins
  * outright (the user asked for it, even if its key is missing - the run then
  * fails with a helpful hint); otherwise the best weighted fit among
- * `candidates` (defaults to the currently-available models, so Auto never
- * routes to a cloud model whose key is not set).
+ * `candidates` (defaults to the work models, so Auto never routes to a cloud
+ * model whose key is not set, nor to a `triageOnly` model). Triage passes its
+ * own candidate pool (which keeps `triageOnly` models), so this default is the
+ * work-agent pool only.
  *
  * `complexity` (only the executor passes one) narrows the pool to the request's
  * tier before scoring - but only when `myDevTeam.complexityRouting` is on, the
@@ -271,7 +318,7 @@ export function resolveTriageModel(requirements: CapabilityScores): RoutedModel 
 export function routeModel(
   requirements: CapabilityScores,
   pin?: string,
-  candidates: readonly ModelInfo[] = availableModels(),
+  candidates: readonly ModelInfo[] = workModels(),
   complexity?: Complexity
 ): ModelInfo {
   const tier = runtimeConfig().complexityRoutingEnabled ? complexity : undefined;

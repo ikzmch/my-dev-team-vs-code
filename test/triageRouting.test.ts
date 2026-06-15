@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const { fakeBackend } = vi.hoisted(() => ({
   fakeBackend: {
     models: { disabledProviders: [] as string[], disabledModels: [] as string[] },
-    providers: { ollama: {}, openai: {}, anthropic: {}, groq: {} },
+    providers: { ollama: {}, llamacpp: {}, openai: {}, anthropic: {}, groq: {} },
     agents: { triage: { model: 'ollama' } },
   },
 }));
@@ -71,6 +71,17 @@ describe('triageRouting', () => {
   it('accepts a bare provider name in the user setting', () => {
     __setConfig('myDevTeam.triage.model', 'anthropic');
     expect(triageRouting().candidates.every((m) => m.provider === 'anthropic')).toBe(true);
+  });
+
+  it('routes triage to a local llama.cpp model with no key or Ollama', () => {
+    // The whole point of the llama.cpp provider: a keyless local triage model the
+    // user selects without an Ollama server or any cloud key.
+    __setConfig('myDevTeam.triage.model', 'provider:llamacpp');
+    const { pin, candidates } = triageRouting();
+    expect(pin).toBeUndefined();
+    expect(candidates.length).toBeGreaterThan(0);
+    expect(candidates.every((m) => m.provider === 'llamacpp')).toBe(true);
+    expect(routeTriageModel(agents.triage.capabilities).provider).toBe('llamacpp');
   });
 
   it('routes among all available models when the user picks "auto"', () => {

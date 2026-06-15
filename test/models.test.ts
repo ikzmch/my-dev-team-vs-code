@@ -4,6 +4,7 @@ import {
   routeModel,
   localModels,
   availableModels,
+  workModels,
   isModelAvailable,
   isModelEnabled,
   isProviderEnabled,
@@ -19,6 +20,8 @@ import {
 } from '../src/engine/config/models';
 import { agents } from '../src/engine/config/agents';
 import { credentials } from '../src/config/credentials';
+import { providerDescriptor } from '../src/config/providers';
+import { limits } from '../src/config/limits';
 import { __reset, __setConfig } from './mocks/vscode';
 
 beforeEach(() => {
@@ -161,6 +164,30 @@ describe('resolved provider endpoints', () => {
     expect(ollamaEndpoint()).toBe('http://gpu-box:11434');
   });
 
+  it('resolves a second keyless provider from its own setting, not Ollama', () => {
+    // The llama.cpp provider is keyless like Ollama but must resolve its *own*
+    // endpoint - the old "every keyless provider is Ollama" assumption would have
+    // handed it the Ollama URL. Unset falls to the built-in llama.cpp default;
+    // its own setting wins and does not affect Ollama's resolution.
+    const llamacpp = providerDescriptor('llamacpp');
+    expect(settings.providerBaseUrl(llamacpp.baseUrlSetting)).toBeUndefined();
+    __setConfig('myDevTeam.llamacpp.endpoint', 'http://localhost:9999');
+    expect(settings.providerBaseUrl(llamacpp.baseUrlSetting)).toBe('http://localhost:9999');
+    // Ollama's resolution is untouched by the llama.cpp setting.
+    expect(ollamaEndpoint()).toBe(defaults.ollamaEndpoint);
+  });
+
+  it('wires the llama.cpp model at its resolved endpoint with the /v1 suffix', () => {
+    // Built-in default origin, the OpenAI-compatible /v1 path appended in build.
+    const model = resolveModel(agents.triage.capabilities, 'llamacpp-local');
+    expect(model.modelId).toBe('ggml-org/Qwen2.5-Coder-1.5B-Instruct-Q8_0-GGUF');
+    // A fresh instance is wired when the endpoint setting changes (like Ollama).
+    const before = resolveModel(agents.triage.capabilities, 'llamacpp-local');
+    __setConfig('myDevTeam.llamacpp.endpoint', `${limits.defaultLlamacppEndpoint}0`);
+    const after = resolveModel(agents.triage.capabilities, 'llamacpp-local');
+    expect(after).not.toBe(before);
+  });
+
   it('reads a cloud provider base URL from its descriptor setting key', () => {
     // The generic settings accessor the provider wiring uses (per descriptor
     // baseUrlSetting); unset is undefined (defer to the deployment default), set
@@ -168,6 +195,32 @@ describe('resolved provider endpoints', () => {
     expect(settings.providerBaseUrl('openai.baseUrl')).toBeUndefined();
     __setConfig('myDevTeam.openai.baseUrl', 'https://gateway.example.com/');
     expect(settings.providerBaseUrl('openai.baseUrl')).toBe('https://gateway.example.com');
+  });
+});
+
+describe('triageOnly models', () => {
+  it('keeps a triageOnly model available but out of the work pool', () => {
+    // The local llama.cpp model is triage-only: available (and a triage
+    // candidate) but excluded from the work agents' default pool.
+    expect(modelById('llamacpp-local')!.triageOnly).toBe(true);
+    expect(availableModels().some((m) => m.id === 'llamacpp-local')).toBe(true);
+    expect(workModels().some((m) => m.id === 'llamacpp-local')).toBe(false);
+  });
+
+  it('defaults triageOnly to false for an ordinary model', () => {
+    expect(modelById('qwen3-8b')!.triageOnly).toBe(false);
+    expect(workModels().some((m) => m.id === 'qwen3-8b')).toBe(true);
+  });
+
+  it('never auto-routes a work agent to a triageOnly model', () => {
+    // routeModel's default candidate pool is workModels(), so Auto cannot pick
+    // the triage-only model for the executor however the scores fall.
+    expect(routeModel(agents.executor.capabilities).triageOnly).toBe(false);
+  });
+
+  it('an explicit pin overrides triageOnly (model id and provider pin)', () => {
+    expect(routeModel(agents.executor.capabilities, 'llamacpp-local').id).toBe('llamacpp-local');
+    expect(routeModel(agents.executor.capabilities, 'provider:llamacpp').id).toBe('llamacpp-local');
   });
 });
 
@@ -241,10 +294,10 @@ describe('routeModel complexity gate', () => {
 });
 
 describe('availability', () => {
-  it('treats every Ollama model as available and a cloud model only when keyed', () => {
+  it('treats every keyless (local) model as available and a cloud model only when keyed', () => {
     for (const info of modelRegistry) {
       expect(isModelAvailable(info)).toBe(
-        info.provider === 'ollama' ? true : credentials.has(info.provider)
+        providerDescriptor(info.provider).keyless ? true : credentials.has(info.provider)
       );
     }
   });
@@ -258,7 +311,7 @@ describe('availability', () => {
 
   it('availableModels never includes a cloud model without its key', () => {
     for (const info of availableModels()) {
-      if (info.provider !== 'ollama') {
+      if (!providerDescriptor(info.provider).keyless) {
         expect(credentials.has(info.provider)).toBe(true);
       }
     }

@@ -81,6 +81,7 @@ so consumers can always trust what they read.
 | `disabledProviders` | `[]` | Providers the router must never use | **union** with floor; cannot re-enable a floor-disabled provider |
 | `disabledModels` | `[]` | Model ids the router must never use | **union** with floor |
 | `ollama.endpoint` | `""` (unset) | Ollama server origin (no `/api` suffix) | **user wins** over `providers.ollama.endpoint` default; unset -> deployment default -> built-in localhost |
+| `llamacpp.endpoint` | `""` (unset) | llama.cpp (`llama-server`) origin (no `/v1` suffix); keyless local provider | **user wins** over `providers.llamacpp.endpoint` default; unset -> deployment default -> built-in `http://localhost:8011` |
 | `openai.baseUrl` | `""` | OpenAI / Azure / compatible gateway base URL | **user wins** over `providers.openai.baseUrl` default; unset -> deployment default -> SDK default |
 | `anthropic.baseUrl` | `""` | Anthropic proxy/gateway base URL | **user wins** over backend default |
 | `groq.baseUrl` | `""` | Groq proxy/gateway base URL | **user wins** over backend default |
@@ -119,6 +120,7 @@ which is which.
 | `models.disabledProviders` | `[]` | Providers no one may use | **union** floor; a user cannot re-enable |
 | `models.disabledModels` | `[]` | Model ids no one may use | **union** floor |
 | `providers.ollama.endpoint` | `""` | Ollama origin **default** | user `myDevTeam.ollama.endpoint` **wins** when set; this is the fallback |
+| `providers.llamacpp.endpoint` | `""` | llama.cpp (`llama-server`) origin **default** | user `myDevTeam.llamacpp.endpoint` **wins** when set; this is the fallback |
 | `providers.openai.baseUrl` | `""` | OpenAI base URL **default** | user `myDevTeam.openai.baseUrl` **wins** when set |
 | `providers.anthropic.baseUrl` | `""` | Anthropic base URL **default** | user `myDevTeam.anthropic.baseUrl` **wins** when set |
 | `providers.groq.baseUrl` | `""` | Groq base URL **default** | user `myDevTeam.groq.baseUrl` **wins** when set |
@@ -145,6 +147,7 @@ a cloud provider is any non-keyless descriptor. Read live by the provider wiring
 | `anthropic` | `ANTHROPIC_API_KEY` | `myDevTeam.anthropic.apiKey` |
 | `groq` | `GROQ_API_KEY` | `myDevTeam.groq.apiKey` |
 | `ollama` | - (keyless, local) | - |
+| `llamacpp` | - (keyless, local) | - |
 
 The SecretStorage keys share the `myDevTeam.` prefix but are **not**
 `settings.json` entries - they never appear in the Settings UI, and the sidecar
@@ -216,7 +219,7 @@ are discovered and rendered.
 | Folder | Per-file frontmatter |
 | ------ | -------------------- |
 | `agents/*.md` | `id`, `name`, `description`, capability weights, `tools` |
-| `models/*.md` | `id`, `label`, `provider`, `model`, `tier`, capability scores |
+| `models/*.md` | `id`, `label`, `provider`, `model`, `tier`, optional `triageOnly` (default `false`; `true` = eligible for triage only, not the Auto work pool - a pin still overrides), capability scores |
 | `tools/*.md` | `name`, `sideEffecting`, optional `previewArg`/`snippetArg` + description |
 | `commands/*.md` | `name`, `description`, `intent`, `execute`, optional `complexity` + preamble |
 | `skills/*.md` | `name`, `description` + instruction body |

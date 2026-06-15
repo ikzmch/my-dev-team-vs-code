@@ -34,12 +34,13 @@ export type RoutedModel = ReturnType<ReturnType<typeof createOllama>>;
  * the descriptor stays free of those dependencies.
  */
 export interface ProviderConfig {
-  /** Resolved API key. Undefined for a keyless provider (Ollama). */
+  /** Resolved API key. Undefined for a keyless provider (Ollama, llama.cpp). */
   apiKey?: string;
   /**
-   * Resolved base URL: for Ollama the server origin (no `/api` suffix); for a
-   * cloud provider an optional gateway override (undefined uses the SDK default
-   * endpoint).
+   * Resolved base URL: for a keyless local provider the server origin (Ollama
+   * gets the `/api` suffix, llama.cpp the `/v1` suffix, each added in its
+   * `build`); for a cloud provider an optional gateway override (undefined uses
+   * the SDK default endpoint).
    */
   baseUrl?: string;
 }
@@ -61,6 +62,26 @@ const rawDescriptors = [
     build: ({ baseUrl }: ProviderConfig) => {
       const ollama = createOllama({ baseURL: `${baseUrl}/api` });
       return (model: string) => ollama(model);
+    },
+  },
+  {
+    id: 'llamacpp',
+    label: 'llama.cpp',
+    keyless: true,
+    baseUrlSetting: 'llamacpp.endpoint',
+    build: ({ baseUrl }: ProviderConfig) => {
+      // `llama-server` is OpenAI-compatible at `<origin>/v1`; the resolved
+      // endpoint is the origin (no suffix), so append `/v1` here - mirroring how
+      // Ollama appends `/api`. The server ignores the API key, so a placeholder
+      // satisfies the SDK without the user supplying a secret (the provider is
+      // keyless, so none is resolved for it).
+      const openai = createOpenAI({ baseURL: `${baseUrl}/v1`, apiKey: 'local' });
+      // Use the Chat Completions transport (`.chat`), not the SDK's default
+      // Responses API: `llama-server` enforces a structured-output JSON schema as
+      // a GBNF grammar only on `/v1/chat/completions`, so triage and the planner
+      // get schema-correct field names even from a tiny local model. The Responses
+      // path returns free-form JSON the schema cannot constrain here.
+      return (model: string) => openai.chat(model) as RoutedModel;
     },
   },
   {

@@ -60,6 +60,16 @@ export const messages = {
     `Is Ollama running on ${endpoint} with \`${model}\` pulled?\n\n`,
 
   /**
+   * Hint for a step failure whose agent used the local llama.cpp provider: the
+   * keyless analogue of the Ollama hint, pointing at the resolved `llama-server`
+   * endpoint instead of a missing API key.
+   */
+  llamacppHint: (endpoint: string) =>
+    `Is a llama.cpp server (llama-server) running on ${endpoint} with a model ` +
+    `loaded? Start one (for example via the llama.vscode extension) or set ` +
+    `"myDevTeam.llamacpp.endpoint" to its address, then try again.\n\n`,
+
+  /**
    * Hint appended to a step failure whose agent used a cloud model: the model
    * needs an API key. The provider names which environment-variable fallback
    * applies. Travels to the UI as the protocol error's `hint`, like the Ollama

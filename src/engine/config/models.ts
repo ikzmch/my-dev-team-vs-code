@@ -82,6 +82,15 @@ const ModelFrontmatterSchema = z.object({
    * tier. Defaults to "moderate" when a model file omits it.
    */
   tier: ComplexitySchema.default('moderate'),
+  /**
+   * When true, the model is eligible only for the internal triage classifier,
+   * never the Auto work pool (planner/answerer/executor/summarizer) - see
+   * `workModels` in core/models.ts. It keeps a tiny local model from being
+   * handed real work it cannot do well, while an explicit pin (a model id or a
+   * `provider:<name>`) still routes to it, since a pin always wins in
+   * `selectModel`. Defaults to false (eligible for every agent).
+   */
+  triageOnly: z.boolean().default(false),
   /** How good this model is at each capability, 0–1. */
   capabilities: CapabilityScoresSchema,
 });

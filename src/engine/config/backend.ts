@@ -96,6 +96,8 @@ export const BackendConfigSchema = z
       .object({
         /** Ollama server origin (no `/api` suffix), like `myDevTeam.ollama.endpoint`. */
         ollama: z.object({ endpoint: endpointOverride, requestsPerMinute }).prefault({}),
+        /** llama.cpp (`llama-server`) origin (no `/v1` suffix), like `myDevTeam.llamacpp.endpoint`. */
+        llamacpp: z.object({ endpoint: endpointOverride, requestsPerMinute }).prefault({}),
         /** OpenAI base URL, like `myDevTeam.openai.baseUrl`. */
         openai: z.object({ baseUrl: endpointOverride, requestsPerMinute }).prefault({}),
         /** Anthropic base URL, like `myDevTeam.anthropic.baseUrl`. */

@@ -61,7 +61,7 @@ src/
     localEngine.ts        in-process Engine: runs the workflow, translates progress into protocol events
     core/
       workflow.ts         Mastra workflow: triage -> plan -> (approval gate) -> execute | answer; per-run progress, usage + thinking sinks
-      models.ts           provider wiring (ollama/openai/anthropic/groq): availability + pin-aware routing into an AI SDK model
+      models.ts           provider wiring (ollama/llamacpp/openai/anthropic/groq): availability + pin-aware routing into an AI SDK model
       rateLimiter.ts      per-provider request throttle (RPM) + 429 retry-after-delay, as an AI SDK model middleware
       triage.ts           Mastra agent: triage request as oneshot | planning
       planner.ts          Mastra agent: draft an ordered plan of titled steps + a complexity judgement, streamed as partial snapshots; model sized by triage's complexity
@@ -558,7 +558,7 @@ is why `backend.json` is the sole data file there.
 | File                            | Holds                                                          |
 | ------------------------------- | ------------------------------------------------------------- |
 | `engine/config/agents/*.md`     | One agent per file: frontmatter (id, name, description, capability weights, tools) + the system prompt |
-| `engine/config/models/*.md`     | One registered model per file: frontmatter (id, user-facing label, provider `ollama`/`openai`/`anthropic`/`groq`, model name, `tier` weight class, capability scores) + a note on its strengths |
+| `engine/config/models/*.md`     | One registered model per file: frontmatter (id, user-facing label, provider `ollama`/`llamacpp`/`openai`/`anthropic`/`groq`, model name, `tier` weight class, optional `triageOnly` flag, capability scores) + a note on its strengths |
 | `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` and `skill` tools have no client half |
 | `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only, optional `complexity` sizing the executor since triage is skipped - `moderate` by default) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/skills/*.md`     | One built-in skill per file: frontmatter (name, description) + an instruction body. A skill is loaded on demand by the executor's `skill` tool when a task matches the description (see [Skills](#skills-engineconfigskills--clientskills)); dropping a file in registers it |
@@ -572,7 +572,7 @@ is why `backend.json` is the sole data file there.
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
 | `config/providers.ts`           | The single provider descriptor registry: one `ProviderDescriptor` per provider (`id`, `label`, `keyless`, `envKey`, `baseUrlSetting`, and a `build(config)` factory that imports the provider's `@ai-sdk/*` package). Everything provider-specific derives from this one list - the model-frontmatter `provider` enum and `ProviderName`, `providerLabels`, the credentials env-var map, the base-URL settings, and the lazy provider wiring - so adding a provider is one descriptor (plus its npm import), not a five-file edit. Lives in `config/` (not `engine/`) so both the engine and the client config layer can import it without violating the engine import discipline; depends only on the AI SDK packages, never on settings/credentials/backend (those resolve a provider's config and pass it into `build`) |
 | `config/settings.ts`            | The **client's** vscode-backed user settings, read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)): the engine/model choice, endpoints/base URLs, disabled lists, approval/complexity toggles, the run/read/search caps, the instruction and skills lists, MCP servers, telemetry flags. Also builds `liveRuntimeConfig()`/`runtimeConfigSnapshot()` - the engine's runtime-config view/snapshot. Re-exposes the engine-read constants from `config/limits.ts` so client callers still read them via `settings`. The engine never imports this module |
-| `config/limits.ts`              | vscode-free compile-time constants the **engine** reads (executor loop/preview caps, rate-limit retry constants, the skill-body cap, repair attempts, the startup-probe timeout, the built-in Ollama endpoint). Single source; `settings.ts` references them so the client-facing `settings` object still exposes them |
+| `config/limits.ts`              | vscode-free compile-time constants the **engine** reads (executor loop/preview caps, rate-limit retry constants, the skill-body cap, repair attempts, the startup-probe timeout, the built-in Ollama and llama.cpp endpoints). Single source; `settings.ts` references them so the client-facing `settings` object still exposes them |
 | `config/uiLimits.ts`            | Compile-time constants the **client** reads, not user-tunable and not engine-read: the plan-preview "big" thresholds (`isBigPlan`), the MCP-args approval-preview cap, the status-bar item priority. The client-side analog of `limits.ts`; lives in `config/` so any client layer (`ui/`, `tools/`, `client/`) can import it without coupling to another |
 | `config/runtimeConfig.ts`       | vscode-free injected seam: the `RuntimeConfig` (the user settings the engine reads - endpoints, disabled lists, triage model, complexity toggle, request rate, snippet lines, approval, thinking/summary toggles) plus `runtimeConfig()`/`setRuntimeConfig()`. The host injects a live view (`liveRuntimeConfig()`); the sidecar child injects a pushed snapshot. Lives in `config/` (the shared layer, like `providers.ts`) so the engine can read it in any process |
 | `config/credentials.ts`         | Cloud-provider API keys behind an injectable `SecretSource` (no `vscode` dependency, so the engine reads it anywhere). The default source - and the **only** source the sidecar child uses - reads the environment variables (`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GROQ_API_KEY`) it inherits. The host injects a SecretStorage-backed source (`client/secrets.ts`) for the local engine, so a key set via "Set API Key" wins, env as fallback. The cloud providers and their key names come from the provider registry. Exposes `credentials.apiKey(provider)`/`has(provider)`, read live by the provider wiring |
@@ -630,6 +630,7 @@ see [CONFIG.md](CONFIG.md); the table below is the user-settings summary:
 | `myDevTeam.planApproval.preview`     | `auto`                   | When a paused plan also opens as a read-only markdown preview beside the chat: `auto` only for a big plan (complex, or carrying design decisions, many steps, or a long write-up), `always` on every paused plan, `never` keeps review in the chat. Client-only - a pure rendering choice the engine never sees, so it does not ride the runtime-config seam; the Approve/Cancel/Revise choices stay in the chat |
 | `myDevTeam.approval.fileChanges`     | `false`                  | Require approval before the `write`/`edit` tools change a file. Off by default (changes apply directly, since the workspace is git-backed); on routes every write and edit through the same Approve/Decline gate as `run`. `run` stays gated regardless |
 | `myDevTeam.ollama.endpoint`          | `""` (unset)             | Ollama server origin (no `/api` suffix). Unset uses the deployment default in `config/backend.json`, then the built-in `http://localhost:11434`; set, your value wins over the deployment default |
+| `myDevTeam.llamacpp.endpoint`        | `""` (unset)             | llama.cpp (`llama-server`) origin (no `/v1` suffix), a keyless local provider. Unset uses the deployment default in `config/backend.json`, then the built-in `http://localhost:8011`; set, your value wins. Select it for triage with `triage.model` = `provider:llamacpp` |
 | `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key comes from `OPENAI_API_KEY`, not here |
 | `myDevTeam.anthropic.baseUrl`        | `""`                     | Optional custom base URL for Anthropic (a proxy/gateway); empty uses the default endpoint. The key comes from `ANTHROPIC_API_KEY`, not here |
 | `myDevTeam.groq.baseUrl`             | `""`                     | Optional custom base URL for Groq (a proxy/gateway); empty uses the default endpoint. The key comes from `GROQ_API_KEY`, not here |
@@ -691,9 +692,11 @@ Agents never name a concrete model. Instead:
   [the provider registry](#the-provider-registry-configprovidersts)), the
   provider-specific `model` name, a `tier` (its weight class -
   `simple` | `moderate` | `complex`, default `moderate`; see Complexity routing
-  below), and scores for how good the model is at a set of capabilities -
-  `reasoning`, `coding`, `classification`, `planning`, `speed`,
-  `structured-output` - each 0-1.
+  below), an optional `triageOnly` flag (default `false`; when `true` the model
+  is eligible only for the internal triage classifier, never the Auto work pool -
+  `workModels()` drops it - though an explicit pin still reaches it), and scores
+  for how good the model is at a set of capabilities - `reasoning`, `coding`,
+  `classification`, `planning`, `speed`, `structured-output` - each 0-1.
 - **Agents** (`engine/config/agents/*.md`) declare the same capabilities as
   *weights*: how much each one matters to that agent.
 - `selectModel` (`engine/config/models.ts`) is pure config logic: given a
@@ -701,8 +704,11 @@ Agents never name a concrete model. Instead:
   complexity, it returns the pinned model outright or - among the candidates,
   narrowed to the request's tier when a complexity is given - the highest
   weighted score (Σ weight × score). `engine/core/models.ts` adds the runtime:
-  `availableModels()` (every Ollama model, assumed pulled, plus any cloud model
-  whose API key is set), `localModels()` (the Ollama subset),
+  `availableModels()` (every keyless local model - Ollama and llama.cpp, assumed
+  served - plus any cloud model whose API key is set; triage's pool),
+  `workModels()` (the same minus any `triageOnly` model, the work agents' default
+  pool - so Auto never hands real work to a triage-only model, though an explicit
+  pin still reaches it), `localModels()` (the Ollama subset),
   `routeModel`/`resolveModel` (apply the pin + candidates + complexity and wire
   the winner onto an [AI SDK](https://sdk.vercel.ai) provider instance).
 
@@ -792,9 +798,12 @@ everything provider-specific derives from that one list:
   model-frontmatter `provider` enum (and `ProviderName`) are generated from the
   registry, so a model file naming an **unknown provider fails at load** with a
   clear message instead of registering a model the wiring cannot build.
-- `keyless` - whether the provider needs an API key. The keyless provider
-  (Ollama) is always available; the cloud providers are exactly the non-keyless
-  descriptors, which is what `config/credentials.ts` iterates.
+- `keyless` - whether the provider needs an API key. The keyless providers
+  (Ollama and llama.cpp, both local servers) are always available; the cloud
+  providers are exactly the non-keyless descriptors, which is what
+  `config/credentials.ts` iterates. Each keyless provider resolves its **own**
+  server origin (`engine/core/models.ts`' `keylessEndpoint`), so "keyless" no
+  longer means "Ollama" - a second local provider does not inherit Ollama's URL.
 - `envKey` - the environment variable the API key is read from (cloud only),
   the default source and the only one the sidecar child uses (it inherits the
   parent's environment).
@@ -816,7 +825,15 @@ backend. `engine/core/models.ts` resolves each provider's config (the key from
 it to the descriptor's `build`.
 
 **Today's providers.** Ollama is local and keyless, built from
-`myDevTeam.ollama.endpoint`. OpenAI, Anthropic, and Groq need an API key (read
+`myDevTeam.ollama.endpoint`. llama.cpp is a second local keyless provider for a
+`llama-server` reached over its OpenAI-compatible endpoint (built from
+`myDevTeam.llamacpp.endpoint`, default `http://localhost:8011`, with `/v1`
+appended in `build`) - so a small model can run with no Ollama install, e.g.
+behind the llama.vscode extension. It is wired on the **Chat Completions**
+transport (`openai.chat`), not the AI SDK's default Responses API: `llama-server`
+enforces a structured-output schema as a GBNF grammar only on
+`/v1/chat/completions`, so triage and the planner get schema-correct JSON even
+from a tiny local model. OpenAI, Anthropic, and Groq need an API key (read
 from their `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY` environment
 variables, or - for the local engine only - from a key stored via the "Set API
 Key" command) and accept an optional custom base URL (`myDevTeam.openai.baseUrl` /
@@ -915,8 +932,9 @@ Triage stays a cheap, invisible classification that should be fast and free, so
 it defaults to a local model and ignores whatever the user
 pinned for the work that follows; anyone who wants a sharper classifier - or who
 has no Ollama server - can point it at a specific model or another provider via
-`myDevTeam.triage.model`, with the operator's `agents.triage.model` as the
-shipped default.
+`myDevTeam.triage.model` (e.g. `provider:llamacpp` for a local `llama-server`
+with no Ollama install, or a cloud provider when a key is set), with the
+operator's `agents.triage.model` as the shipped default.
 
 **Surfacing the choice.** The engine emits a `model-selected` event right after
 `triaged` and attaches the same `selection` to the reply (mode

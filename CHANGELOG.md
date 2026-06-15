@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.0] - 2026-06-15
+
+### Added
+
+- **Run a local model without Ollama (llama.cpp provider).** A new keyless
+  `llamacpp` provider talks to a local `llama-server` over its OpenAI-compatible
+  endpoint, so you can run a small downloaded model with no Ollama install - for
+  example behind the llama.vscode extension. Point `myDevTeam.llamacpp.endpoint`
+  at the server (default `http://localhost:8011`) and select it for the cheap
+  triage step with `myDevTeam.triage.model` = `provider:llamacpp`, or pick it
+  from the `/model` list for the main work.
+- **Triage-only models.** A model can be marked `triageOnly` in its config so
+  Auto routes only the internal triage step to it, never the planner, answerer,
+  or executor - keeping a tiny local model from being handed real work it cannot
+  do well. Pinning the model (or its provider) still overrides the guard. The
+  bundled llama.cpp model ships with this flag.
+
+### Changed
+
+- **Keyless providers each resolve their own endpoint.** Local providers no
+  longer assume "keyless means Ollama": each resolves its own server origin from
+  its own setting, deployment default, and built-in localhost, so a second local
+  provider (llama.cpp) cannot inherit Ollama's address.
+
 ## [0.49.0] - 2026-06-15
 
 ### Added

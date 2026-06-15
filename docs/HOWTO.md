@@ -245,8 +245,9 @@ Notes:
   internal "is this a question or a task?" step is not affected by your choice -
   by default it stays on a fast local Ollama model, so it costs you nothing. If
   you have no Ollama server, point it at a cloud provider with the
-  `myDevTeam.triage.model` setting (e.g. `provider:openai`); see
-  [Settings](#7-settings).
+  `myDevTeam.triage.model` setting (e.g. `provider:openai`), or at a local
+  llama.cpp server with `provider:llamacpp` (see "Running a local model without
+  Ollama" below); see [Settings](#7-settings).
 - **Auto sizes the model to the job.** When the model is Auto (or you picked a
   provider rather than one fixed model), My Dev Team also judges how demanding a
   task is and uses a cheaper/smaller model for simple work (e.g. "write a
@@ -271,6 +272,47 @@ Notes:
   `myDevTeam.anthropic.baseUrl`, or `myDevTeam.groq.baseUrl` to its URL (see
   [Settings](#7-settings)). (Some builds pin a provider's endpoint - including
   the Ollama server - for everyone; that takes precedence over these settings.)
+
+### Running a local model without Ollama
+
+If you would rather not install Ollama, My Dev Team can also talk to a local
+**llama.cpp** server (`llama-server`), which serves a model you download
+yourself. The simplest way to get one running is the **llama.vscode** extension.
+
+**Install llama.vscode and start a server:**
+
+1. In VS Code, open the Extensions view (Ctrl+Shift+X), search for
+   **llama-vscode** (publisher `ggml-org`), and click **Install** - or get it from
+   the [Marketplace page](https://marketplace.visualstudio.com/items?itemName=ggml-org.llama-vscode).
+   It downloads `llama-server` for you on first use (Windows and macOS).
+2. Open the Command Palette (Ctrl+Shift+P) and run a llama.vscode "Start ..."
+   command (for example **llama-vscode: Start chat llama-server**); pick a small
+   model when prompted. It downloads the model and starts a local server, by
+   default on `http://localhost:8011`.
+3. Leave that server running while you use My Dev Team.
+
+Prefer the command line? Install llama.cpp and run, for example:
+
+```
+llama-server -hf ggml-org/Qwen2.5-Coder-1.5B-Instruct-Q8_0-GGUF --port 8011
+```
+
+Then point My Dev Team at that server:
+
+1. Set `myDevTeam.llamacpp.endpoint` to the server's address (origin only, no
+   `/v1`); the default is `http://localhost:8011`. Check the address in
+   llama.vscode's settings (or your `llama-server --port`) if you used a
+   different port.
+2. To use it for the quick triage step, set `myDevTeam.triage.model` to
+   `provider:llamacpp`.
+
+No API key is needed - it is a local server, like Ollama. The bundled llama.cpp
+model is a small one, so it is set up for triage only: Auto will not use it for
+planning or the actual work, only the quick triage step. If you really want it to
+do the work too, pick it from the `/model` list (it shows with the "(llama.cpp)"
+suffix, e.g. "Qwen2.5 Coder 1.5B (llama.cpp)") - choosing it there overrides the
+triage-only default. Heavier planning and coding still do better on a larger
+Ollama model or a cloud model.
 
 ## 5. Slash commands
 
@@ -401,13 +443,14 @@ likely to touch:
 | Setting                          | Default                  | What it controls                                  |
 | -------------------------------- | ------------------------ | ------------------------------------------------- |
 | `myDevTeam.model`                | `auto`                   | Which model, provider (`provider:<name>`), or `auto` to use; easier to set with `/model` or the **My Dev Team** status button |
-| `myDevTeam.triage.model`         | `""`                     | What the quick triage step uses, kept separate from the model above. Empty uses the build's default (a local Ollama model); set `provider:openai` (or `anthropic`/`groq`), `auto`, or a model id when you have no Ollama server. A provider/model the build disabled cannot be chosen |
+| `myDevTeam.triage.model`         | `""`                     | What the quick triage step uses, kept separate from the model above. Empty uses the build's default (a local Ollama model); set `provider:llamacpp` (a local llama.cpp server), `provider:openai` (or `anthropic`/`groq`), `auto`, or a model id when you have no Ollama server. A provider/model the build disabled cannot be chosen |
 | `myDevTeam.complexityRouting`    | `true`                   | Let Auto size the model to how hard the task is (cheaper for simple work, stronger for complex). Turn off to ignore difficulty; a pinned model is never affected |
 | `myDevTeam.planApproval`         | `auto`                   | When to pause for you to approve a plan before it runs: `auto` (complex plans only), `always` (every plan), or `never`. At the prompt you can Approve, Cancel, or Revise (comment and redraft) |
 | `myDevTeam.planApproval.preview` | `auto`                   | When a paused plan also opens as a read-only preview in the editor: `auto` (only a big plan), `always` (every plan it pauses on), or `never` (review in the chat only). The Approve/Cancel/Revise buttons always stay in the chat |
 | `myDevTeam.disabledProviders`    | `[]`                     | Providers to never use (e.g. `["anthropic"]`); shown disabled in `/model` and never run, even if pinned or keyed |
 | `myDevTeam.disabledModels`       | `[]`                     | Individual models to never use (e.g. `["qwen3-coder"]`); same as above but per model |
 | `myDevTeam.ollama.endpoint`      | unset (uses `http://localhost:11434`) | Where your Ollama server listens. Leave blank for the default your install ships with (localhost if none); set it to point at your own server |
+| `myDevTeam.llamacpp.endpoint`    | unset (uses `http://localhost:8011`) | Where your local llama.cpp server (`llama-server`) listens, origin only (no `/v1`). Lets you run a small local model without Ollama; see "Running a local model without Ollama" |
 | `myDevTeam.openai.baseUrl`       | `""`                     | Custom OpenAI endpoint (Azure / compatible gateway); empty uses OpenAI's default |
 | `myDevTeam.anthropic.baseUrl`    | `""`                     | Custom Anthropic endpoint (a proxy/gateway); empty uses Anthropic's default |
 | `myDevTeam.groq.baseUrl`         | `""`                     | Custom Groq endpoint (a proxy/gateway); empty uses Groq's default |

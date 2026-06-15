@@ -52,8 +52,26 @@ describe('provider registry', () => {
     const ollama = providerDescriptor('ollama').build({ baseUrl: 'http://host:11434' });
     expect(ollama('llama3').modelId).toBe('llama3');
 
+    // llama.cpp: keyless and OpenAI-compatible; the model id passes through (the
+    // /v1 suffix is added to the base URL inside build, not the model id).
+    const llamacpp = providerDescriptor('llamacpp').build({ baseUrl: 'http://host:8011' });
+    expect(llamacpp('local').modelId).toBe('local');
+
     // A cloud provider: the model id passes through to the SDK instance.
     const openai = providerDescriptor('openai').build({ apiKey: 'k' });
     expect(openai('gpt-4.1').modelId).toBe('gpt-4.1');
+  });
+
+  it('builds llama.cpp on the Chat Completions transport, not the Responses API', () => {
+    // The fix that makes structured output work against llama-server: it only
+    // grammar-enforces a JSON schema on /v1/chat/completions, so the provider
+    // must use `openai.chat` (provider id "openai.chat"), not the SDK's default
+    // Responses transport ("openai.responses") that the cloud OpenAI provider
+    // keeps. Without this, a small local model returns free-form, wrong-keyed
+    // JSON and triage/planner structured-output validation fails.
+    const llamacpp = providerDescriptor('llamacpp').build({ baseUrl: 'http://host:8011' });
+    const openai = providerDescriptor('openai').build({ apiKey: 'k' });
+    expect(llamacpp('local').provider).toBe('openai.chat');
+    expect(openai('gpt-4.1').provider).toBe('openai.responses');
   });
 });

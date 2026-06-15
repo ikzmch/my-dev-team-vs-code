@@ -25,7 +25,7 @@ import { Answerer } from '../src/engine/core/answerer';
 import { Executor, PartialExecution } from '../src/engine/core/executor';
 import { AgentUsage } from '../src/engine/core/usage';
 import { agents } from '../src/engine/config/agents';
-import { routeModel, localModels } from '../src/engine/core/models';
+import { routeModel, routeTriageModel } from '../src/engine/core/models';
 import { ToolHost } from '../src/protocol/toolContract';
 import { settings } from '../src/config/settings';
 import { __state } from './mocks/vscode';
@@ -840,7 +840,7 @@ describe('usage reporting', () => {
     await new Triage().classify('q', (usage) => seen.push(usage));
     expect(seen).toEqual([
       {
-        model: routeModel(agents.triage.capabilities, undefined, localModels()).model,
+        model: routeTriageModel(agents.triage.capabilities).model,
         ...counts,
       },
     ]);
@@ -854,7 +854,7 @@ describe('usage reporting', () => {
     await new Triage().classify('q', (usage) => seen.push(usage));
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({
-      model: routeModel(agents.triage.capabilities, undefined, localModels()).model,
+      model: routeTriageModel(agents.triage.capabilities).model,
       estimated: true,
     });
     // The estimate is derived from the prompt and the serialized object, so
@@ -872,7 +872,7 @@ describe('usage reporting', () => {
     await new Triage().classify('q', (usage) => seen.push(usage));
     expect(seen).toEqual([
       {
-        model: routeModel(agents.triage.capabilities, undefined, localModels()).model,
+        model: routeTriageModel(agents.triage.capabilities).model,
         inputTokens: 3,
         outputTokens: 5,
       },

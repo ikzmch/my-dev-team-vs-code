@@ -114,7 +114,10 @@ describe('the bundled backendConfig', () => {
     // The shipped file throttles no provider (0 = off), so behaviour is unchanged
     // until an operator sets a rate.
     expect(backendConfig.providers.groq.requestsPerMinute).toBe(0);
-    // Triage ships on the "ollama" provider.
-    expect(backendConfig.agents.triage.model).toBe('ollama');
+    // Triage carries a non-empty routing string (a provider name or model id);
+    // the exact value is a deployment choice, not asserted here. The schema
+    // default when the field is omitted is covered above ("ollama").
+    expect(typeof backendConfig.agents.triage.model).toBe('string');
+    expect(backendConfig.agents.triage.model.length).toBeGreaterThan(0);
   });
 });

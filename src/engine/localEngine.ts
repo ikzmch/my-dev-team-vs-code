@@ -47,6 +47,7 @@ import {
   isProviderEnabled,
   effectivePin,
   ollamaEndpoint,
+  llamacppEndpoint,
 } from './core/models';
 import { isRateLimited } from './core/rateLimiter';
 import { limits } from '../config/limits';
@@ -286,9 +287,13 @@ function failureHint(agent: AgentName, modelPin?: string, error?: unknown): stri
   if (isRateLimited(error)) {
     return messages.rateLimitHint(info.label);
   }
-  return info.provider === 'ollama'
-    ? messages.ollamaHint(ollamaEndpoint(), info.model)
-    : messages.cloudKeyHint(info.label, info.provider);
+  if (info.provider === 'ollama') {
+    return messages.ollamaHint(ollamaEndpoint(), info.model);
+  }
+  if (info.provider === 'llamacpp') {
+    return messages.llamacppHint(llamacppEndpoint());
+  }
+  return messages.cloudKeyHint(info.label, info.provider);
 }
 
 function mapFailure(
