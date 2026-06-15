@@ -4,6 +4,11 @@
  * the engine only supplies the catalogue (`Engine.listModels`) and is told the
  * chosen id on each run request via the `myDevTeam.model` setting.
  *
+ * Cloud keys stored via "Set API Key" go to the editor's SecretStorage and are
+ * used by the in-process local engine (the sidecar and a future remote backend
+ * read keys only from environment variables - see config/credentials.ts and
+ * client/secrets.ts).
+ *
  * The client never hardcodes model knowledge: labels, descriptions, and
  * availability all come from the engine catalogue, so the picker stays correct
  * when models are added or a remote engine offers a different set.
@@ -13,15 +18,16 @@ import { Engine } from '../protocol/engine';
 import { ModelChoice } from '../protocol/types';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
-import { CloudProvider, setApiKey } from '../config/credentials';
+import { CloudProvider } from '../config/credentials';
 import { cloudProviderDescriptors } from '../config/providers';
+import { setApiKey } from '../client/secrets';
 
 const CONFIG_SECTION = 'myDevTeam';
 const MODEL_KEY = 'model';
 
 /** Command id the status-bar item and palette use to open the model picker. */
 export const SELECT_MODEL_COMMAND_ID = 'myDevTeam.selectModel';
-/** Command id for storing a cloud-provider API key in SecretStorage. */
+/** Command id for storing a cloud-provider API key in SecretStorage (local engine). */
 export const SET_API_KEY_COMMAND_ID = 'myDevTeam.setApiKey';
 
 /** Persist the chosen model id to the user (global) settings. */
@@ -123,9 +129,11 @@ export async function handleModelChatCommand(
 
 /**
  * The "Set API Key" command: pick a cloud provider, enter (or clear) its key,
- * and store it in SecretStorage (refreshing the in-memory cache so the next
- * run sees it). Keys never touch settings.json. The provider list and labels
- * come from the single provider registry (config/providers.ts).
+ * and store it in SecretStorage (refreshing the in-memory cache so the next run
+ * sees it). Keys never touch settings.json. Stored keys are used by the
+ * in-process local engine; the sidecar engine reads keys from environment
+ * variables instead, so a key set here has no effect in sidecar mode. The
+ * provider list and labels come from the single provider registry.
  */
 export async function runSetApiKeyCommand(secrets: vscode.SecretStorage): Promise<void> {
   const providerItems = cloudProviderDescriptors.map((d) => ({

@@ -9,7 +9,7 @@ import { Summarizer, SummaryProgress } from './summarizer';
 import { AgentUsage, estimateTokens } from './usage';
 import { commandConfigs, pinnedReason, CommandConfig } from '../config/commands';
 import { resolveSkills, renderSkillsSection, SkillSummary } from '../config/skills';
-import { settings } from '../../config/settings';
+import { runtimeConfig } from '../../config/runtimeConfig';
 import {
   Attachment,
   AttachmentSchema,
@@ -588,7 +588,7 @@ export function createDevTeamWorkflow(
         if (!canGate) {
           return false;
         }
-        const mode = settings.planApproval;
+        const mode = runtimeConfig().planApproval;
         return mode === 'always' || (mode === 'auto' && p.complexity === 'complex');
       };
       let proceed = true;
@@ -631,7 +631,7 @@ export function createDevTeamWorkflow(
         usageReporter(requestContext, 'answer', inputBreakdown(inputData)),
         // Surface a reasoning model's thinking live, gated by the setting so
         // turning it off does no extra work (a side-channel, not the reply).
-        settings.thinking.showInChatEnabled ? thinkingSink(requestContext) : undefined
+        runtimeConfig().thinkingShowInChat ? thinkingSink(requestContext) : undefined
       );
       return { prompt, instructions, attachments, history, command, intent, complexity, reason, answer };
     },
@@ -671,7 +671,7 @@ export function createDevTeamWorkflow(
         usageReporter(requestContext, 'execute', inputBreakdown(executorInput, plan, catalogue)),
         // Surface the executor's thinking live, gated by the setting so turning
         // it off does no extra work (a side-channel, not the transcript).
-        settings.thinking.showInChatEnabled ? thinkingSink(requestContext) : undefined
+        runtimeConfig().thinkingShowInChat ? thinkingSink(requestContext) : undefined
       );
       const base = { intent, complexity, reason, plan, execution };
 
@@ -682,7 +682,7 @@ export function createDevTeamWorkflow(
       // discard the execution.
       if (
         !makeSummarizer ||
-        !settings.summary.showInChatEnabled ||
+        !runtimeConfig().summaryShowInChat ||
         !executionChangedFiles(execution)
       ) {
         return base;

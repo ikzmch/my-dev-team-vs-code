@@ -152,7 +152,6 @@ describe('runSetApiKeyCommand', () => {
     __setInputBoxResponse('gsk-test');
     await runSetApiKeyCommand(secrets);
     expect(__state.secrets.get('myDevTeam.groq.apiKey')).toBe('gsk-test');
-    expect(window.showInformationMessage).toHaveBeenCalled();
   });
 
   it('does nothing when the provider pick is dismissed', async () => {
@@ -168,3 +167,4 @@ describe('runSetApiKeyCommand', () => {
     expect(__state.secrets.size).toBe(0);
   });
 });
+

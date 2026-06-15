@@ -5,10 +5,13 @@
  * provider `APICallError` (HTTP 429), before Mastra wraps it into a step error.
  *
  * Two behaviours, both per provider:
- *   - Throttle: when `myDevTeam.provider.requestsPerMinute` is set, calls are
- *     spaced so a provider never receives more than that many requests per
- *     rolling minute. Keeps a run under a provider's quota (e.g. Groq's free
- *     tier) instead of firing requests until one is rejected.
+ *   - Throttle: calls are spaced so a provider never receives more than its
+ *     resolved requests-per-minute, keeping a run under a provider's quota (e.g.
+ *     Groq's free tier) instead of firing requests until one is rejected. The
+ *     rate is per provider and resolved by `resolveRequestsPerMinute`: the
+ *     operator's per-provider floor in `config/backend.json` is the default, and
+ *     the user's `myDevTeam.provider.requestsPerMinute` overrides it (either
+ *     direction) when set.
  *   - Retry: a 429 is caught and retried after the delay the provider suggests
  *     (its `retry-after` header, or the "try again in Ns" hint in the message),
  *     up to `provider.maxRateLimitRetries` times. The throttle slot is
@@ -18,7 +21,26 @@
  * request without rebuilding the wrapped model.
  */
 import { APICallError, LanguageModelMiddleware } from 'ai';
-import { settings } from '../../config/settings';
+import { runtimeConfig } from '../../config/runtimeConfig';
+import { limits } from '../../config/limits';
+import { backendConfig } from '../config/backend';
+
+/**
+ * The effective requests-per-minute for a provider, resolving the two layers:
+ * the user's explicit `myDevTeam.provider.requestsPerMinute` wins outright when
+ * set (in either direction - it is the user's machine and call), otherwise the
+ * operator's per-provider floor from `config/backend.json`, otherwise 0 (no
+ * throttle). Read live, so a settings or (rebuilt) config change takes effect on
+ * the next request. `0` means throttling off.
+ */
+export function resolveRequestsPerMinute(provider: string): number {
+  const userOverride = runtimeConfig().requestsPerMinute;
+  if (userOverride !== undefined) {
+    return userOverride;
+  }
+  const providers = backendConfig.providers as Record<string, { requestsPerMinute?: number }>;
+  return providers[provider]?.requestsPerMinute ?? 0;
+}
 
 /**
  * The next time, per provider, a request may be sent (epoch ms). Spacing is
@@ -165,11 +187,11 @@ export function rateLimitRetryDelayMs(error: unknown, attempt: number): number |
   if (!isRateLimitError(error)) {
     return undefined;
   }
-  const max = settings.provider.maxRetryWaitMs;
+  const max = limits.provider.maxRetryWaitMs;
   const suggested = suggestedDelayMs(error);
   const wait =
     suggested !== undefined
-      ? suggested + settings.provider.retryBufferMs
+      ? suggested + limits.provider.retryBufferMs
       : 1000 * 2 ** attempt;
   return Math.min(max, Math.max(0, wait));
 }
@@ -186,7 +208,7 @@ async function withRateLimit<T>(
   signal?: AbortSignal
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const reservation = acquireSlot(provider, settings.provider.requestsPerMinute);
+    const reservation = acquireSlot(provider, resolveRequestsPerMinute(provider));
     if (reservation.wait > 0) {
       try {
         await delay(reservation.wait, signal);
@@ -203,12 +225,12 @@ async function withRateLimit<T>(
       return await operation();
     } catch (error) {
       const retryIn = rateLimitRetryDelayMs(error, attempt);
-      if (retryIn === undefined || attempt >= settings.provider.maxRateLimitRetries) {
+      if (retryIn === undefined || attempt >= limits.provider.maxRateLimitRetries) {
         throw error;
       }
       console.warn(
         `[my-dev-team] ${provider} rate limited; retrying in ${Math.round(retryIn)}ms ` +
-          `(attempt ${attempt + 1}/${settings.provider.maxRateLimitRetries}).`
+          `(attempt ${attempt + 1}/${limits.provider.maxRateLimitRetries}).`
       );
       await delay(retryIn, signal);
     }

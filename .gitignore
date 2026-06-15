@@ -4,7 +4,7 @@ coverage/
 *.vsix
 .DS_Store
 
-CHAT.md
-FIX.md
-STORY.md
-TODO.md
+docs/CHAT.md
+docs/FIX.md
+docs/STORY.md
+docs/TODO.md

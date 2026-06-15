@@ -37,6 +37,7 @@ function fakeContext() {
   return {
     subscriptions: [] as unknown[],
     globalStorageUri: Uri.file('/global'),
+    extensionUri: Uri.file('/ext'),
     secrets,
   };
 }
@@ -53,11 +54,11 @@ describe('activate', () => {
     );
     // The approval command + the plan-review command + the MCP hub disposable +
     // the run-mirror terminal + five tools + the participant, plus the unified
-    // status-bar button and its status-menu command, the select-model and
-    // set-api-key commands, the config-change listener, the show-usage command,
-    // and the five editor entry points (three shim commands + the code-action
-    // and CodeLens providers), get pushed for disposal.
-    expect(context.subscriptions).toHaveLength(21);
+    // status-bar button and its status-menu command, the engine-provider
+    // disposable, the select-model and set-api-key commands, the config-change
+    // listener, the show-usage command, and the five editor entry points (three
+    // shim commands + the code-action and CodeLens providers), get pushed for disposal.
+    expect(context.subscriptions).toHaveLength(22);
     expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.planReview')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.statusMenu')).toBe(true);

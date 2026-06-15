@@ -10,7 +10,8 @@ import { resolveTokenCounts, UsageReporter } from './usage';
 import { condenseThinking } from './thinking';
 import { agents } from '../config/agents';
 import { toolConfigs } from '../config/tools';
-import { settings } from '../../config/settings';
+import { limits } from '../../config/limits';
+import { runtimeConfig } from '../../config/runtimeConfig';
 import {
   DynamicToolDef,
   ExecutionEvent,
@@ -29,7 +30,7 @@ export type { ExecutionEvent, PartialExecution } from '../../protocol/types';
  * the ordered interleaving of model commentary and tool calls *is* the
  * user-visible product of this agent, so its schema is part of the wire
  * contract. This file produces those events; the input/result previews are
- * computed here, bounded by config/settings.ts, because the engine is what
+ * computed here, bounded by config/limits.ts, because the engine is what
  * saw the full values.
  */
 export type ExecutionResult = Execution;
@@ -56,7 +57,7 @@ function truncate(text: string, max: number): string {
  * Otherwise falls back to compact JSON without Mastra's metadata.
  */
 function inputPreview(tool: string, args: unknown): string {
-  const max = settings.executor.inputPreviewMaxChars;
+  const max = limits.executor.inputPreviewMaxChars;
   if (typeof args !== 'object' || args === null) {
     return truncate(JSON.stringify(args) ?? '{}', max);
   }
@@ -71,7 +72,7 @@ function inputPreview(tool: string, args: unknown): string {
 
 /**
  * Multi-line snippet of a tool call's snippet argument: its first
- * `settings.executor.snippetLines` lines (each bounded like the input
+ * `runtimeConfig().toolSnippetLines` lines (each bounded like the input
  * preview), with a truncation message when more follow. Undefined when the
  * tool has no `snippetArg`, the argument is missing or empty, or snippets
  * are turned off (line count 0).
@@ -82,14 +83,14 @@ function inputSnippet(tool: string, args: unknown): string | undefined {
     return undefined;
   }
   const value = (args as Record<string, unknown>)[snippetArg];
-  const maxLines = settings.executor.snippetLines;
+  const maxLines = runtimeConfig().toolSnippetLines;
   if (typeof value !== 'string' || !value.trim() || maxLines <= 0) {
     return undefined;
   }
   const lines = value.trimEnd().split('\n');
   const head = lines
     .slice(0, maxLines)
-    .map((line) => truncate(line, settings.executor.inputPreviewMaxChars));
+    .map((line) => truncate(line, limits.executor.inputPreviewMaxChars));
   if (lines.length > maxLines) {
     head.push('. . . (truncated)');
   }
@@ -99,7 +100,7 @@ function inputSnippet(tool: string, args: unknown): string | undefined {
 /** Bounded preview of a tool result (ours return strings; be safe anyway). */
 function resultPreview(result: unknown): string {
   const text = typeof result === 'string' ? result : JSON.stringify(result) ?? '';
-  return truncate(text, settings.executor.resultPreviewMaxChars);
+  return truncate(text, limits.executor.resultPreviewMaxChars);
 }
 
 /**
@@ -188,7 +189,7 @@ export class Executor {
     // is cancelled; only add it when present so the no-signal call still passes
     // exactly { maxSteps } to the model.
     const options: { maxSteps: number; abortSignal?: AbortSignal } = {
-      maxSteps: settings.executor.maxSteps,
+      maxSteps: limits.executor.maxSteps,
     };
     if (signal) {
       options.abortSignal = signal;
@@ -229,7 +230,7 @@ export class Executor {
             const delta: string = chunk.payload?.text ?? '';
             if (delta) {
               reasoning += delta;
-              const line = condenseThinking(reasoning, settings.thinking.lineMaxChars);
+              const line = condenseThinking(reasoning, limits.thinking.lineMaxChars);
               if (line) {
                 onThinking(line);
               }

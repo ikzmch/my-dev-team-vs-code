@@ -53,8 +53,9 @@ export const messages = {
       groq: 'GROQ_API_KEY',
     }[provider];
     return (
-      `\`${label}\` needs an API key. Run the "My Dev Team: Set API Key" command ` +
-      `(or set the ${envVar} environment variable), then try again.\n\n`
+      `\`${label}\` needs an API key. Set the ${envVar} environment variable ` +
+      `(in the environment VS Code is launched from), or - for the local ` +
+      `engine - run the "My Dev Team: Set API Key" command, then try again.\n\n`
     );
   },
 
@@ -128,7 +129,8 @@ export const messages = {
     /** Prompt for the Set API Key command's provider pick. */
     setKeyProviderPlaceholder: 'Which provider is the API key for?',
     /** Prompt for the Set API Key command's key input. */
-    setKeyInputPrompt: (provider: string) => `Paste your ${provider} API key (stored securely; leave empty to clear)`,
+    setKeyInputPrompt: (provider: string) =>
+      `Paste your ${provider} API key (stored securely; used by the local engine; leave empty to clear)`,
     /** Confirmation toast after a key is stored or cleared. */
     keyStored: (provider: string) => `My Dev Team: ${provider} API key stored.`,
     keyCleared: (provider: string) => `My Dev Team: ${provider} API key cleared.`,
@@ -200,7 +202,7 @@ export const messages = {
       `---\n\n` +
       `[$(sparkle) Select model](command:${opts.selectModelCommand} "Choose the model for @devteam")\n\n` +
       `[$(symbol-number) Token usage report](command:${opts.usageCommand} "Open the token usage report")\n\n` +
-      `[$(key) Set API key](command:${opts.setKeyCommand} "Store a cloud provider API key")`,
+      `[$(key) Set API key](command:${opts.setKeyCommand} "Store a cloud provider API key (local engine)")`,
     /** Placeholder atop the quick-pick menu the button opens. */
     menuPlaceholder: 'My Dev Team',
     /** The "change model" row, showing the currently-active model. */
@@ -213,7 +215,7 @@ export const messages = {
   /**
    * Copy for the tool approval gates. `run` is always gated; `write` and `edit`
    * are gated only when the user turns on `myDevTeam.approval.fileChanges` (off
-   * by default, since the workspace is git-backed - see DESIGN.md).
+   * by default, since the workspace is git-backed - see docs/DESIGN.md).
    */
   approval: {
     runCommandTitle: 'Run command',

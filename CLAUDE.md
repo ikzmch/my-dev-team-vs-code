@@ -21,25 +21,30 @@ four invariants:
    knows nothing about any editor.
 2. **Everything crossing the protocol is wire-serializable** - plain data, no
    functions, class instances, or `Uri`s that only survive in one process.
-3. **Config and secrets are injected, not read in-process** - the engine
-   receives resolved values via the protocol / `AuthProvider`; it must not reach
-   into VS Code settings or SecretStorage directly. (This is the one seam not
-   fully realised yet - new engine code must not deepen the coupling.)
+3. **Config and secrets are injected, not read in-process** - the engine reads
+   user settings through the injected `config/runtimeConfig.ts` seam (and
+   compile-time constants from `config/limits.ts`), never `config/settings.ts`
+   or `vscode`; cloud keys come through the injectable `SecretSource` in
+   `config/credentials.ts` (default env-only; the host injects a SecretStorage
+   source for the local engine - `client/secrets.ts`), so the engine module
+   itself stays `vscode`-free. New engine code must keep this: read config via
+   `runtimeConfig()`/`limits` and keys via `credentials`, never `settings`,
+   SecretStorage, or `vscode`.
 4. **Tools stay inverted** - the engine only ever *asks* for a side effect
    through the `ToolHost`; it never touches the workspace itself.
 
 When unsure, ask: "would this still work if the engine were a separate process
 talking to a Kotlin client?" If no, the change belongs on the client side of
-the protocol. See the "Deployment targets" note in DESIGN.md (the Architecture
+the protocol. See the "Deployment targets" note in docs/DESIGN.md (the Architecture
 section) for the full rationale.
 
-## Keep DESIGN.md in sync
+## Keep docs/DESIGN.md in sync
 
-DESIGN.md is the developer documentation: architecture, request flow, the
+docs/DESIGN.md is the developer documentation: architecture, request flow, the
 engine protocol, configuration, the model router, the tools, development
 setup, and the roadmap. Every time a significant change is made, update
-DESIGN.md in the same piece of work - do not leave it for a follow-up.
-Significant means anything DESIGN.md describes or a reader would rely on,
+docs/DESIGN.md in the same piece of work - do not leave it for a follow-up.
+Significant means anything docs/DESIGN.md describes or a reader would rely on,
 e.g.:
 
 - architecture: new/renamed/deleted files in `src/`, new layers or seams
@@ -53,57 +58,57 @@ capability-router section, "Current behavior", "Prerequisites", and the
 scripts table - they name concrete files and models and drift easily.
 
 Pure refactors that change no structure or behavior, and test-only changes, do
-not require a DESIGN.md update.
+not require a docs/DESIGN.md update.
 
-## Keep CONFIG.md in sync
+## Keep docs/CONFIG.md in sync
 
-CONFIG.md is the exhaustive configuration reference: every parameter the
+docs/CONFIG.md is the exhaustive configuration reference: every parameter the
 extension reads, grouped by source (user `myDevTeam.*` settings, the
 `backend.json` operator floor, secrets, build-time constants, and the author
 `.md` configs), with its default, scope, read cadence, and usage, plus the
 precedence/merge rules. Whenever a change adds, renames, removes, or changes the
-default of any of these, update the matching row in CONFIG.md in the same piece
+default of any of these, update the matching row in docs/CONFIG.md in the same piece
 of work - do not leave it for a follow-up. That means:
 
 - a new/renamed/removed `myDevTeam.*` setting or a changed default (keep it
-  consistent with `package.json`, `config/settings.ts`, and the DESIGN.md
+  consistent with `package.json`, `config/settings.ts`, and the docs/DESIGN.md
   user-settings table)
 - a new/changed `config/backend.json` field, secret key, or notable
   build-time constant in `config/settings.ts`
 - a change to the precedence or merge semantics (override vs union, the floor
   rules)
 
-The source of truth is the code; CONFIG.md follows it. Test-only changes and
-pure refactors that touch no parameter need no CONFIG.md update.
+The source of truth is the code; docs/CONFIG.md follows it. Test-only changes and
+pure refactors that touch no parameter need no docs/CONFIG.md update.
 
 ## Keep README.md high-level
 
 README.md is the front page, written to attract developers and end users: a
-short pitch, the highlights, links to QUICKSTART.md and HOWTO.md (end users)
-and DESIGN.md (developers), a minimal getting-started snippet, the tech stack,
-and the license. Keep it at that altitude - detail belongs in DESIGN.md,
-HOWTO.md, or QUICKSTART.md, never here. Update it only when the pitch-level
+short pitch, the highlights, links to docs/QUICKSTART.md and docs/HOWTO.md (end users)
+and docs/DESIGN.md (developers), a minimal getting-started snippet, the tech stack,
+and the license. Keep it at that altitude - detail belongs in docs/DESIGN.md,
+docs/HOWTO.md, or docs/QUICKSTART.md, never here. Update it only when the pitch-level
 facts change: what the extension is and does, a headline feature, the tech
 stack, the build/launch one-liner, the license, or the set of documents it
 links to.
 
-## Keep QUICKSTART.md in sync
+## Keep docs/QUICKSTART.md in sync
 
-QUICKSTART.md is the short post-install guide: the shortest path from a
+docs/QUICKSTART.md is the short post-install guide: the shortest path from a
 downloaded `.vsix` to a working chat, written as explicit numbered GUI steps
 (which button to press, what to type and where). It targets a corporate end
 user who cannot run the AI locally, so connecting to a hosted AI service is the
 central step, with two options - an Ollama server reached by endpoint, or an
 Azure OpenAI deployment (base URL + API key via the Set API Key command or
 `OPENAI_API_KEY`). Keep it narrow - install, connect, open a folder, say hello.
-Anything beyond that first-run path belongs in HOWTO.md, not here. Update it
+Anything beyond that first-run path belongs in docs/HOWTO.md, not here. Update it
 when the post-install flow changes: the install steps, the connection options
 (endpoint / base URL / API-key setup), or the first-run experience. Keep both
-QUICKSTART.md and HOWTO.md pointing at each other.
+docs/QUICKSTART.md and docs/HOWTO.md pointing at each other.
 
-## Keep HOWTO.md in sync
+## Keep docs/HOWTO.md in sync
 
-HOWTO.md is the full end-user guide: it tells a non-developer how to set up,
+docs/HOWTO.md is the full end-user guide: it tells a non-developer how to set up,
 launch, and use the extension. Every time a change affects what an end user
 sees or does, update it in the same piece of work - do not leave it for a
 follow-up. That means changes to:

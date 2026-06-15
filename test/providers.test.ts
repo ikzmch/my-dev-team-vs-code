@@ -30,14 +30,14 @@ describe('provider registry', () => {
     expect(new Set(providerIds).size).toBe(providerIds.length);
   });
 
-  it('a keyless provider carries no key names; a cloud one carries both', () => {
+  it('a keyless provider carries no key names; a cloud one carries env + secret keys', () => {
     for (const d of providerDescriptors) {
       if (d.keyless) {
-        expect(d.secretKey).toBeUndefined();
         expect(d.envKey).toBeUndefined();
+        expect(d.secretKey).toBeUndefined();
       } else {
-        expect(d.secretKey).toBeTruthy();
         expect(d.envKey).toBeTruthy();
+        expect(d.secretKey).toBeTruthy();
       }
     }
   });

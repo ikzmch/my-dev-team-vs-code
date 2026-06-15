@@ -2,7 +2,7 @@
   "name": "my-dev-team",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.46.1",
+  "version": "0.47.0",
   "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,
@@ -41,11 +41,13 @@
           "type": "string",
           "enum": [
             "local",
+            "sidecar",
             "remote"
           ],
           "default": "local",
           "enumDescriptions": [
             "Run the agent pipeline inside the extension against your local Ollama server.",
+            "Run the same pipeline in a separate Node process (a sidecar). The tools, approval, and rendering stay in the editor; the engine is isolated. Cloud API keys are read from environment variables, which the child inherits.",
             "Not available yet: will run the same pipeline on a remote backend. Falls back to local with a warning."
           ],
           "description": "Which engine handles @devteam requests. Read live; switching takes effect on the next request."
@@ -98,29 +100,32 @@
         },
         "myDevTeam.ollama.endpoint": {
           "type": "string",
-          "default": "http://localhost:11434",
-          "description": "Base URL of the Ollama server (origin only, no /api suffix). Model calls, error hints, and the startup health check all use this value."
+          "default": "",
+          "description": "Base URL of the Ollama server (origin only, no /api suffix). Leave blank to use the server your deployment ships with, falling back to http://localhost:11434; set a value here to point at your own server (your setting wins over the deployment default). Model calls, error hints, and the startup health check all use the resolved value."
         },
         "myDevTeam.openai.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional custom base URL for the OpenAI provider (an Azure or OpenAI-compatible gateway). Leave empty to use OpenAI's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
+          "description": "Optional custom base URL for the OpenAI provider (an Azure or OpenAI-compatible gateway). Leave empty to use OpenAI's default endpoint. The API key is read from the OPENAI_API_KEY environment variable (or, for the local engine, the \"Set API Key\" command), not here."
         },
         "myDevTeam.anthropic.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional custom base URL for the Anthropic provider (a proxy or gateway). Leave empty to use Anthropic's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
+          "description": "Optional custom base URL for the Anthropic provider (a proxy or gateway). Leave empty to use Anthropic's default endpoint. The API key is read from the ANTHROPIC_API_KEY environment variable (or, for the local engine, the \"Set API Key\" command), not here."
         },
         "myDevTeam.groq.baseUrl": {
           "type": "string",
           "default": "",
-          "description": "Optional custom base URL for the Groq provider (a proxy or gateway). Leave empty to use Groq's default endpoint. The API key is set with the \"My Dev Team: Set API Key\" command, not here."
+          "description": "Optional custom base URL for the Groq provider (a proxy or gateway). Leave empty to use Groq's default endpoint. The API key is read from the GROQ_API_KEY environment variable (or, for the local engine, the \"Set API Key\" command), not here."
         },
         "myDevTeam.provider.requestsPerMinute": {
-          "type": "number",
-          "default": 0,
+          "type": [
+            "number",
+            "null"
+          ],
+          "default": null,
           "minimum": 0,
-          "description": "Maximum model requests per minute sent to each provider. Requests are spaced so no provider exceeds this rate, keeping a run under its quota (e.g. a Groq free-tier limit); applied per provider, so a local Ollama call never spends a cloud provider's budget. Set to 0 to disable throttling. A rate-limited (HTTP 429) request is always retried after the delay the provider suggests, regardless of this setting."
+          "description": "Your override for the maximum model requests per minute sent to each provider. Requests are spaced so no provider exceeds this rate, keeping a run under its quota (e.g. a Groq free-tier limit); applied per provider, so a local Ollama call never spends a cloud provider's budget. Leave unset (null) to use the per-provider rate the deployment ships with; set a number to override it (raise or lower), or 0 to disable throttling. A rate-limited (HTTP 429) request is always retried after the delay the provider suggests, regardless of this setting."
         },
         "myDevTeam.run.commandTimeoutMs": {
           "type": "number",

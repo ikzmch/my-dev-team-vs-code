@@ -19,12 +19,17 @@
  *    in core/models.ts). The per-user equivalent is the
  *    `myDevTeam.disabledProviders`/`disabledModels` settings, which narrow
  *    further but can never re-enable what the backend disabled.
- *  - `providers`: per-provider endpoint overrides (Ollama's `endpoint`, the
- *    cloud providers' `baseUrl`). An override here *wins over* the matching user
- *    setting (`myDevTeam.ollama.endpoint`, `myDevTeam.<provider>.baseUrl`), so an
- *    operator can pin every provider at a corporate gateway. An empty/blank value
- *    means "no override - fall back to the user setting"; the resolution lives in
- *    core/models.ts.
+ *  - `providers`: per-provider settings, all **deployment defaults the user can
+ *    override** (not enforced floors - the only enforced floor is the disable
+ *    list above). The endpoint default (Ollama's `endpoint`, the cloud providers'
+ *    `baseUrl`) gives a deployment a sensible server to ship with; the user's
+ *    `myDevTeam.ollama.endpoint` / `myDevTeam.<provider>.baseUrl` *wins over* it
+ *    when set, an empty/blank value here just means "no default" (resolution in
+ *    core/models.ts). `requestsPerMinute` is the per-provider request rate
+ *    (0 = no throttle); likewise the user's `myDevTeam.provider.requestsPerMinute`
+ *    wins over it when set, in either direction, since a request rate is the
+ *    user's own quota to manage (resolution in core/rateLimiter.ts'
+ *    `resolveRequestsPerMinute`). An unset user setting defers to the default here.
  *  - `agents.triage.model`: how the (always-engine-side) triage classifier is
  *    routed. A registered model id pins that exact model; a provider name (e.g.
  *    "ollama", "anthropic") routes by capability among that provider's models;
@@ -65,6 +70,14 @@ const modelOrProvider = z
     return trimmed === '' ? 'ollama' : trimmed;
   });
 
+/**
+ * A provider's operator request-rate floor: a non-negative integer (requests
+ * per minute), defaulting to 0 (no throttle) when omitted. A negative or
+ * non-integer value fails validation at load - a loud error the operator fixes,
+ * matching how a bad endpoint override is rejected rather than silently ignored.
+ */
+const requestsPerMinute = z.number().int().min(0).default(0);
+
 export const BackendConfigSchema = z
   .object({
     /** Model-router floor: providers and model ids the operator disabled. */
@@ -82,13 +95,13 @@ export const BackendConfigSchema = z
     providers: z
       .object({
         /** Ollama server origin (no `/api` suffix), like `myDevTeam.ollama.endpoint`. */
-        ollama: z.object({ endpoint: endpointOverride }).prefault({}),
+        ollama: z.object({ endpoint: endpointOverride, requestsPerMinute }).prefault({}),
         /** OpenAI base URL, like `myDevTeam.openai.baseUrl`. */
-        openai: z.object({ baseUrl: endpointOverride }).prefault({}),
+        openai: z.object({ baseUrl: endpointOverride, requestsPerMinute }).prefault({}),
         /** Anthropic base URL, like `myDevTeam.anthropic.baseUrl`. */
-        anthropic: z.object({ baseUrl: endpointOverride }).prefault({}),
+        anthropic: z.object({ baseUrl: endpointOverride, requestsPerMinute }).prefault({}),
         /** Groq base URL, like `myDevTeam.groq.baseUrl`. */
-        groq: z.object({ baseUrl: endpointOverride }).prefault({}),
+        groq: z.object({ baseUrl: endpointOverride, requestsPerMinute }).prefault({}),
       })
       .prefault({}),
     /** Per-agent routing config. Today only triage is configurable. */

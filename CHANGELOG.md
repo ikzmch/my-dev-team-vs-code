@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.47.0] - 2026-06-15
+
+### Added
+
+- **Sidecar engine option.** `myDevTeam.engine` gains a `sidecar` choice that
+  runs the same agent pipeline in a separate Node process while the tools,
+  approval, and rendering stay in the editor - isolating the engine and proving
+  out the wire protocol for a future remote backend or non-VS Code client. The
+  default stays `local`.
+- **Per-provider request rate in the deployment config.** A deployment can now
+  set a request-per-minute rate for each provider in `config/backend.json`
+  (`providers.<id>.requestsPerMinute`), so it can size each gateway's quota
+  independently instead of sharing one global number. The shipped default is `0`
+  (no throttle) everywhere, so behaviour is unchanged until a rate is set.
+
+### Changed
+
+- **Cloud API keys: env vars everywhere, SecretStorage for the local engine.**
+  Keys are resolved per engine: the in-process `local` engine still accepts keys
+  stored in the editor via the "Set API Key" command (SecretStorage), falling
+  back to `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY`; the `sidecar`
+  engine (and a future remote) read **only** those environment variables, which
+  the child inherits, so no secret crosses the process boundary.
+
+- **`myDevTeam.provider.requestsPerMinute` is now an override of that default.**
+  Left unset (its new default), it uses the deployment's per-provider rate; set
+  to a number, the user's value wins outright in either direction (raise or
+  lower), since a request rate is the user's own quota to manage.
+- **Your endpoint/base-URL settings win over the bundled config.** The
+  `config/backend.json` provider `endpoint`/`baseUrl` values are now deployment
+  *defaults* rather than enforced overrides: when you set
+  `myDevTeam.ollama.endpoint` or a provider `*.baseUrl`, your value wins, so you
+  can always point the extension at your own server. (`myDevTeam.ollama.endpoint`
+  now defaults to blank, meaning "use the deployment default, then localhost".)
+  The disabled-provider/model lists remain the one enforced floor.
+
 ## [0.46.1] - 2026-06-15
 
 ### Fixed

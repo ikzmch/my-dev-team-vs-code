@@ -1,21 +1,21 @@
 /**
- * Cloud-provider API keys, kept out of VS Code settings.json (which syncs to
- * disk and Settings Sync) on purpose. Keys live in the editor's SecretStorage:
- * `loadStoredApiKeys` reads them once at activation into the in-memory cache
- * below, and the `Set API Key` command writes them and refreshes the cache.
- * An environment variable is the fallback, so a key in `OPENAI_API_KEY` /
- * `ANTHROPIC_API_KEY` / `GROQ_API_KEY` works with no setup (and tests need no
- * SecretStorage).
+ * Cloud-provider API keys, behind an injectable source so the engine can read
+ * them in any process. The default source reads **environment variables only**
+ * (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY`), which is what the
+ * sidecar child uses - it has no `vscode`, and it inherits the parent's
+ * environment, so nothing secret crosses the protocol.
  *
- * Which providers take a key, and the SecretStorage / env-var names per
- * provider, all derive from the single provider registry (config/providers.ts):
- * a cloud provider is any descriptor that is not keyless. The provider wiring
- * (engine/core/models.ts) reads these the same "single source of truth, read
- * live" way it reads the Ollama endpoint. Phase C moves keys server-side behind
- * the AuthProvider seam; until then they stay on the user's machine and never
- * travel on the protocol.
+ * The in-process local engine runs in the extension host, which *does* have
+ * `vscode`, so it injects a richer source (`setSecretSource`) that also reads
+ * the editor's SecretStorage - see client/secrets.ts. That keeps the convenient
+ * in-editor "Set API Key" flow for the local engine while the sidecar and a
+ * future remote backend stay env-only. This module imports no `vscode`, which is
+ * what lets it ship in the sidecar bundle.
+ *
+ * Which providers take a key, and the env-var name per provider, derive from the
+ * single provider registry (config/providers.ts): a cloud provider is any
+ * descriptor that is not keyless.
  */
-import * as vscode from 'vscode';
 import {
   cloudProviderDescriptors,
   ProviderDescriptor,
@@ -29,64 +29,48 @@ const cloudById = new Map<ProviderName, ProviderDescriptor>(
   cloudProviderDescriptors.map((d) => [d.id, d])
 );
 
-const stored: Partial<Record<ProviderName, string>> = {};
-
-/**
- * Load any stored keys from SecretStorage into the in-memory cache. Call once
- * on activation; failures are swallowed so a SecretStorage hiccup never blocks
- * startup (the env-var fallback still applies).
- */
-export async function loadStoredApiKeys(secrets: vscode.SecretStorage): Promise<void> {
-  for (const descriptor of cloudProviderDescriptors) {
-    try {
-      const value = await secrets.get(descriptor.secretKey!);
-      if (value && value.trim()) {
-        stored[descriptor.id] = value.trim();
-      }
-    } catch {
-      // Leave the cache empty for this provider; the env fallback still works.
-    }
-  }
-}
-
-/**
- * Store (or, with an empty value, clear) a provider's key in SecretStorage and
- * refresh the in-memory cache so the next run sees it without a reload.
- */
-export async function setApiKey(
-  secrets: vscode.SecretStorage,
-  provider: CloudProvider,
-  key: string
-): Promise<void> {
-  const secretKey = cloudById.get(provider)?.secretKey;
-  if (!secretKey) {
-    return;
-  }
-  const trimmed = key.trim();
-  if (trimmed) {
-    await secrets.store(secretKey, trimmed);
-    stored[provider] = trimmed;
-  } else {
-    await secrets.delete(secretKey);
-    delete stored[provider];
-  }
-}
-
-function keyFor(provider: ProviderName): string | undefined {
+/** Read a provider's key from its environment variable. The default source, and
+ * the sidecar's only source. `vscode`-free. */
+export function apiKeyFromEnv(provider: ProviderName): string | undefined {
   const descriptor = cloudById.get(provider);
-  if (!descriptor) {
+  if (!descriptor?.envKey) {
     return undefined;
   }
-  return stored[provider] ?? process.env[descriptor.envKey!]?.trim() ?? undefined;
+  return process.env[descriptor.envKey]?.trim() || undefined;
+}
+
+/**
+ * A source of cloud-provider API keys. The default reads env vars; the host
+ * injects a SecretStorage-backed one (env as fallback) for the local engine.
+ */
+export interface SecretSource {
+  apiKey(provider: ProviderName): string | undefined;
+}
+
+const envSource: SecretSource = { apiKey: apiKeyFromEnv };
+let source: SecretSource = envSource;
+
+/**
+ * Inject the secret source. The host calls this with a SecretStorage-backed
+ * source so the local engine can use in-editor keys; the sidecar child never
+ * calls it, so it keeps the env-only default.
+ */
+export function setSecretSource(next: SecretSource): void {
+  source = next;
+}
+
+/** Restore the env-only default source (used by tests). */
+export function resetSecretSource(): void {
+  source = envSource;
 }
 
 export const credentials = {
-  /** The configured API key for a cloud provider (SecretStorage first, then its env var). */
+  /** The configured API key for a cloud provider, from the active source. */
   apiKey(provider: ProviderName): string | undefined {
-    return keyFor(provider);
+    return source.apiKey(provider);
   },
   /** Whether a usable key exists for the given provider (always false for a keyless one). */
   has(provider: ProviderName): boolean {
-    return keyFor(provider) !== undefined;
+    return source.apiKey(provider) !== undefined;
   },
 };

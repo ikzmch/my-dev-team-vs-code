@@ -10,6 +10,9 @@
  * enforces them.
  */
 import * as vscode from 'vscode';
+import { limits } from './limits';
+import { providerDescriptors } from './providers';
+import { RuntimeConfig } from './runtimeConfig';
 
 /** The settings namespace contributed in package.json. */
 const CONFIG_SECTION = 'myDevTeam';
@@ -43,8 +46,7 @@ export const defaults = {
   },
   disabledProviders: [] as readonly string[],
   disabledModels: [] as readonly string[],
-  ollamaEndpoint: 'http://localhost:11434',
-  requestsPerMinute: 0,
+  ollamaEndpoint: limits.defaultOllamaEndpoint,
   runCommandTimeoutMs: 60_000,
   read: {
     maxLines: 200,
@@ -96,19 +98,22 @@ function userLimit(key: string, fallback: number, min = 1): number {
 }
 
 /**
- * Read the configured Ollama endpoint: an http(s) origin without the `/api`
- * suffix, normalised without a trailing slash. Anything else falls back to
- * the default so provider wiring and error hints never see a broken URL.
+ * The user's explicit Ollama endpoint (`myDevTeam.ollama.endpoint`): an http(s)
+ * origin without the `/api` suffix, normalised without a trailing slash, or
+ * `undefined` when the user has not set a valid one. Undefined (unset, blank, or
+ * a non-http(s)/non-string value) means "defer to the operator default, then the
+ * built-in localhost" - the fallback chain lives in core/models.ts'
+ * `ollamaEndpoint()`, so this getter reports only what the user chose.
  */
-function userEndpoint(): string {
+function userEndpoint(): string | undefined {
   const value = vscode.workspace
     .getConfiguration(CONFIG_SECTION)
     .get<unknown>('ollama.endpoint');
   if (typeof value !== 'string') {
-    return defaults.ollamaEndpoint;
+    return undefined;
   }
   const trimmed = value.trim().replace(/\/+$/, '');
-  return /^https?:\/\/.+/.test(trimmed) ? trimmed : defaults.ollamaEndpoint;
+  return /^https?:\/\/.+/.test(trimmed) ? trimmed : undefined;
 }
 
 /**
@@ -144,16 +149,17 @@ function userStringList(key: string): readonly string[] {
 
 export const settings = {
   /**
-   * Which engine handles `@devteam` runs (`myDevTeam.engine`): the
-   * in-process local engine, or (Phase B) a remote backend speaking the same
-   * protocol. Read live per request, so switching needs no reload. Anything
-   * but the literal "remote" falls back to "local" - the safe default.
+   * Which engine handles `@devteam` runs (`myDevTeam.engine`): the in-process
+   * local engine, a `sidecar` child process running the same engine, or (Phase
+   * B) a remote backend speaking the same protocol. Read live per request, so
+   * switching takes effect on the next request. An unknown value falls back to
+   * "local" - the safe default.
    */
-  get engine(): 'local' | 'remote' {
+  get engine(): 'local' | 'remote' | 'sidecar' {
     const value = vscode.workspace
       .getConfiguration(CONFIG_SECTION)
       .get<unknown>('engine');
-    return value === 'remote' ? 'remote' : defaults.engine;
+    return value === 'remote' || value === 'sidecar' ? value : defaults.engine;
   },
 
   /**
@@ -260,12 +266,15 @@ export const settings = {
   },
 
   /**
-   * Where the Ollama server listens (`myDevTeam.ollama.endpoint`). The
-   * provider wiring (core/models.ts), the chat error hints (messages.ts), and
-   * the activation health check (ui/startupCheck.ts) all derive from this one
-   * value so they can never disagree.
+   * The user's chosen Ollama endpoint (`myDevTeam.ollama.endpoint`), or
+   * `undefined` when unset. The resolved endpoint the provider wiring
+   * (core/models.ts), the chat error hints (messages.ts), and the activation
+   * health check (ui/startupCheck.ts) actually use is `ollamaEndpoint()` in
+   * core/models.ts, which prefers this user value, then the operator default in
+   * `config/backend.json`, then the built-in localhost - so they can never
+   * disagree.
    */
-  get ollamaEndpoint(): string {
+  get ollamaEndpoint(): string | undefined {
     return userEndpoint();
   },
 
@@ -273,9 +282,10 @@ export const settings = {
    * Optional custom base URL for a cloud provider, read from the VS Code
    * setting named by the provider descriptor's `baseUrlSetting`
    * (`myDevTeam.<provider>.baseUrl`): an Azure / OpenAI-compatible gateway or a
-   * proxy. Undefined (unset or invalid) uses the provider's own default
-   * endpoint. Generic over the provider so adding one needs no new getter -
-   * the provider wiring (engine/core/models.ts) passes the descriptor's key.
+   * proxy. Undefined (unset or invalid) defers to the operator default in
+   * `config/backend.json`, then the provider's own default endpoint. Generic
+   * over the provider so adding one needs no new getter - the provider wiring
+   * (engine/core/models.ts) passes the descriptor's key.
    */
   providerBaseUrl(settingKey: string): string | undefined {
     return userBaseUrl(settingKey);
@@ -284,31 +294,30 @@ export const settings = {
   /** Outgoing model-request rate limiting and rate-limit retry behaviour. */
   provider: {
     /**
-     * Max model requests per minute sent to each provider
-     * (`myDevTeam.provider.requestsPerMinute`). The rate limiter spaces calls
-     * so no provider receives more than this many requests per rolling minute,
-     * keeping runs under a provider's quota (e.g. a Groq free-tier limit).
-     * Applied per provider, so a local Ollama call never spends a cloud
-     * provider's budget. `0` (the default) disables throttling. Read live.
+     * The user's explicit override of the model-request rate, in requests per
+     * minute (`myDevTeam.provider.requestsPerMinute`), or `undefined` when the
+     * user has not set it - in which case the per-provider operator floor from
+     * `config/backend.json` applies (resolved in core/rateLimiter.ts'
+     * `resolveRequestsPerMinute`). When the user does set it, the user's value
+     * wins outright, in either direction (raise or lower) and across every
+     * provider: it is the user's machine and the user's call. `0` is a valid
+     * explicit value (the user turning throttling off); a negative or non-number
+     * value is invalid and read as unset (defer to the floor). The setting's
+     * package.json default is `null`, so an untouched setting reads as undefined
+     * here rather than masking the floor with a `0`. Read live.
      */
-    get requestsPerMinute(): number {
-      return userLimit('provider.requestsPerMinute', defaults.requestsPerMinute, 0);
+    get requestsPerMinute(): number | undefined {
+      const value = vscode.workspace
+        .getConfiguration(CONFIG_SECTION)
+        .get<unknown>('provider.requestsPerMinute');
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0
+        ? Math.floor(value)
+        : undefined;
     },
-    /**
-     * How many times a rate-limited (HTTP 429) request is retried before the
-     * step is failed. Each retry waits the delay the provider suggests (its
-     * `retry-after` header or the "try again in Ns" hint in the error),
-     * clamped to `maxRetryWaitMs`.
-     */
-    maxRateLimitRetries: 5,
-    /** Cap on a single rate-limit retry wait, in milliseconds. */
-    maxRetryWaitMs: 60_000,
-    /**
-     * Buffer added to a provider-suggested retry delay, in milliseconds: the
-     * suggested time is approximate, so we wait a touch longer to avoid
-     * tripping the same limit again immediately.
-     */
-    retryBufferMs: 250,
+    /** Re-exposed from config/limits.ts (engine-read constants, single source). */
+    maxRateLimitRetries: limits.provider.maxRateLimitRetries,
+    maxRetryWaitMs: limits.provider.maxRetryWaitMs,
+    retryBufferMs: limits.provider.retryBufferMs,
   },
 
   /** Shell command timeout for the `run` tool, in milliseconds (`myDevTeam.run.commandTimeoutMs`). */
@@ -407,23 +416,15 @@ export const settings = {
    * with the validation error appended. Compile-time: the cost is bounded model
    * calls, not something an end user tunes.
    */
-  structuredOutput: {
-    /**
-     * Extra generations allowed after a schema-validation failure before the
-     * step fails for real. `0` disables self-repair (the first bad object fails
-     * the run, as before); `1` (the default) gives one corrective retry.
-     */
-    repairAttempts: 1,
-  },
+  /** Re-exposed from config/limits.ts (the engine reads it from there). */
+  structuredOutput: limits.structuredOutput,
 
   /** Limits on the executor's tool-calling loop and its transcript previews. */
   executor: {
-    /** Max model->tools->model iterations before the loop is cut off. */
-    maxSteps: 12,
-    /** Max characters of a tool call's argument JSON kept in the transcript. */
-    inputPreviewMaxChars: 200,
-    /** Max characters of a tool result kept in the transcript. */
-    resultPreviewMaxChars: 400,
+    /** Re-exposed from config/limits.ts (engine-read constants, single source). */
+    maxSteps: limits.executor.maxSteps,
+    inputPreviewMaxChars: limits.executor.inputPreviewMaxChars,
+    resultPreviewMaxChars: limits.executor.resultPreviewMaxChars,
     /**
      * Leading lines of a snippet-bearing argument (config `snippetArg`, e.g.
      * the file contents for write) shown beneath the call line in the
@@ -540,12 +541,8 @@ export const settings = {
           .get<unknown>('thinking.showInChat') !== false
       );
     },
-    /**
-     * Max characters of one condensed thinking line shown to the user; a longer
-     * line is trimmed with an ellipsis. Compile-time: it bounds a transient
-     * status line, not something an end user tunes.
-     */
-    lineMaxChars: 200,
+    /** Re-exposed from config/limits.ts (the engine reads it from there). */
+    lineMaxChars: limits.thinking.lineMaxChars,
   },
 
   /** The local eval log run/feedback records land in (client/evalLog.ts). */
@@ -653,9 +650,10 @@ export const settings = {
     /**
      * Max characters of one skill file: the client caps the raw text it ships
      * and the engine caps the parsed body, so a large skill cannot crowd the
-     * executor's context window.
+     * executor's context window. Re-exposed from config/limits.ts (the engine
+     * reads it from there).
      */
-    maxChars: 8_000,
+    maxChars: limits.skills.maxChars,
   },
 
   /**
@@ -768,6 +766,74 @@ export const settings = {
     maxTurnChars: 2_000,
   },
 
-  /** How long the activation health check waits for Ollama, in milliseconds. */
-  startupProbeTimeoutMs: 3_000,
+  /** How long the activation health check waits for Ollama, in milliseconds (config/limits.ts). */
+  startupProbeTimeoutMs: limits.startupProbeTimeoutMs,
 };
+
+/**
+ * A live view of the user-tunable settings the engine reads, shaped as the
+ * injected `RuntimeConfig` (config/runtimeConfig.ts). The getters delegate to
+ * `settings`, so a settings change is reflected on the next access - the
+ * in-process local engine stays exactly as live as before the injection seam
+ * existed. The sidecar client serializes a plain snapshot of this (the getter
+ * values) to the child and re-sends it when a setting changes.
+ */
+export function liveRuntimeConfig(): RuntimeConfig {
+  return {
+    get ollamaEndpoint() {
+      return settings.ollamaEndpoint;
+    },
+    get providerBaseUrls() {
+      const map: Record<string, string | undefined> = {};
+      for (const d of providerDescriptors) {
+        map[d.baseUrlSetting] = settings.providerBaseUrl(d.baseUrlSetting);
+      }
+      return map;
+    },
+    get disabledProviders() {
+      return settings.disabledProviders;
+    },
+    get disabledModels() {
+      return settings.disabledModels;
+    },
+    get triageModel() {
+      return settings.triageModel;
+    },
+    get complexityRoutingEnabled() {
+      return settings.complexityRoutingEnabled;
+    },
+    get requestsPerMinute() {
+      return settings.provider.requestsPerMinute;
+    },
+    get toolSnippetLines() {
+      return settings.executor.snippetLines;
+    },
+    get planApproval() {
+      return settings.planApproval;
+    },
+    get thinkingShowInChat() {
+      return settings.thinking.showInChatEnabled;
+    },
+    get summaryShowInChat() {
+      return settings.summary.showInChatEnabled;
+    },
+  };
+}
+
+/** A plain, serializable snapshot of the live runtime config (for the sidecar). */
+export function runtimeConfigSnapshot(): RuntimeConfig {
+  const live = liveRuntimeConfig();
+  return {
+    ollamaEndpoint: live.ollamaEndpoint,
+    providerBaseUrls: live.providerBaseUrls,
+    disabledProviders: [...live.disabledProviders],
+    disabledModels: [...live.disabledModels],
+    triageModel: live.triageModel,
+    complexityRoutingEnabled: live.complexityRoutingEnabled,
+    requestsPerMinute: live.requestsPerMinute,
+    toolSnippetLines: live.toolSnippetLines,
+    planApproval: live.planApproval,
+    thinkingShowInChat: live.thinkingShowInChat,
+    summaryShowInChat: live.summaryShowInChat,
+  };
+}

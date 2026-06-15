@@ -22,7 +22,7 @@
  */
 import { z } from 'zod';
 import { parseFrontmatter } from './frontmatter';
-import { settings } from '../../config/settings';
+import { limits } from '../../config/limits';
 import skillFiles from 'glob:./skills/*.md';
 
 const SkillFrontmatterSchema = z.object({
@@ -116,7 +116,7 @@ export function resolveSkills(discovered?: readonly RawWorkspaceSkill[]): Resolv
     claimed.add(skill.name);
     byName.set(skill.name, skill);
   }
-  const max = settings.skills.maxChars;
+  const max = limits.skills.maxChars;
   const catalogue: SkillSummary[] = [];
   const bodies = new Map<string, string>();
   for (const skill of byName.values()) {

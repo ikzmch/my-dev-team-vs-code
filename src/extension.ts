@@ -23,9 +23,25 @@ import {
 import { StatusBar, STATUS_MENU_COMMAND_ID } from './ui/statusBar';
 import { runShowUsageCommand, SHOW_USAGE_COMMAND_ID } from './ui/usageView';
 import { registerEditorEntryPoints } from './ui/editorEntryPoints';
-import { loadStoredApiKeys } from './config/credentials';
+import { setRuntimeConfig } from './config/runtimeConfig';
+import { liveRuntimeConfig } from './config/settings';
+import { setSecretSource } from './config/credentials';
+import { loadStoredApiKeys, secretStorageSource } from './client/secrets';
 
 export function activate(context: vscode.ExtensionContext) {
+  // --- Engine runtime config ---
+  // The engine reads the user's settings through the injected runtime-config
+  // seam (config/runtimeConfig.ts), never `vscode` directly, so it can run in a
+  // separate process (the sidecar). In the host we inject a live view backed by
+  // `settings`, so a settings change still takes effect on the next request.
+  setRuntimeConfig(liveRuntimeConfig());
+
+  // Cloud keys: the in-process local engine may use the editor's SecretStorage
+  // (the "Set API Key" command), so inject that source and load any stored keys.
+  // The sidecar child never loads this module, so it keeps the env-only default.
+  setSecretSource(secretStorageSource);
+  void loadStoredApiKeys(context.secrets);
+
   // --- Approval seam: Phase 1 uses the chat-based approver ---
   // Created before the tool host because the side-effecting `run` tool is
   // gated by it. Registering wires up the command its in-chat
@@ -74,7 +90,14 @@ export function activate(context: vscode.ExtensionContext) {
   // Fire-and-forget health check: the selected engine reports what is wrong
   // (unreachable Ollama, missing models) instead of letting the first chat
   // request be the thing that fails. Never blocks activation.
-  const getEngine = createEngineProvider();
+  const sidecarScriptPath = vscode.Uri.joinPath(
+    context.extensionUri,
+    'dist',
+    'sidecar.js'
+  ).fsPath;
+  const engineProvider = createEngineProvider(sidecarScriptPath);
+  const getEngine = engineProvider.getEngine;
+  context.subscriptions.push({ dispose: () => engineProvider.dispose() });
   void checkEngineAtStartup(getEngine());
 
   // --- The unified status-bar button ---
@@ -90,12 +113,11 @@ export function activate(context: vscode.ExtensionContext) {
   );
 
   // --- Model selection ---
-  // Load any cloud-provider API keys from SecretStorage into the in-memory
-  // cache (env vars are the fallback), then wire the picker and the "Set API
-  // Key" command. The chosen model travels on every run request via the
-  // myDevTeam.model setting; the engine routes by capability when it is "auto".
-  // The status button's menu shows the active model and refreshes after a pick.
-  void loadStoredApiKeys(context.secrets);
+  // Wire the model picker and the "Set API Key" command (the latter stores a
+  // cloud key in SecretStorage for the local engine). The chosen model travels
+  // on every run request via the myDevTeam.model setting; the engine routes by
+  // capability when it is "auto". The status button's menu shows the active
+  // model and refreshes after a pick.
   context.subscriptions.push(
     vscode.commands.registerCommand(SELECT_MODEL_COMMAND_ID, async () => {
       await pickModel(getEngine());

@@ -60,11 +60,11 @@ answer.
 
 ## Documentation
 
-- **[QUICKSTART.md](QUICKSTART.md)** - the shortest path for a new user: what
+- **[QUICKSTART.md](docs/QUICKSTART.md)** - the shortest path for a new user: what
   to do right after installing the `.vsix` to get a working chat.
-- **[HOWTO.md](HOWTO.md)** - the full end-user guide: setup, first steps,
+- **[HOWTO.md](docs/HOWTO.md)** - the full end-user guide: setup, first steps,
   slash commands, approvals, settings, and troubleshooting.
-- **[DESIGN.md](DESIGN.md)** - the developer documentation: architecture,
+- **[DESIGN.md](docs/DESIGN.md)** - the developer documentation: architecture,
   the request flow, the engine protocol, the configuration system, the model
   router, the tools, development setup, and the roadmap.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** - how to contribute.

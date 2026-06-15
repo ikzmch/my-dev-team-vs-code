@@ -224,13 +224,15 @@ The list offers three kinds of choice:
   but let it pick the best model for each task. Type `/model anthropic` (or
   `openai`, `ollama`) as a shortcut.
 
-Out of the box the list is your local Ollama models. To use a cloud model:
+Out of the box the list is your local Ollama models. To use a cloud model, give
+it an API key one of two ways:
 
-1. Run the **"My Dev Team: Set API Key"** command (Ctrl+Shift+P) and paste your
+1. **Run the "My Dev Team: Set API Key" command** (Ctrl+Shift+P) and paste your
    OpenAI, Anthropic, or Groq key. It is stored securely and never written to
-   your settings file. (Alternatively, set the `OPENAI_API_KEY`,
-   `ANTHROPIC_API_KEY`, or `GROQ_API_KEY` environment variable before launching
-   VS Code.)
+   your settings file. This works with the default (local) engine.
+   **Or** set the `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GROQ_API_KEY`
+   environment variable before launching VS Code - the only option if you run
+   the `sidecar` engine, which reads keys from the environment.
 2. Pick the model with `/model` - cloud models you have a key for become
    selectable; the rest show as unavailable.
 
@@ -390,11 +392,11 @@ likely to touch:
 | `myDevTeam.planApproval`         | `auto`                   | When to pause for you to approve a plan before it runs: `auto` (complex plans only), `always` (every plan), or `never`. At the prompt you can Approve, Cancel, or Revise (comment and redraft) |
 | `myDevTeam.disabledProviders`    | `[]`                     | Providers to never use (e.g. `["anthropic"]`); shown disabled in `/model` and never run, even if pinned or keyed |
 | `myDevTeam.disabledModels`       | `[]`                     | Individual models to never use (e.g. `["qwen3-coder"]`); same as above but per model |
-| `myDevTeam.ollama.endpoint`      | `http://localhost:11434` | Where your Ollama server listens                  |
+| `myDevTeam.ollama.endpoint`      | unset (uses `http://localhost:11434`) | Where your Ollama server listens. Leave blank for the default your install ships with (localhost if none); set it to point at your own server |
 | `myDevTeam.openai.baseUrl`       | `""`                     | Custom OpenAI endpoint (Azure / compatible gateway); empty uses OpenAI's default |
 | `myDevTeam.anthropic.baseUrl`    | `""`                     | Custom Anthropic endpoint (a proxy/gateway); empty uses Anthropic's default |
 | `myDevTeam.groq.baseUrl`         | `""`                     | Custom Groq endpoint (a proxy/gateway); empty uses Groq's default |
-| `myDevTeam.provider.requestsPerMinute` | `0`                | Cap on requests per minute sent to each provider, to stay under its rate limit (e.g. a free-tier quota); `0` means no cap |
+| `myDevTeam.provider.requestsPerMinute` | unset              | Your cap on requests per minute sent to each provider, to stay under its rate limit (e.g. a free-tier quota). Leave unset to use whatever rate your deployment ships with; set a number to override it, or `0` for no cap |
 | `myDevTeam.run.commandTimeoutMs` | `60000`                  | How long a shell command may run before it is killed |
 | `myDevTeam.chat.toolSnippetLines`| `5`                      | Lines of a written file previewed in the chat transcript (`0` hides the preview) |
 | `myDevTeam.usage.showInChat`     | `true`                   | Show the **Tokens** line under each reply; the status button's session total and the usage report stay regardless |
@@ -461,10 +463,11 @@ ever sent anywhere.
   matches where it listens.
 - **A request fails naming a model** - for a local model, pull it
   (`ollama pull <model>`); for a cloud model, the failure means its API key is
-  missing or invalid - set it with "My Dev Team: Set API Key" (see
-  [Choosing a model](#4-choosing-a-model)).
+  missing or invalid - set it with "My Dev Team: Set API Key" or the provider's
+  environment variable (see [Choosing a model](#4-choosing-a-model)).
 - **A cloud model shows as unavailable in `/model`** - you have not set its API
-  key yet; run "My Dev Team: Set API Key".
+  key yet; run "My Dev Team: Set API Key" (or set the provider's environment
+  variable and restart VS Code).
 - **A cloud request fails saying it was rate limited** - the extension already
   retries automatically after the wait the provider asks for, so brief limits
   recover on their own. If it still fails (a tight free-tier quota), set

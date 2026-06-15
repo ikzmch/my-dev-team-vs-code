@@ -1,9 +1,8 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { LocalEngine, LocalEngineAgents, modelSelection } from '../src/engine/localEngine';
 import { agents } from '../src/engine/config/agents';
-import { routeModel } from '../src/engine/core/models';
+import { routeModel, ollamaEndpoint } from '../src/engine/core/models';
 import { credentials } from '../src/config/credentials';
-import { settings } from '../src/config/settings';
 import {
   PROTOCOL_VERSION,
   Reply,
@@ -351,7 +350,7 @@ describe('LocalEngine.startRun', () => {
     const error = await outcome.catch((e) => e as RunFailedError);
     expect(error.step).toBe('plan');
     expect(error.message).toContain('model not found');
-    expect(error.hint).toContain(settings.ollamaEndpoint);
+    expect(error.hint).toContain(ollamaEndpoint());
     expect(error.hint).toContain(routeModel(agents.planner.capabilities).model);
 
     // The failure is mirrored onto the event stream for streaming consumers.
@@ -381,7 +380,7 @@ describe('LocalEngine.startRun', () => {
     expect(error.step).toBe('plan');
     // Points at the throttle setting, not the API-key / Ollama hints.
     expect(error.hint).toContain('myDevTeam.provider.requestsPerMinute');
-    expect(error.hint).not.toContain(settings.ollamaEndpoint);
+    expect(error.hint).not.toContain(ollamaEndpoint());
   });
 
   it('rejects a protocol version it does not speak', async () => {

@@ -38,7 +38,8 @@ import {
   RoutedModel,
 } from '../../config/providers';
 import { Complexity } from '../../protocol/types';
-import { settings } from '../../config/settings';
+import { runtimeConfig } from '../../config/runtimeConfig';
+import { limits } from '../../config/limits';
 import { credentials } from '../../config/credentials';
 import { backendConfig } from '../config/backend';
 
@@ -46,32 +47,41 @@ import { backendConfig } from '../config/backend';
 export type { RoutedModel } from '../../config/providers';
 
 /**
- * A provider's resolved endpoint override from the backend config: Ollama's
- * `endpoint` or a cloud provider's `baseUrl`, both stored under the provider's
- * id in `backend.json`. Undefined means "no override - fall back to the user
- * setting".
+ * A provider's endpoint default from the backend config: Ollama's `endpoint` or
+ * a cloud provider's `baseUrl`, both stored under the provider's id in
+ * `config/backend.json`. Undefined means "the deployment set no default - use
+ * the built-in one". This is the deployment's *default*, not an enforced floor:
+ * the user's own setting wins over it (see `ollamaEndpoint` /
+ * `resolveProviderConfig`), so an operator pins a sensible default a user can
+ * still override.
  */
-function backendEndpointOverride(id: ProviderName): string | undefined {
+function backendEndpointDefault(id: ProviderName): string | undefined {
   const entry = backendConfig.providers[id] as { endpoint?: string; baseUrl?: string };
   return entry.endpoint ?? entry.baseUrl;
 }
 
 /**
- * The Ollama server origin actually used: the backend override
- * (config/backend.json) when set, else the user's
- * `myDevTeam.ollama.endpoint`. The single source the provider wiring, the
- * startup probe, and the error hints all read, so they can never disagree.
+ * The Ollama server origin actually used: the user's `myDevTeam.ollama.endpoint`
+ * when set, else the deployment default (config/backend.json), else the built-in
+ * localhost. The single source the provider wiring, the startup probe, and the
+ * error hints all read, so they can never disagree. The user wins over the
+ * deployment default - a request endpoint is the user's to point wherever they
+ * run Ollama.
  */
 export function ollamaEndpoint(): string {
-  return backendEndpointOverride('ollama') ?? settings.ollamaEndpoint;
+  return (
+    runtimeConfig().ollamaEndpoint ??
+    backendEndpointDefault('ollama') ??
+    limits.defaultOllamaEndpoint
+  );
 }
 
 /**
  * A provider's resolved runtime config, fed to its descriptor's `build`: the
- * API key (keyless providers get none) and the resolved base URL (backend
- * override else user setting). For Ollama the base URL is the endpoint, which
- * always resolves to at least the default; for a cloud provider it may be
- * undefined (use the SDK's own endpoint).
+ * API key (keyless providers get none) and the resolved base URL. The user's
+ * setting wins, then the deployment default; for Ollama the base URL is the
+ * endpoint, which always resolves to at least the built-in localhost; for a
+ * cloud provider it may be undefined (use the SDK's own endpoint).
  */
 function resolveProviderConfig(descriptor: ProviderDescriptor): ProviderConfig {
   if (descriptor.keyless) {
@@ -80,8 +90,8 @@ function resolveProviderConfig(descriptor: ProviderDescriptor): ProviderConfig {
   return {
     apiKey: credentials.apiKey(descriptor.id),
     baseUrl:
-      backendEndpointOverride(descriptor.id) ??
-      settings.providerBaseUrl(descriptor.baseUrlSetting),
+      runtimeConfig().providerBaseUrls[descriptor.baseUrlSetting] ??
+      backendEndpointDefault(descriptor.id),
   };
 }
 
@@ -136,7 +146,7 @@ export function isModelAvailable(info: ModelInfo): boolean {
 export function isProviderEnabled(provider: ProviderName): boolean {
   return (
     !backendConfig.models.disabledProviders.includes(provider) &&
-    !settings.disabledProviders.includes(provider)
+    !runtimeConfig().disabledProviders.includes(provider)
   );
 }
 
@@ -150,7 +160,7 @@ export function isModelEnabled(info: ModelInfo): boolean {
   return (
     isProviderEnabled(info.provider) &&
     !backendConfig.models.disabledModels.includes(info.id) &&
-    !settings.disabledModels.includes(info.id)
+    !runtimeConfig().disabledModels.includes(info.id)
   );
 }
 
@@ -213,7 +223,7 @@ const providerNames: readonly ProviderName[] = providerIds;
  * rules as every other agent.
  */
 export function triageRouting(): { pin?: string; candidates: readonly ModelInfo[] } {
-  const choice = settings.triageModel || backendConfig.agents.triage.model;
+  const choice = runtimeConfig().triageModel || backendConfig.agents.triage.model;
   if (choice === 'auto') {
     return { candidates: availableModels() };
   }
@@ -264,7 +274,7 @@ export function routeModel(
   candidates: readonly ModelInfo[] = availableModels(),
   complexity?: Complexity
 ): ModelInfo {
-  const tier = settings.complexityRoutingEnabled ? complexity : undefined;
+  const tier = runtimeConfig().complexityRoutingEnabled ? complexity : undefined;
   // A disabled pin is dropped to Auto, and the predicate also drops a disabled
   // member of an (otherwise enabled) pinned provider's pool - so disabling is an
   // unbypassable hard block however the model would have been reached.

@@ -4,7 +4,7 @@ The developer documentation for the My Dev Team VS Code extension: how the
 agent pipeline, the engine protocol, the configuration system, and the tools
 fit together, and how to build, run, and test it from source.
 
-For what the extension is and why, start at [README.md](README.md); for the
+For what the extension is and why, start at [README.md](../README.md); for the
 end-user guide (setup, slash commands, approvals, settings), see
 [HOWTO.md](HOWTO.md), or [QUICKSTART.md](QUICKSTART.md) for the shortest
 post-install setup.
@@ -87,7 +87,9 @@ src/
       frontmatter.ts      minimal frontmatter parser for the .md config files
       markdown.d.ts       lets TS treat `*.md` and `glob:` imports as strings / string[]
   client/
-    engineFactory.ts      the myDevTeam.engine switch: LocalEngine today, RemoteEngine in Phase B
+    engineFactory.ts      the myDevTeam.engine switch: LocalEngine, the sidecar child, or RemoteEngine (Phase B); disposes the sidecar
+    sidecarEngine.ts      client end of the sidecar: an Engine that forks the child, folds its events back, and services tool-call/plan-review on this side
+    secrets.ts            the host's SecretStorage-backed secret source (+ the Set API Key cache), injected into config/credentials for the local engine
     auth.ts               AuthProvider implementations (anonymous today; real credentials in Phase B)
     instructions.ts       reads the workspace's AGENTS.md/CLAUDE.md as standing project instructions per request
     skills.ts             discovers SKILL.md files per request (workspace roots + home dir), ships their raw text on the run request
@@ -96,13 +98,19 @@ src/
     evalLog.ts            opt-in local JSONL eval store: per-run route/usage/outcome records + 👍/👎 feedback; reads them back for the usage report
     usageStats.ts         pure token-usage aggregation: roll the log up by step/model/route/day + input-by-source + a feedback-cost join, derive cache/estimate ratios
     changeTracker.ts      per-turn change collector: write/edit report each landed file, rolled up into the reply's "N files changed, +X -Y" line
-  config/                 client-side configuration, kept out of the logic (see below)
-    providers.ts          the single provider registry: one descriptor per provider (id, label, keyless, secret/env key, base-URL setting, build factory) - everything provider-specific derives from this
-    settings.ts           operational limits; engine/model/endpoint/baseURL/timeout/search caps read live from VS Code settings
-    credentials.ts        cloud-provider API keys: SecretStorage cache + env-var fallback (never in settings.json), key names from the provider registry
+  config/                 configuration, kept out of the logic (see below)
+    providers.ts          the single provider registry: one descriptor per provider (id, label, keyless, env-var key, base-URL setting, build factory) - everything provider-specific derives from this
+    settings.ts           the vscode-backed user settings (read live); builds the engine's runtime-config view (client only)
+    limits.ts             vscode-free compile-time constants the engine reads (executor/retry/skills caps, ...); settings.ts re-exposes them
+    runtimeConfig.ts      vscode-free injected seam: the user settings the engine reads, set by the host (live view) or the sidecar child (snapshot)
+    credentials.ts        cloud-provider API keys behind an injectable source (vscode-free): default env-only (the sidecar's only source); the host injects a SecretStorage source for the local engine
     messages.ts           user-facing chat copy (errors, warnings, templates, the model-selection copy)
     environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
     clientCommands.ts     the client-handled /clear and /model commands + the /compact history-replacement marker
+  sidecar/                the engine-as-a-child-process plumbing (vscode-free)
+    transport.ts          the sidecar wire: parent<->child message types + the SidecarChannel seam
+    childRuntime.ts       hosts an Engine and maps messages to engine calls; the tool-call/plan-review proxies that invert side effects back to the parent
+    main.ts               the child entry point: wires childRuntime to process IPC + a real LocalEngine; bundled to dist/sidecar.js, never imports vscode
   tools/                  the client's hands - these never move to a backend
     workspaceTools.ts     read / search / run / write / edit implementations (UI-agnostic)
     contentSearch.ts      content search: bundled ripgrep (fast path) with a JS extension-host scan fallback
@@ -112,14 +120,14 @@ src/
     types.ts              the client seams: Approver (approval) + RunMirror (run transparency) + ChangeReporter (change tracking)
   ui/
     chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover
-    modelCommands.ts      model selection UI: the /model picker and the Set API Key command
+    modelCommands.ts      model selection UI: the /model picker and the Set API Key command (SecretStorage; used by the local engine)
     statusBar.ts          the single "My Dev Team" status-bar button: a rich hover (trusted markdown with command links) and a click menu to change the model or open the usage report; holds the live model label and session token total
     usageView.ts          the "Show Token Usage" command: rolls the eval log up into a markdown report
     runTerminal.ts        Phase-1 RunMirror: a read-only "Dev Team" terminal logging every run command live
     editorEntryPoints.ts  editor shims: "Fix with Dev Team" code action, "Explain" selection action, write/repair-tests CodeLens - each opens the chat with a pinned command
     startupCheck.ts       activation health check: surfaces the selected engine's startup warnings
 config/
-  backend.json            the universal backend config (operator floor): a namespaced JSON file - `models` (disabled providers/models), `providers` (endpoint overrides), `agents` (triage routing); inlined at build time by src/engine/config/backend.ts
+  backend.json            the universal backend config: a namespaced JSON file - `models` (disabled providers/models - the enforced floor), `providers` (per-provider endpoint + request-rate defaults the user can override), `agents` (triage routing default); inlined at build time by src/engine/config/backend.ts
 test/                     Vitest unit tests + an in-memory `vscode` mock
 examples/                 one prompt file per triage route - the manual smoke suite for pipeline changes
 esbuild.mjs               bundle build script: esbuild API + the md-glob plugin
@@ -154,28 +162,32 @@ Three layers, deliberately decoupled:
 > cosmetic: the engine is meant to run in more than one place, and every change
 > to `engine/`/`protocol/` must keep all of these viable:
 >
-> - **in-process** today (the `LocalEngine`),
-> - a **standalone remote backend** (Phase B),
-> - a **sidecar process** behind a VS Code client, and
+> - **in-process** (the `LocalEngine`, the default),
+> - a **sidecar process** behind a VS Code client (the `sidecar` engine, live -
+>   see [The sidecar engine](#the-sidecar-engine-srcsidecar--clientsidecarengints)),
+> - a **standalone remote backend** (Phase B), and
 > - a **sidecar process** behind an **IntelliJ IDEA** (JVM/Kotlin) client.
 >
-> The last two matter because an IntelliJ plugin cannot import the TypeScript
+> The sidecar matters because an IntelliJ plugin cannot import the TypeScript
 > engine; the realistic way to share the brain across editors is to run the
 > same engine as a child process and have each editor implement only the thin
 > client half against the protocol. That only works if the engine never assumes
-> it shares a process, a language, or a filesystem with its client. Concretely,
+> it shares a process, a language, or a filesystem with its client - which is why
+> the VS Code sidecar exists today, to keep that discipline honest. Concretely,
 > any backend change must preserve four invariants: (1) **no `vscode` import in
-> `engine/`** (verified - the layer is clean today); (2) **everything crossing
-> the boundary is wire-serializable** through `protocol/` (plain data, no
-> functions/class instances/`Uri`s that only survive in-process); (3) **config
-> and secrets are injected, never read in-process** - the engine takes resolved
-> values via the protocol / `AuthProvider`, it does not reach into VS Code
-> settings or SecretStorage (this is the one seam not fully realised yet: see
-> the config note in [Capability-based model router](#capability-based-model-router-engineconfigmodelsts--enginecoremodelsts));
-> and (4) **tools stay inverted** - the engine only ever *asks* for a side
-> effect through the `ToolHost`. When in doubt, ask "would this still work if
-> the engine were a separate process talking to a Kotlin client?" - if the
-> answer is no, the change belongs on the client side of the protocol.
+> `engine/`** (verified - the layer is clean, and the sidecar bundle is built
+> without `vscode`); (2) **everything crossing the boundary is wire-serializable**
+> through `protocol/` (plain data, no functions/class instances/`Uri`s that only
+> survive in-process); (3) **config and secrets are injected, never read
+> in-process** - the engine reads user settings through `config/runtimeConfig.ts`
+> and constants through `config/limits.ts` (never `config/settings.ts`), and
+> cloud keys through the injectable `SecretSource` in `config/credentials.ts`
+> (env-only by default; the host injects a SecretStorage source for the local
+> engine, the child inherits env vars); and (4) **tools stay
+> inverted** - the engine only ever *asks* for a side effect through the
+> `ToolHost`. When in doubt, ask "would this still work if the engine were a
+> separate process talking to a Kotlin client?" - if the answer is no, the change
+> belongs on the client side of the protocol.
 
 ### Request flow
 
@@ -353,8 +365,53 @@ without the client changing:
 
 The **`myDevTeam.engine`** setting (read live per request,
 `client/engineFactory.ts`) selects the implementation: `local` runs the
-in-process engine; `remote` warns once and falls back to local until the
-Phase-B RemoteEngine exists.
+in-process engine; `sidecar` runs the same engine in a child process (below);
+`remote` warns once and falls back to local until the Phase-B RemoteEngine
+exists.
+
+#### The sidecar engine (`src/sidecar/` + `client/sidecarEngine.ts`)
+
+The **sidecar** runs the exact same `LocalEngine` in a forked Node child
+(`dist/sidecar.js`), while the client keeps the tools, the approval gate, and
+the rendering. It is the proof that the engine is genuinely process-portable -
+the groundwork for a remote backend and for sharing one engine with a non-VS
+Code editor (a JVM/Kotlin client cannot import the TypeScript engine, but it can
+drive this same message protocol). It exists because the protocol was built
+wire-shaped from day one: the `tool-call` and `plan-review` events and the
+`ToolResultMessage`/`PlanDecision` answers are exactly the inversions the
+sidecar needs, so no protocol churn was required.
+
+- **The wire** (`sidecar/transport.ts`) is a small set of parent<->child message
+  types (config, start, cancel, tool-result, plan-decision, query one way;
+  event, tool-call, plan-review, result, query-result the other) behind a
+  `SidecarChannel` seam. The VS Code client carries them as `child_process.fork`
+  IPC messages (structured clone); they are all plain JSON data, so a non-Node
+  client could frame them as newline-delimited JSON over stdio unchanged.
+- **The child** (`sidecar/childRuntime.ts` + `sidecar/main.ts`) hosts the
+  engine. For each run it builds a `RunClient` whose `onEvent` posts an `event`
+  message, whose `ToolHost` is a **proxy** that posts a `tool-call` and resolves
+  on the matching `tool-result`, and whose `reviewPlan` posts a `plan-review`
+  and resolves on the `plan-decision` (only offered when the real client offers
+  the seam, via the start message's `canReviewPlan`). So an engine in the child
+  can only ever *ask* the client to touch the workspace or gate a plan - the
+  same inversion as in-process. The child imports no `vscode` (Part of why the
+  config and credentials seams exist); esbuild bundles it as a second entry.
+- **The client end** (`client/sidecarEngine.ts`) implements `Engine`: it forks
+  the child, sends the runtime-config snapshot up front (and again on a settings
+  change), forwards each `event` to `client.onEvent`, services a `tool-call`
+  through the real `client.toolHost` and a `plan-review` through the real
+  `client.reviewPlan`, and settles the run's `result` from the terminal `result`
+  message - rethrowing the same `RunFailedError`/`RunCancelledError` the
+  in-process engine would. A cancel aborts the in-flight tool's signal and posts
+  `cancel`; a child crash rejects the in-flight runs with a clear reason.
+- **Config and secrets.** The child has no `vscode`: it reads user settings from
+  the injected `runtimeConfig` snapshot the client sends (see
+  [Configuration vs. code](#configuration-vs-code-config)) and cloud keys from
+  the environment variables it inherits from the parent - nothing secret crosses
+  the wire. (The in-process local engine, by contrast, also accepts keys stored
+  in SecretStorage via the host-injected source; the sidecar deliberately does
+  not.) MCP keeps working unchanged: the child's proxy `ToolHost` forwards
+  an MCP tool call to the parent, where the real `McpHub` runs it.
 
 **Conversation history.** The handler converts `ChatContext.history` into the
 workflow's `history` turns: this participant's exchanges only (a request turn
@@ -474,7 +531,7 @@ is why `backend.json` is the sole data file there.
 | `engine/config/tools/*.md`      | The model-facing half of one tool per file: frontmatter (name, sideEffecting, optional previewArg - the argument shown for a call in the execution transcript, optional snippetArg - the argument whose first lines render as a snippet under the call, e.g. write's contents) + the model-facing description. The client-facing half (input schema, `devteam__*` id, display name) lives in `protocol/toolContract.ts`; the engine-only `progress` and `skill` tools have no client half |
 | `engine/config/commands/*.md`   | One slash command per file: frontmatter (name, description, the pinned `intent`, `execute: false` for plan-only, optional `complexity` sizing the executor since triage is skipped - `moderate` by default) + a preamble rendered ahead of the user's prompt for the downstream agents. The same name + description pairs must be declared in `package.json` (`contributes.chatParticipants[].commands`) for autocomplete; a unit test keeps the two lists in sync |
 | `engine/config/skills/*.md`     | One built-in skill per file: frontmatter (name, description) + an instruction body. A skill is loaded on demand by the executor's `skill` tool when a task matches the description (see [Skills](#skills-engineconfigskills--clientskills)); dropping a file in registers it |
-| `config/backend.json` (project root) | The universal backend config: operator-owned settings the engine enforces (distinct from the user's VS Code settings), inlined into the build by `engine/config/backend.ts`. Namespaced - a `models` section (`disabledProviders` + `disabledModels`), a `providers` section (per-provider endpoint overrides: Ollama's `endpoint`, the cloud providers' `baseUrl`, each winning over its user setting), and an `agents` section (today `triage.model`: a model id pins it, a provider name routes by capability, default the "ollama" provider); room for more sections later - with sensible defaults so a partial file is valid. `backend.ts` validates it into the typed `backendConfig`. See [the capability router](#capability-based-model-router-engineconfigmodelsts--enginecoremodelsts) |
+| `config/backend.json` (project root) | The universal backend config: operator-owned settings the engine enforces (distinct from the user's VS Code settings), inlined into the build by `engine/config/backend.ts`. Namespaced - a `models` section (`disabledProviders` + `disabledModels`), a `providers` section (per-provider deployment **defaults the user can override**, not enforced floors: the endpoint default - Ollama's `endpoint`, the cloud providers' `baseUrl` - and `requestsPerMinute`, the per-provider request rate; for each, the matching user setting wins when set and this supplies the default otherwise), and an `agents` section (today `triage.model`: a model id pins it, a provider name routes by capability, default the "ollama" provider); room for more sections later - with sensible defaults so a partial file is valid. `backend.ts` validates it into the typed `backendConfig`. See [the capability router](#capability-based-model-router-engineconfigmodelsts--enginecoremodelsts) |
 | `engine/config/agents.ts`       | Loads the agent files, validates the frontmatter, exports typed `agents` |
 | `engine/config/models.ts`       | Discovers the model files, exports the registry and the capability-based `selectModel` |
 | `engine/config/tools.ts`        | Discovers the tool files, exports `toolConfigs`/`toolNames` and the prompt-section renderer |
@@ -482,10 +539,12 @@ is why `backend.json` is the sole data file there.
 | `engine/config/skills.ts`       | Discovers the built-in skill files, exports `builtinSkills`, `resolveSkills` (merges them with a run's discovered skills - a user skill overrides a built-in, and the first of the client's precedence-ordered list wins a name clash), and `renderSkillsSection` (the executor's name + description catalogue) |
 | `engine/config/frontmatter.ts`  | Minimal parser for the frontmatter subset the config files use |
 | `config/environment.ts`         | Runtime environment facts (OS name, shell): substituted into `{{os}}`/`{{shell}}` tool-description placeholders and the agents' `{{environment}}` prompt section, sent to the engine in every run request, and the shell the `run` tool spawns (PowerShell on Windows, `/bin/sh` elsewhere) - one source so the prompts and the actual shell can never disagree |
-| `config/providers.ts`           | The single provider descriptor registry: one `ProviderDescriptor` per provider (`id`, `label`, `keyless`, `secretKey`, `envKey`, `baseUrlSetting`, and a `build(config)` factory that imports the provider's `@ai-sdk/*` package). Everything provider-specific derives from this one list - the model-frontmatter `provider` enum and `ProviderName`, `providerLabels`, the credentials key maps, the base-URL settings, and the lazy provider wiring - so adding a provider is one descriptor (plus its npm import), not a five-file edit. Lives in `config/` (not `engine/`) so both the engine and the client config layer can import it without violating the engine import discipline; depends only on the AI SDK packages, never on settings/credentials/backend (those resolve a provider's config and pass it into `build`) |
-| `config/settings.ts`            | Operational limits: run timeout/output buffer, the run-mirror terminal's backlog cap, read cap, search caps + excludes, truncation, the conversation-history caps (`history.maxTurns`, `history.maxTurnChars`), the project-instruction file list + size cap (`instructions.files`, `instructions.maxChars`), the skills caps (`skills.directories`, `skills.maxSkills`, `skills.maxChars`), the inline-reference caps (`references.*` for `#codebase`/`#changes`), the in-chat token-line toggle (`usage.showInChat`), and the executor's loop/preview caps (`executor.maxSteps`, transcript input/result preview lengths, the write-snippet line count). The engine choice, the model choice (`model`), the complexity-routing toggle (`complexityRouting`), the disabled-provider/model lists (`disabledProviders`/`disabledModels`), Ollama endpoint, a generic cloud-provider base URL (`providerBaseUrl(key)`, the key from the provider descriptor's `baseUrlSetting`), run timeout, search caps, snippet line count, the instruction file list, and the skills directory list are read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)); the rest are compile-time constants |
-| `config/credentials.ts`         | Cloud-provider API keys: an in-memory cache loaded from VS Code SecretStorage on activation (set/cleared by the "Set API Key" command), with each provider's env var as a fallback. The set of cloud providers and their SecretStorage/env-var key names come from the provider registry (`config/providers.ts`) - the cloud providers are exactly the non-keyless descriptors. Exposes `credentials.apiKey(provider)` and `credentials.has(provider)`. Kept out of settings.json on purpose; read live by the provider wiring. Phase C moves keys server-side behind the AuthProvider seam |
-| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker and Set API Key prompts), the token-usage copy (the **Tokens:** line and the usage report), the status button + menu copy, the run-mirror terminal's copy, and the editor entry points' action/lens titles and framed prompts. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
+| `config/providers.ts`           | The single provider descriptor registry: one `ProviderDescriptor` per provider (`id`, `label`, `keyless`, `envKey`, `baseUrlSetting`, and a `build(config)` factory that imports the provider's `@ai-sdk/*` package). Everything provider-specific derives from this one list - the model-frontmatter `provider` enum and `ProviderName`, `providerLabels`, the credentials env-var map, the base-URL settings, and the lazy provider wiring - so adding a provider is one descriptor (plus its npm import), not a five-file edit. Lives in `config/` (not `engine/`) so both the engine and the client config layer can import it without violating the engine import discipline; depends only on the AI SDK packages, never on settings/credentials/backend (those resolve a provider's config and pass it into `build`) |
+| `config/settings.ts`            | The **client's** vscode-backed user settings, read live from the `myDevTeam.*` VS Code settings (see [User settings](#user-settings-contributesconfiguration)): the engine/model choice, endpoints/base URLs, disabled lists, approval/complexity toggles, the run/read/search caps, the instruction and skills lists, MCP servers, telemetry flags. Also builds `liveRuntimeConfig()`/`runtimeConfigSnapshot()` - the engine's runtime-config view/snapshot. Re-exposes the engine-read constants from `config/limits.ts` so client callers still read them via `settings`. The engine never imports this module |
+| `config/limits.ts`              | vscode-free compile-time constants the **engine** reads (executor loop/preview caps, rate-limit retry constants, the skill-body cap, repair attempts, the startup-probe timeout, the built-in Ollama endpoint). Single source; `settings.ts` references them so the client-facing `settings` object still exposes them |
+| `config/runtimeConfig.ts`       | vscode-free injected seam: the `RuntimeConfig` (the user settings the engine reads - endpoints, disabled lists, triage model, complexity toggle, request rate, snippet lines, approval, thinking/summary toggles) plus `runtimeConfig()`/`setRuntimeConfig()`. The host injects a live view (`liveRuntimeConfig()`); the sidecar child injects a pushed snapshot. Lives in `config/` (the shared layer, like `providers.ts`) so the engine can read it in any process |
+| `config/credentials.ts`         | Cloud-provider API keys behind an injectable `SecretSource` (no `vscode` dependency, so the engine reads it anywhere). The default source - and the **only** source the sidecar child uses - reads the environment variables (`OPENAI_API_KEY`/`ANTHROPIC_API_KEY`/`GROQ_API_KEY`) it inherits. The host injects a SecretStorage-backed source (`client/secrets.ts`) for the local engine, so a key set via "Set API Key" wins, env as fallback. The cloud providers and their key names come from the provider registry. Exposes `credentials.apiKey(provider)`/`has(provider)`, read live by the provider wiring |
+| `config/messages.ts`            | Error text, startup warnings, reply markdown templates, the engine-switch warning, the Ollama/cloud-key hint templates the LocalEngine fills in, the /clear confirmation, the model-selection copy (the "which model ran" line, the picker prompts), the token-usage copy (the **Tokens:** line and the usage report), the status button + menu copy, the run-mirror terminal's copy, and the editor entry points' action/lens titles and framed prompts. Knows nothing about agents and almost nothing about models - the one exception is the `model` copy, since model selection is a user-facing choice |
 | `config/clientCommands.ts`      | The client-handled commands (`/clear` and `/model`, with their autocomplete descriptions) plus the `/compact` marker name the history collection watches for - client-side because conversation history and the model choice are client state. The commands unit test keeps these, the engine registry, and `package.json` in sync |
 
 **Agents, models, and tools are real `.md` files with frontmatter.** esbuild's
@@ -529,7 +588,7 @@ see [CONFIG.md](CONFIG.md); the table below is the user-settings summary:
 
 | Setting                              | Default                  | Controls                                  |
 | ------------------------------------ | ------------------------ | ----------------------------------------- |
-| `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process) or `remote` (Phase B; warns and falls back to local until it exists) |
+| `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process), `sidecar` (same engine in a forked Node child; tools/approval/rendering stay in the editor), or `remote` (Phase B; warns and falls back to local until it exists) |
 | `myDevTeam.model`                    | `auto`                   | What the planner/answerer/executor use: a model id, a `provider:<name>` to route within one provider, or `auto` to route by capability among the available models. Triage is configured separately by `myDevTeam.triage.model`. Set it with `/model` or the "My Dev Team" status button's menu |
 | `myDevTeam.triage.model`             | `""`                     | What triage uses, separate from the model above so the cheap classifier need not ride on the executor's model. Empty defers to the backend `agents.triage.model` floor (the "ollama" provider by default); otherwise `auto`, a `provider:<name>` (or bare provider name), or a model id, resolved by `triageRouting`. User-controlled like `myDevTeam.model`, with the disable layers still applied, so it can never reach a disabled provider/model |
 | `myDevTeam.disabledProviders`        | `[]`                     | Providers the router must never use (e.g. `["anthropic"]`): their models are skipped and shown disabled in the `/model` picker even with a key set, and never run even when pinned. The per-user layer on top of the backend floor (`config/backend.json`), which it cannot re-enable. Non-string/blank entries are ignored |
@@ -537,11 +596,11 @@ see [CONFIG.md](CONFIG.md); the table below is the user-settings summary:
 | `myDevTeam.complexityRouting`        | `true`                   | Size models to how demanding the work is (the model registry's `tier`): triage's guess sizes the planner, the planner's judgement sizes the executor; simpler work routes to a cheaper/smaller model, harder work to a stronger one. Off routes by capability alone; a pinned model is never affected |
 | `myDevTeam.planApproval`             | `auto`                   | When `@devteam` pauses to let you approve a drafted plan before it executes: `auto` only when the planner judged the work `complex`, `always` on every plan, `never` straight through. The gate offers Approve (execute), Cancel (keep the plan, run nothing), or Revise (comment, re-plan, ask again) |
 | `myDevTeam.approval.fileChanges`     | `false`                  | Require approval before the `write`/`edit` tools change a file. Off by default (changes apply directly, since the workspace is git-backed); on routes every write and edit through the same Approve/Decline gate as `run`. `run` stays gated regardless |
-| `myDevTeam.ollama.endpoint`          | `http://localhost:11434` | Ollama server origin (no `/api` suffix)   |
-| `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
-| `myDevTeam.anthropic.baseUrl`        | `""`                     | Optional custom base URL for Anthropic (a proxy/gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
-| `myDevTeam.groq.baseUrl`             | `""`                     | Optional custom base URL for Groq (a proxy/gateway); empty uses the default endpoint. The key is set via the "Set API Key" command, not here |
-| `myDevTeam.provider.requestsPerMinute` | `0`                    | Max model requests per minute sent to each provider; calls are spaced to stay under it, keeping a run within a provider's quota. `0` disables throttling. A 429 is always retried after the provider's suggested delay regardless of this |
+| `myDevTeam.ollama.endpoint`          | `""` (unset)             | Ollama server origin (no `/api` suffix). Unset uses the deployment default in `config/backend.json`, then the built-in `http://localhost:11434`; set, your value wins over the deployment default |
+| `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key comes from `OPENAI_API_KEY`, not here |
+| `myDevTeam.anthropic.baseUrl`        | `""`                     | Optional custom base URL for Anthropic (a proxy/gateway); empty uses the default endpoint. The key comes from `ANTHROPIC_API_KEY`, not here |
+| `myDevTeam.groq.baseUrl`             | `""`                     | Optional custom base URL for Groq (a proxy/gateway); empty uses the default endpoint. The key comes from `GROQ_API_KEY`, not here |
+| `myDevTeam.provider.requestsPerMinute` | `null` (unset)         | Your override of the per-provider request rate: calls are spaced to stay under it, keeping a run within a provider's quota. Unset (the default) defers to the operator's per-provider floor in `config/backend.json`; a number overrides it in either direction, and `0` disables throttling. The user's value wins over the floor (it is the user's quota to manage). A 429 is always retried after the provider's suggested delay regardless of this |
 | `myDevTeam.run.commandTimeoutMs`     | `60000`                  | `run` tool shell-command timeout (ms)     |
 | `myDevTeam.read.maxLines`            | `200`                    | Max lines one `read` call returns; partial results name the range and total so the model continues |
 | `myDevTeam.search.globMaxResults`    | `200`                    | Max files a glob search returns           |
@@ -565,12 +624,16 @@ limits. The endpoint is the **single source of truth**: the provider wiring
 (`createOllama({ baseURL })` in `engine/core/models.ts`), the troubleshooting
 hint in chat errors, and the activation health check all derive from one
 resolved-endpoint accessor (`ollamaEndpoint()` in `engine/core/models.ts`), so
-they can never disagree. That accessor is itself "**backend override else user
-setting**": when `config/backend.json`'s `providers.ollama.endpoint` is
-set it wins (an operator pinning the server for everyone), otherwise
-`settings.ollamaEndpoint` applies - the same precedence for the cloud providers'
-`baseUrl`, resolved generically per provider from the descriptor's
-`baseUrlSetting` (backend override else `settings.providerBaseUrl(key)`).
+they can never disagree. That accessor is "**user setting else backend default
+else built-in localhost**": when the user set `myDevTeam.ollama.endpoint` it
+wins (a user points the extension at their own server), otherwise the
+deployment's `config/backend.json` `providers.ollama.endpoint` default applies,
+otherwise the built-in `http://localhost:11434` - the same precedence for the
+cloud providers' `baseUrl`, resolved generically per provider from the
+descriptor's `baseUrlSetting` (`settings.providerBaseUrl(key)` else the backend
+default). The backend value is a **deployment default the user can override**,
+not an enforced floor (the only enforced floor is the disabled-provider/model
+list); an operator ships a sensible server, a user overrides it for their box.
 Changing the endpoint mid-session rebuilds the provider and drops the memoised
 model instances; the next request talks to the new server. Everything not listed above
 (buffer/truncation caps, search excludes) stays a compile-time constant in
@@ -683,9 +746,12 @@ everything provider-specific derives from that one list:
 - `keyless` - whether the provider needs an API key. The keyless provider
   (Ollama) is always available; the cloud providers are exactly the non-keyless
   descriptors, which is what `config/credentials.ts` iterates.
-- `secretKey` / `envKey` - the SecretStorage key and the environment-variable
-  fallback for the API key (cloud only); `config/credentials.ts` reads both
-  straight off the descriptor.
+- `envKey` - the environment variable the API key is read from (cloud only),
+  the default source and the only one the sidecar child uses (it inherits the
+  parent's environment).
+- `secretKey` - the SecretStorage key the "Set API Key" command stores under
+  (cloud only). Only the in-process local engine reads SecretStorage, via the
+  host-injected source in `client/secrets.ts`; the sidecar ignores it.
 - `baseUrlSetting` - the `myDevTeam.<provider>` setting holding the base-URL /
   endpoint override; the generic `settings.providerBaseUrl(key)` reads it.
 - `build(config)` - turns a resolved `{ apiKey, baseUrl }` into the provider's
@@ -697,21 +763,23 @@ The registry lives in `config/` (not `engine/`) so both the engine and the
 client config layer can import it without breaking the engine import discipline,
 and it depends only on the AI SDK packages - never on settings/credentials/
 backend. `engine/core/models.ts` resolves each provider's config (the key from
-`credentials`, the base URL as "backend override else user setting") and feeds
+`credentials`, the base URL as "user setting else backend default") and feeds
 it to the descriptor's `build`.
 
 **Today's providers.** Ollama is local and keyless, built from
-`myDevTeam.ollama.endpoint`. OpenAI, Anthropic, and Groq need an API key
-(set via the "My Dev Team: Set API Key" command, with their env vars as
-fallbacks) and accept an optional custom base URL (`myDevTeam.openai.baseUrl` /
+`myDevTeam.ollama.endpoint`. OpenAI, Anthropic, and Groq need an API key (read
+from their `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY` environment
+variables, or - for the local engine only - from a key stored via the "Set API
+Key" command) and accept an optional custom base URL (`myDevTeam.openai.baseUrl` /
 `anthropic.baseUrl` / `groq.baseUrl`) for Azure or an
 OpenAI-compatible/Anthropic/Groq gateway. Every provider's endpoint can also be
-**overridden by the operator** in `config/backend.json`'s `providers`
-section (Ollama's `endpoint`, the cloud providers' `baseUrl`), which wins over
-the user setting - so a build can pin them all at a corporate gateway. Each
-provider is built lazily and rebuilt when its (resolved) endpoint, key, or base
-URL changes, dropping the memoised model instances so the next request uses the
-new configuration.
+given a **deployment default by the operator** in `config/backend.json`'s
+`providers` section (Ollama's `endpoint`, the cloud providers' `baseUrl`) - so a
+build ships pointing at a corporate gateway out of the box - but the user's own
+setting **wins over** that default when set, so a user can always point the
+extension at their own server. Each provider is built lazily and rebuilt when
+its (resolved) endpoint, key, or base URL changes, dropping the memoised model
+instances so the next request uses the new configuration.
 
 **Disabling providers and models.** A provider or an individual model can be
 taken out of play at **two layers**, unioned into one predicate
@@ -747,15 +815,22 @@ language-model middleware (`core/rateLimiter.ts`) that sits below Mastra, so it
 sees the raw provider `APICallError`. It does two things, both per provider and
 both reading their settings live:
 
-- **Throttle.** When `myDevTeam.provider.requestsPerMinute` is set, calls are
-  spaced `60_000 / rpm` apart so a provider never receives more than that many
-  requests per rolling minute - keeping a run under a provider's quota (e.g.
-  Groq's free tier) instead of firing until one is rejected. The budget is per
-  provider, so a local Ollama call never spends a cloud provider's allowance.
-  `0` (the default) disables it. A call whose throttle wait is **aborted** (the
-  request is cancelled before it goes out) hands its reserved slot back
-  (`releaseSlot`), so a cancelled call does not push the calls behind it further
-  out for nothing; a slot is only spent once its request is actually issued.
+- **Throttle.** Each provider's rate is resolved by `resolveRequestsPerMinute`:
+  the operator's per-provider floor in `config/backend.json`
+  (`providers.<id>.requestsPerMinute`) is the default, and the user's
+  `myDevTeam.provider.requestsPerMinute` overrides it - in either direction and
+  across every provider - when set, because a request rate is the user's own
+  quota to manage rather than a policy to enforce (the inverse of the endpoint
+  override's precedence). When the resolved rate is positive, calls are spaced
+  `60_000 / rpm` apart so a provider never receives more than that many requests
+  per rolling minute - keeping a run under a provider's quota (e.g. Groq's free
+  tier) instead of firing until one is rejected. The budget is per provider, so
+  a local Ollama call never spends a cloud provider's allowance. `0` (the
+  shipped floor, and an explicit user `0`) disables it. A call whose throttle
+  wait is **aborted** (the request is cancelled before it goes out) hands its
+  reserved slot back (`releaseSlot`), so a cancelled call does not push the
+  calls behind it further out for nothing; a slot is only spent once its request
+  is actually issued.
 - **Retry.** A 429 is caught and retried after the delay the provider suggests
   (its `retry-after`/`retry-after-ms` header, or the "try again in Ns" hint in
   the message), plus a small buffer, clamped to a 60s cap and capped at
@@ -1445,8 +1520,9 @@ engine is added.
 The extension activates at startup (`onStartupFinished` in package.json, in
 addition to the implicit chat-participant event), so its UI is present before
 the first `@devteam` request rather than appearing only after it. On activation,
-the extension loads any stored cloud-provider API keys from
-SecretStorage, then asks the selected engine for startup warnings; the local
+the extension injects the engine's runtime config and the local engine's
+SecretStorage secret source (loading any stored cloud keys), then asks the
+selected engine for startup warnings; the local
 engine pings the configured Ollama endpoint and warns (once, non-blocking) if
 the server is down or an Auto-routed local model is not pulled - unless no
 agent routes to Ollama, in which case it skips the probe and stays silent. A
@@ -1460,8 +1536,8 @@ show the active model and the session token total.
 You choose the model with `/model` (or the status button's menu): a registry id
 pins the planner, answerer, and executor to that model, while `Auto` (the
 default) routes each by capability among the available models - Ollama plus any
-cloud provider (OpenAI, Anthropic) whose API key you have set with the "My Dev
-Team: Set API Key" command. Triage is not affected by this choice - it has its
+cloud provider (OpenAI, Anthropic) whose API key you have exported as an
+environment variable. Triage is not affected by this choice - it has its
 own `myDevTeam.triage.model` setting (empty defers to the backend
 `agents.triage.model` default, a local Ollama model). Every
 run renders a `**Model:**` line under the triage block naming what ran, so you
@@ -1657,10 +1733,11 @@ model the router selected for that agent pulled.
   If your server listens elsewhere, set `myDevTeam.ollama.endpoint`; the
   activation health check will tell you if the endpoint or a routed model is
   missing.
-- **Cloud models (optional).** To use OpenAI, Anthropic, or Groq models, set the
-  key with the **"My Dev Team: Set API Key"** command (stored in SecretStorage)
-  or via the `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY` environment
-  variables. For Azure or another gateway, point `myDevTeam.openai.baseUrl` /
+- **Cloud models (optional).** To use OpenAI, Anthropic, or Groq models, export
+  the key as the `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `GROQ_API_KEY`
+  environment variable in the environment VS Code launches from (or, when using
+  the local engine, store it with the "My Dev Team: Set API Key" command). For
+  Azure or another gateway, point `myDevTeam.openai.baseUrl` /
   `myDevTeam.anthropic.baseUrl` / `myDevTeam.groq.baseUrl` at it. Then pick the
   model with `/model`; with no key set, those models show as unavailable and
   `Auto` stays on Ollama.

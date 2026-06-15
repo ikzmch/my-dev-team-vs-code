@@ -49,7 +49,7 @@ import {
   ollamaEndpoint,
 } from './core/models';
 import { isRateLimited } from './core/rateLimiter';
-import { settings } from '../config/settings';
+import { limits } from '../config/limits';
 import { messages } from '../config/messages';
 import {
   Complexity,
@@ -534,7 +534,7 @@ export class LocalEngine implements Engine {
   private async installedOllamaTags(): Promise<Set<string> | undefined> {
     try {
       const res = await fetch(`${ollamaEndpoint()}/api/tags`, {
-        signal: AbortSignal.timeout(settings.startupProbeTimeoutMs),
+        signal: AbortSignal.timeout(limits.startupProbeTimeoutMs),
       });
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`);

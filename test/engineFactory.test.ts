@@ -9,29 +9,54 @@ vi.mock('@mastra/core/agent', () => ({
   },
 }));
 
+// The sidecar branch forks a child; replace `fork` with a fake so no real
+// process spawns. Each fake child records what it was sent and can be killed.
+const { forkMock, forkedChildren } = vi.hoisted(() => {
+  const forkedChildren: { sent: unknown[]; killed: boolean }[] = [];
+  const forkMock = vi.fn(() => {
+    const child = { sent: [] as unknown[], killed: false };
+    forkedChildren.push(child);
+    return {
+      on: vi.fn(),
+      send: vi.fn((m: unknown) => child.sent.push(m)),
+      kill: vi.fn(() => {
+        child.killed = true;
+      }),
+    };
+  });
+  return { forkMock, forkedChildren };
+});
+vi.mock('node:child_process', () => ({ fork: forkMock }));
+
 import { createEngineProvider } from '../src/client/engineFactory';
 import { AnonymousAuthProvider } from '../src/client/auth';
 import { LocalEngine } from '../src/engine/localEngine';
+import { SidecarEngine } from '../src/client/sidecarEngine';
 import { __reset, __setConfig, window } from './mocks/vscode';
+
+const SIDECAR_PATH = '/ext/dist/sidecar.js';
 
 beforeEach(() => {
   __reset();
   vi.mocked(window.showWarningMessage).mockClear();
+  forkMock.mockClear();
+  forkedChildren.length = 0;
 });
 
 describe('createEngineProvider', () => {
   it('returns the local engine by default and memoises it', () => {
-    const getEngine = createEngineProvider();
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
     const first = getEngine();
     expect(first).toBeInstanceOf(LocalEngine);
     expect(first.kind).toBe('local');
     expect(getEngine()).toBe(first);
     expect(window.showWarningMessage).not.toHaveBeenCalled();
+    expect(forkMock).not.toHaveBeenCalled();
   });
 
   it('falls back to local with one warning while remote is unavailable', () => {
     __setConfig('myDevTeam.engine', 'remote');
-    const getEngine = createEngineProvider();
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
 
     expect(getEngine().kind).toBe('local');
     getEngine();
@@ -41,7 +66,7 @@ describe('createEngineProvider', () => {
   });
 
   it('warns again only after switching away and back to remote', () => {
-    const getEngine = createEngineProvider();
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
     __setConfig('myDevTeam.engine', 'remote');
     getEngine();
     getEngine();
@@ -51,6 +76,24 @@ describe('createEngineProvider', () => {
     getEngine();
 
     expect(window.showWarningMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('builds and reuses a sidecar engine when selected, and disposes it', () => {
+    __setConfig('myDevTeam.engine', 'sidecar');
+    const provider = createEngineProvider(SIDECAR_PATH);
+
+    const engine = provider.getEngine();
+    expect(engine).toBeInstanceOf(SidecarEngine);
+    expect(engine.kind).toBe('sidecar');
+    // Forked exactly once and reused on the next request.
+    expect(provider.getEngine()).toBe(engine);
+    expect(forkMock).toHaveBeenCalledTimes(1);
+    expect(forkMock).toHaveBeenCalledWith(SIDECAR_PATH, [], expect.anything());
+    // It sent the runtime config to the child up front.
+    expect(forkedChildren[0].sent.some((m: any) => m.t === 'config')).toBe(true);
+
+    provider.dispose();
+    expect(forkedChildren[0].killed).toBe(true);
   });
 });
 

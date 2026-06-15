@@ -3,7 +3,7 @@ import { resolveModel, routeModel } from './models';
 import { resolveTokenCounts, UsageReporter } from './usage';
 import { condenseThinking } from './thinking';
 import { agents } from '../config/agents';
-import { settings } from '../../config/settings';
+import { limits } from '../../config/limits';
 import type { ThinkingProgress } from './executor';
 
 /**
@@ -73,7 +73,7 @@ export class Answerer {
         const delta = chunk.payload?.text ?? '';
         if (delta) {
           reasoning += delta;
-          const line = condenseThinking(reasoning, settings.thinking.lineMaxChars);
+          const line = condenseThinking(reasoning, limits.thinking.lineMaxChars);
           if (line) {
             onThinking(line);
           }

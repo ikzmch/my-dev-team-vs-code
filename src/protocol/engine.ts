@@ -41,7 +41,7 @@ export interface RunHandle {
 }
 
 export interface Engine {
-  readonly kind: 'local' | 'remote';
+  readonly kind: 'local' | 'remote' | 'sidecar';
   startRun(request: RunRequest, client: RunClient): RunHandle;
   /**
    * Activation-time health probe: human-readable warnings the UI should

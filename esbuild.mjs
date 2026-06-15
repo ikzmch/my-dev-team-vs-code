@@ -24,9 +24,15 @@ const mdGlob = {
 };
 
 await build({
-  entryPoints: ['src/extension.ts'],
+  // Two bundles: the extension host entry, and the engine sidecar child entry
+  // (a plain Node process - it never imports `vscode`). The `{ in, out }` form
+  // names them dist/extension.js and dist/sidecar.js.
+  entryPoints: [
+    { in: 'src/extension.ts', out: 'extension' },
+    { in: 'src/sidecar/main.ts', out: 'sidecar' },
+  ],
   bundle: true,
-  outfile: 'dist/extension.js',
+  outdir: 'dist',
   external: ['vscode'],
   format: 'cjs',
   platform: 'node',

@@ -10,7 +10,7 @@ import {
   effectivePin,
   ollamaEndpoint,
 } from '../src/engine/core/models';
-import { settings } from '../src/config/settings';
+import { settings, defaults } from '../src/config/settings';
 import {
   selectModel,
   tierPool,
@@ -145,21 +145,26 @@ describe('disabling (user layer via settings)', () => {
 });
 
 describe('resolved provider endpoints', () => {
-  it('falls back to the user setting when the backend sets no override', () => {
-    // The shipped backend.json sets no overrides, so the resolved Ollama
-    // endpoint mirrors the user setting (the backend-wins path is covered by
-    // the schema tests).
-    expect(ollamaEndpoint()).toBe(settings.ollamaEndpoint);
+  it('falls back to the built-in localhost when neither user nor deployment set one', () => {
+    // The shipped backend.json sets no default and the user has set nothing, so
+    // the resolved Ollama endpoint is the built-in localhost default.
+    expect(settings.ollamaEndpoint).toBeUndefined();
+    expect(ollamaEndpoint()).toBe(defaults.ollamaEndpoint);
   });
 
-  it('tracks a change to the user Ollama endpoint setting', () => {
+  it('lets the user Ollama endpoint setting win (over the deployment default)', () => {
+    // The user's setting wins; with the shipped (empty) backend default this is
+    // the value used. The user-wins-over-a-set-default precedence is the `??`
+    // order in ollamaEndpoint(); the backend default parsing is covered by the
+    // schema tests.
     __setConfig('myDevTeam.ollama.endpoint', 'http://gpu-box:11434');
     expect(ollamaEndpoint()).toBe('http://gpu-box:11434');
   });
 
   it('reads a cloud provider base URL from its descriptor setting key', () => {
     // The generic settings accessor the provider wiring uses (per descriptor
-    // baseUrlSetting); unset is undefined, set returns the normalised URL.
+    // baseUrlSetting); unset is undefined (defer to the deployment default), set
+    // returns the normalised URL and wins over the default.
     expect(settings.providerBaseUrl('openai.baseUrl')).toBeUndefined();
     __setConfig('myDevTeam.openai.baseUrl', 'https://gateway.example.com/');
     expect(settings.providerBaseUrl('openai.baseUrl')).toBe('https://gateway.example.com');

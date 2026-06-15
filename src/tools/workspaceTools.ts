@@ -486,7 +486,7 @@ function combineOutput(stdout: string, stderr: string): string {
  * executor's core job - prompting on every file would make a routine
  * multi-file change unusable. The safety that matters here is still enforced:
  * path traversal and symlink targets are rejected outright, and a cancelled
- * request never lands a file. See the "Approvals" section in DESIGN.md for why
+ * request never lands a file. See the "Approvals" section in docs/DESIGN.md for why
  * write/edit are intentionally ungated while `run` still asks.
  */
 export async function writeFile(

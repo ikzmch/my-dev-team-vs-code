@@ -195,7 +195,9 @@ describe('settings', () => {
 describe('user-tunable settings (VS Code configuration)', () => {
   it('falls back to the defaults when nothing is configured', () => {
     expect(settings.engine).toBe(defaults.engine);
-    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+    // Unset reads as undefined (the user chose nothing); the localhost fallback
+    // is applied downstream by core/models.ts' ollamaEndpoint(), not here.
+    expect(settings.ollamaEndpoint).toBeUndefined();
     expect(settings.runCommandTimeoutMs).toBe(defaults.runCommandTimeoutMs);
     expect(settings.read.maxLines).toBe(defaults.read.maxLines);
     expect(settings.search.globMaxResults).toBe(defaults.search.globMaxResults);
@@ -354,13 +356,13 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.ollamaEndpoint).toBe('http://gpu-box:11434');
   });
 
-  it('rejects a non-http(s) or non-string endpoint and falls back', () => {
+  it('reads a non-http(s) or non-string endpoint as unset (undefined)', () => {
     __setConfig('myDevTeam.ollama.endpoint', 'gpu-box:11434');
-    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+    expect(settings.ollamaEndpoint).toBeUndefined();
     __setConfig('myDevTeam.ollama.endpoint', 42);
-    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+    expect(settings.ollamaEndpoint).toBeUndefined();
     __setConfig('myDevTeam.ollama.endpoint', '');
-    expect(settings.ollamaEndpoint).toBe(defaults.ollamaEndpoint);
+    expect(settings.ollamaEndpoint).toBeUndefined();
   });
 
   it('rejects non-positive, non-finite, or non-number limits and falls back', () => {
@@ -380,17 +382,22 @@ describe('user-tunable settings (VS Code configuration)', () => {
     expect(settings.runCommandTimeoutMs).toBe(1500);
   });
 
-  it('reads the provider requests-per-minute limit, defaulting to disabled', () => {
-    expect(settings.provider.requestsPerMinute).toBe(defaults.requestsPerMinute);
-    expect(settings.provider.requestsPerMinute).toBe(0);
+  it('reads the user requests-per-minute override, undefined when unset', () => {
+    // Unset reads as undefined (defer to the backend per-provider floor), not 0.
+    expect(settings.provider.requestsPerMinute).toBeUndefined();
     __setConfig('myDevTeam.provider.requestsPerMinute', 30);
     expect(settings.provider.requestsPerMinute).toBe(30);
-    // 0 is a valid value (throttling off), unlike the other positive-only limits.
+    // 0 is a valid explicit value (the user turning throttling off).
     __setConfig('myDevTeam.provider.requestsPerMinute', 0);
     expect(settings.provider.requestsPerMinute).toBe(0);
-    // A negative or non-number value is invalid and falls back to the default.
+    // A fractional value floors to a whole number.
+    __setConfig('myDevTeam.provider.requestsPerMinute', 30.9);
+    expect(settings.provider.requestsPerMinute).toBe(30);
+    // A negative or non-number value is invalid and reads as unset (undefined).
     __setConfig('myDevTeam.provider.requestsPerMinute', -5);
-    expect(settings.provider.requestsPerMinute).toBe(defaults.requestsPerMinute);
+    expect(settings.provider.requestsPerMinute).toBeUndefined();
+    __setConfig('myDevTeam.provider.requestsPerMinute', null);
+    expect(settings.provider.requestsPerMinute).toBeUndefined();
   });
 
   it('reads the configurable write-protected paths, defaulting to .vscode', () => {

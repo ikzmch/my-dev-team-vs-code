@@ -6,6 +6,7 @@ import {
   rateLimitRetryDelayMs,
   isRateLimited,
   rateLimitMiddleware,
+  resolveRequestsPerMinute,
   __resetRateLimiter,
 } from '../src/engine/core/rateLimiter';
 import { __reset, __setConfig } from './mocks/vscode';
@@ -32,6 +33,29 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('resolveRequestsPerMinute', () => {
+  it('defers to the backend per-provider floor when the user has not set a rate', () => {
+    // The shipped backend.json throttles no provider, so the floor is 0 (off).
+    expect(resolveRequestsPerMinute('groq')).toBe(0);
+    expect(resolveRequestsPerMinute('ollama')).toBe(0);
+  });
+
+  it('lets the user override win for every provider, in either direction', () => {
+    __setConfig('myDevTeam.provider.requestsPerMinute', 45);
+    expect(resolveRequestsPerMinute('groq')).toBe(45);
+    expect(resolveRequestsPerMinute('openai')).toBe(45);
+  });
+
+  it('treats an explicit user 0 as throttling off', () => {
+    __setConfig('myDevTeam.provider.requestsPerMinute', 0);
+    expect(resolveRequestsPerMinute('groq')).toBe(0);
+  });
+
+  it('falls back to 0 for an unknown provider with no user override', () => {
+    expect(resolveRequestsPerMinute('nope')).toBe(0);
+  });
 });
 
 describe('suggestedDelayMs', () => {

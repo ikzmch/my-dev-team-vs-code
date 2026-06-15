@@ -15,12 +15,13 @@ md-glob.mjs
 tsconfig.json
 vitest.config.ts
 
-# Dev-only docs (README, LICENSE, CHANGELOG are kept)
-CHAT.md
-DESIGN.md
-FIX.md
-STORY.md
-TODO.md
+# Dev-only docs (README, LICENSE, CHANGELOG kept; HOWTO/QUICKSTART ship from docs/)
+docs/CHAT.md
+docs/CONFIG.md
+docs/DESIGN.md
+docs/FIX.md
+docs/STORY.md
+docs/TODO.md
 CLAUDE.md
 CONTRIBUTING.md
 

@@ -8,7 +8,7 @@
  * is flagged `repaired` on its usage record.
  */
 import { z } from 'zod';
-import { settings } from '../../config/settings';
+import { limits } from '../../config/limits';
 
 /**
  * Render a zod validation failure as a short, model-facing instruction: the
@@ -38,7 +38,7 @@ export async function parseWithRepair<T>(
   schema: z.ZodType<T>,
   attempt: (repair: string | undefined) => Promise<unknown>
 ): Promise<T> {
-  const retries = Math.max(0, settings.structuredOutput.repairAttempts);
+  const retries = Math.max(0, limits.structuredOutput.repairAttempts);
   let repair: string | undefined;
   for (let remaining = retries; ; remaining--) {
     const raw = await attempt(repair);

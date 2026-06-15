@@ -67,8 +67,8 @@ const rawDescriptors = [
     id: 'openai',
     label: 'OpenAI',
     keyless: false,
-    secretKey: 'myDevTeam.openai.apiKey',
     envKey: 'OPENAI_API_KEY',
+    secretKey: 'myDevTeam.openai.apiKey',
     baseUrlSetting: 'openai.baseUrl',
     build: ({ apiKey, baseUrl }: ProviderConfig) => {
       const openai = createOpenAI({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) });
@@ -79,8 +79,8 @@ const rawDescriptors = [
     id: 'anthropic',
     label: 'Anthropic',
     keyless: false,
-    secretKey: 'myDevTeam.anthropic.apiKey',
     envKey: 'ANTHROPIC_API_KEY',
+    secretKey: 'myDevTeam.anthropic.apiKey',
     baseUrlSetting: 'anthropic.baseUrl',
     build: ({ apiKey, baseUrl }: ProviderConfig) => {
       const anthropic = createAnthropic({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) });
@@ -91,8 +91,8 @@ const rawDescriptors = [
     id: 'groq',
     label: 'Groq',
     keyless: false,
-    secretKey: 'myDevTeam.groq.apiKey',
     envKey: 'GROQ_API_KEY',
+    secretKey: 'myDevTeam.groq.apiKey',
     baseUrlSetting: 'groq.baseUrl',
     build: ({ apiKey, baseUrl }: ProviderConfig) => {
       const groq = createGroq({ apiKey, ...(baseUrl ? { baseURL: baseUrl } : {}) });
@@ -111,14 +111,18 @@ export interface ProviderDescriptor {
    * the disable-list entry, and the key in every per-provider map.
    */
   id: ProviderName;
-  /** User-facing display name (model picker, "which model ran" line, Set API Key). */
+  /** User-facing display name (model picker, "which model ran" line). */
   label: string;
   /** A keyless provider needs no API key to run (the local Ollama server). */
   keyless: boolean;
-  /** SecretStorage key the API key is stored under (cloud providers only). */
-  secretKey?: string;
-  /** Environment-variable fallback for the API key (cloud providers only). */
+  /** Environment variable the API key is read from (cloud providers only). */
   envKey?: string;
+  /**
+   * SecretStorage key the API key is stored under when the user sets it via the
+   * "Set API Key" command (cloud providers only). Only the in-process local
+   * engine reads SecretStorage; the sidecar uses `envKey`. See config/credentials.ts.
+   */
+  secretKey?: string;
   /**
    * The `myDevTeam.<this>` VS Code setting holding the base-URL / endpoint
    * override (e.g. `ollama.endpoint`, `openai.baseUrl`).

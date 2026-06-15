@@ -58,6 +58,31 @@ describe('BackendConfigSchema providers (endpoint overrides)', () => {
   });
 });
 
+describe('BackendConfigSchema providers (requestsPerMinute floor)', () => {
+  it('defaults every provider rate to 0 (no throttle)', () => {
+    const parsed = BackendConfigSchema.parse({});
+    expect(parsed.providers.ollama.requestsPerMinute).toBe(0);
+    expect(parsed.providers.openai.requestsPerMinute).toBe(0);
+    expect(parsed.providers.anthropic.requestsPerMinute).toBe(0);
+    expect(parsed.providers.groq.requestsPerMinute).toBe(0);
+  });
+
+  it('keeps a per-provider rate, leaving the others at 0', () => {
+    const parsed = BackendConfigSchema.parse({ providers: { groq: { requestsPerMinute: 30 } } });
+    expect(parsed.providers.groq.requestsPerMinute).toBe(30);
+    expect(parsed.providers.openai.requestsPerMinute).toBe(0);
+  });
+
+  it('rejects a negative or non-integer rate', () => {
+    expect(() =>
+      BackendConfigSchema.parse({ providers: { groq: { requestsPerMinute: -1 } } })
+    ).toThrow();
+    expect(() =>
+      BackendConfigSchema.parse({ providers: { groq: { requestsPerMinute: 2.5 } } })
+    ).toThrow();
+  });
+});
+
 describe('BackendConfigSchema agents.triage', () => {
   it('defaults the triage model to the "ollama" provider', () => {
     expect(BackendConfigSchema.parse({}).agents.triage.model).toBe('ollama');
@@ -86,6 +111,9 @@ describe('the bundled backendConfig', () => {
     // The shipped file sets no overrides, so each provider falls back to settings.
     expect(backendConfig.providers.ollama.endpoint).toBeUndefined();
     expect(backendConfig.providers.openai.baseUrl).toBeUndefined();
+    // The shipped file throttles no provider (0 = off), so behaviour is unchanged
+    // until an operator sets a rate.
+    expect(backendConfig.providers.groq.requestsPerMinute).toBe(0);
     // Triage ships on the "ollama" provider.
     expect(backendConfig.agents.triage.model).toBe('ollama');
   });

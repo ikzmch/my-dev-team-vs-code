@@ -67,7 +67,7 @@ First, set the base URL:
 
 Then, set the API key. Pick **one** of these two ways:
 
-- **As a stored secret in VS Code (recommended):**
+- **In VS Code (simplest, recommended):**
   1. Press **Ctrl+Shift+P** to open the Command Palette.
   2. Type `My Dev Team: Set API Key`, press **Enter**.
   3. Choose **OpenAI**, paste the key from Microsoft Foundry, press **Enter**.
@@ -75,7 +75,7 @@ Then, set the API key. Pick **one** of these two ways:
 
 - **As an environment variable:** set `OPENAI_API_KEY` to the key before you
   launch VS Code (for example in your system environment variables), then start
-  VS Code.
+  VS Code. (This is the option to use if you switch the engine to `sidecar`.)
 
 Finally, tell the extension to use it:
 

@@ -1,35 +1,74 @@
 /**
- * Engine selection: the switch between the in-process LocalEngine and the
- * future RemoteEngine. The `myDevTeam.engine` setting is read live on every
- * request, so flipping it takes effect on the next chat turn without a
- * reload - the same pattern the Ollama endpoint setting follows.
+ * Engine selection: the switch between the in-process `LocalEngine`, the
+ * `sidecar` child process (same engine, separate process), and the future
+ * `RemoteEngine`. The `myDevTeam.engine` setting is read live on every request,
+ * so flipping it takes effect on the next chat turn without a reload.
  *
- * Phase A ships only the local engine: selecting "remote" warns (once per
- * switch, not per request) and falls back to local, so the knob and its
- * fallback behavior are built and tested before a remote engine exists.
- * Phase B replaces the fallback branch with a RemoteEngine constructed from
- * `myDevTeam.remote.*` settings and an AuthProvider (see ./auth.ts).
+ * - `local` (default): the engine runs in the extension host.
+ * - `sidecar`: the engine runs in a forked Node child (`dist/sidecar.js`) and
+ *   talks over the sidecar protocol; the client keeps the tools, approval, and
+ *   rendering. The child is spawned lazily on first use and reused, its config
+ *   refreshed when the user changes a setting, and killed on deactivate.
+ * - `remote`: not built yet; warns once and falls back to local.
  */
 import * as vscode from 'vscode';
 import { Engine } from '../protocol/engine';
 import { LocalEngine } from '../engine/localEngine';
-import { settings } from '../config/settings';
+import { SidecarEngine, createForkedChannel } from './sidecarEngine';
+import { settings, runtimeConfigSnapshot } from '../config/settings';
 import { messages } from '../config/messages';
 
+/** What the extension uses to obtain the current engine and to tear it down. */
+export interface EngineProvider {
+  /** The engine for the live `myDevTeam.engine` setting (built lazily, reused). */
+  getEngine(): Engine;
+  /** Stop the config subscription and kill the sidecar child, if any. */
+  dispose(): void;
+}
+
 /**
- * Returns a provider the UI calls per request. The LocalEngine is built
- * lazily once and reused: its agents are stateless between runs, and the
- * provider wiring underneath already reacts to endpoint changes by itself.
+ * Build the engine provider. `sidecarScriptPath` is the absolute path to the
+ * bundled child entry (`dist/sidecar.js`), used only when the user picks the
+ * sidecar engine. The LocalEngine and the SidecarEngine are each built once and
+ * reused: agents are stateless between runs, and the provider wiring underneath
+ * reacts to config changes on its own (the sidecar by a pushed refresh).
  */
-export function createEngineProvider(): () => Engine {
+export function createEngineProvider(sidecarScriptPath: string): EngineProvider {
   let local: LocalEngine | undefined;
-  let lastChoice: string | undefined;
-  return () => {
+  let sidecar: SidecarEngine | undefined;
+  let warnedRemote = false;
+
+  const getEngine = (): Engine => {
     const choice = settings.engine;
-    if (choice === 'remote' && lastChoice !== 'remote') {
-      void vscode.window.showWarningMessage(messages.engine.remoteUnavailable);
+    if (choice === 'sidecar') {
+      return (sidecar ??= new SidecarEngine(
+        createForkedChannel(sidecarScriptPath),
+        runtimeConfigSnapshot
+      ));
     }
-    lastChoice = choice;
+    if (choice === 'remote' && !warnedRemote) {
+      void vscode.window.showWarningMessage(messages.engine.remoteUnavailable);
+      warnedRemote = true;
+    }
+    if (choice !== 'remote') {
+      warnedRemote = false;
+    }
     return (local ??= new LocalEngine());
+  };
+
+  // Keep the sidecar's injected config live: re-send the snapshot whenever a
+  // `myDevTeam.*` setting changes (the local engine reads `settings` directly).
+  const configSub = vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration('myDevTeam')) {
+      sidecar?.refreshConfig();
+    }
+  });
+
+  return {
+    getEngine,
+    dispose: () => {
+      configSub.dispose();
+      sidecar?.dispose();
+    },
   };
 }
