@@ -630,7 +630,7 @@ see [CONFIG.md](CONFIG.md); the table below is the user-settings summary:
 | `myDevTeam.planApproval.preview`     | `auto`                   | When a paused plan also opens as a read-only markdown preview beside the chat: `auto` only for a big plan (complex, or carrying design decisions, many steps, or a long write-up), `always` on every paused plan, `never` keeps review in the chat. Client-only - a pure rendering choice the engine never sees, so it does not ride the runtime-config seam; the Approve/Cancel/Revise choices stay in the chat |
 | `myDevTeam.approval.fileChanges`     | `false`                  | Require approval before the `write`/`edit` tools change a file. Off by default (changes apply directly, since the workspace is git-backed); on routes every write and edit through the same Approve/Decline gate as `run`. `run` stays gated regardless |
 | `myDevTeam.ollama.endpoint`          | `""` (unset)             | Ollama server origin (no `/api` suffix). Unset uses the deployment default in `config/backend.json`, then the built-in `http://localhost:11434`; set, your value wins over the deployment default |
-| `myDevTeam.llamacpp.endpoint`        | `""` (unset)             | llama.cpp (`llama-server`) origin (no `/v1` suffix), a keyless local provider. Unset uses the deployment default in `config/backend.json`, then the built-in `http://localhost:8011`; set, your value wins. Select it for triage with `triage.model` = `provider:llamacpp` |
+| `myDevTeam.llamacpp.endpoint`        | `""` (unset)             | llama.cpp (`llama-server`) origin (no `/v1` suffix), a keyless local provider. Unset uses the deployment default in `config/backend.json`, then the built-in `http://localhost:8080`; set, your value wins. Select it for triage with `triage.model` = `provider:llamacpp` |
 | `myDevTeam.openai.baseUrl`           | `""`                     | Optional custom base URL for OpenAI (Azure / OpenAI-compatible gateway); empty uses the default endpoint. The key comes from `OPENAI_API_KEY`, not here |
 | `myDevTeam.anthropic.baseUrl`        | `""`                     | Optional custom base URL for Anthropic (a proxy/gateway); empty uses the default endpoint. The key comes from `ANTHROPIC_API_KEY`, not here |
 | `myDevTeam.groq.baseUrl`             | `""`                     | Optional custom base URL for Groq (a proxy/gateway); empty uses the default endpoint. The key comes from `GROQ_API_KEY`, not here |
@@ -827,9 +827,9 @@ it to the descriptor's `build`.
 **Today's providers.** Ollama is local and keyless, built from
 `myDevTeam.ollama.endpoint`. llama.cpp is a second local keyless provider for a
 `llama-server` reached over its OpenAI-compatible endpoint (built from
-`myDevTeam.llamacpp.endpoint`, default `http://localhost:8011`, with `/v1`
-appended in `build`) - so a small model can run with no Ollama install, e.g.
-behind the llama.vscode extension. It is wired on the **Chat Completions**
+`myDevTeam.llamacpp.endpoint`, default `http://localhost:8080`, with `/v1`
+appended in `build`) - so a small model can run with no Ollama install, behind a
+locally installed `llama-server`. It is wired on the **Chat Completions**
 transport (`openai.chat`), not the AI SDK's default Responses API: `llama-server`
 enforces a structured-output schema as a GBNF grammar only on
 `/v1/chat/completions`, so triage and the planner get schema-correct JSON even

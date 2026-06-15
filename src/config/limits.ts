@@ -20,7 +20,7 @@ export const limits = {
    * the deployment set one. The server origin only (no `/v1` suffix); the
    * provider build appends `/v1` for the OpenAI-compatible endpoint.
    */
-  defaultLlamacppEndpoint: 'http://localhost:8011',
+  defaultLlamacppEndpoint: 'http://localhost:8080',
   /** How long the activation health check waits for Ollama, in milliseconds. */
   startupProbeTimeoutMs: 3_000,
   thinking: {

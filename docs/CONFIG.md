@@ -81,7 +81,7 @@ so consumers can always trust what they read.
 | `disabledProviders` | `[]` | Providers the router must never use | **union** with floor; cannot re-enable a floor-disabled provider |
 | `disabledModels` | `[]` | Model ids the router must never use | **union** with floor |
 | `ollama.endpoint` | `""` (unset) | Ollama server origin (no `/api` suffix) | **user wins** over `providers.ollama.endpoint` default; unset -> deployment default -> built-in localhost |
-| `llamacpp.endpoint` | `""` (unset) | llama.cpp (`llama-server`) origin (no `/v1` suffix); keyless local provider | **user wins** over `providers.llamacpp.endpoint` default; unset -> deployment default -> built-in `http://localhost:8011` |
+| `llamacpp.endpoint` | `""` (unset) | llama.cpp (`llama-server`) origin (no `/v1` suffix); keyless local provider | **user wins** over `providers.llamacpp.endpoint` default; unset -> deployment default -> built-in `http://localhost:8080` |
 | `openai.baseUrl` | `""` | OpenAI / Azure / compatible gateway base URL | **user wins** over `providers.openai.baseUrl` default; unset -> deployment default -> SDK default |
 | `anthropic.baseUrl` | `""` | Anthropic proxy/gateway base URL | **user wins** over backend default |
 | `groq.baseUrl` | `""` | Groq proxy/gateway base URL | **user wins** over backend default |

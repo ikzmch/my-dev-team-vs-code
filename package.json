@@ -2,7 +2,7 @@
   "name": "my-dev-team",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.50.0",
+  "version": "0.50.1",
   "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,
@@ -121,7 +121,7 @@
         "myDevTeam.llamacpp.endpoint": {
           "type": "string",
           "default": "",
-          "description": "Base URL of a local llama.cpp server (llama-server), origin only, no /v1 suffix. Lets @devteam run a small local model without Ollama: install something like the llama.vscode extension, download a model, and point this at its server. Leave blank to use the deployment default, falling back to http://localhost:8011; set a value to point at your own server (your setting wins). To use it for the quick triage step, set myDevTeam.triage.model to \"provider:llamacpp\"."
+          "description": "Base URL of a local llama.cpp server (llama-server), origin only, no /v1 suffix. Lets @devteam run a small local model without Ollama: install llama-server (llama.cpp), start it with a small model, and point this at its server. Leave blank to use the deployment default, falling back to http://localhost:8080; set a value to point at your own server (your setting wins). To use it for the quick triage step, set myDevTeam.triage.model to \"provider:llamacpp\"."
         },
         "myDevTeam.openai.baseUrl": {
           "type": "string",

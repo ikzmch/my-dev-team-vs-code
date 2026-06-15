@@ -156,11 +156,12 @@ version first, `## [x.y.z] - date`, changes under `### Added` / `### Changed`
     CHANGELOG entry goes under a new `## [0.47.1]` section, not under the
     already-released `0.47.0`.
   - **the current version is itself uncommitted** (a previous change in this
-    same uncommitted batch already bumped it, so `package.json` is dirty): only
-    bump again if that uncommitted version is a patch version (the patch number
-    does not end in 0); if it is a `major.minor.0`, leave it as is and add your
-    entry under that pending section. This keeps one in-flight batch from
-    inflating the version several times before it lands.
+    same uncommitted batch already bumped it, so `package.json` is dirty): do not
+    bump again for a fix/hardening/refactor - leave the version as is and add
+    your entry under that pending section, whether it is a `major.minor.0` or a
+    patch. The only time you bump is when your change is significant enough to
+    escalate a pending patch to a new minor (`0.50.1` -> `0.51.0`). This keeps
+    one in-flight batch from inflating the version several times before it lands.
 
 ## Keep unit tests in sync
 

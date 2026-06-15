@@ -66,7 +66,7 @@ export const messages = {
    */
   llamacppHint: (endpoint: string) =>
     `Is a llama.cpp server (llama-server) running on ${endpoint} with a model ` +
-    `loaded? Start one (for example via the llama.vscode extension) or set ` +
+    `loaded? Start one (install llama-server from llama.cpp) or set ` +
     `"myDevTeam.llamacpp.endpoint" to its address, then try again.\n\n`,
 
   /**

@@ -277,32 +277,37 @@ Notes:
 
 If you would rather not install Ollama, My Dev Team can also talk to a local
 **llama.cpp** server (`llama-server`), which serves a model you download
-yourself. The simplest way to get one running is the **llama.vscode** extension.
+yourself.
 
-**Install llama.vscode and start a server:**
+**Install llama-server:**
 
-1. In VS Code, open the Extensions view (Ctrl+Shift+X), search for
-   **llama-vscode** (publisher `ggml-org`), and click **Install** - or get it from
-   the [Marketplace page](https://marketplace.visualstudio.com/items?itemName=ggml-org.llama-vscode).
-   It downloads `llama-server` for you on first use (Windows and macOS).
-2. Open the Command Palette (Ctrl+Shift+P) and run a llama.vscode "Start ..."
-   command (for example **llama-vscode: Start chat llama-server**); pick a small
-   model when prompted. It downloads the model and starts a local server, by
-   default on `http://localhost:8011`.
-3. Leave that server running while you use My Dev Team.
+1. Get `llama-server` from llama.cpp. The easiest options:
+   - **Windows:** install with `winget install ggml.llamacpp`, or download a
+     prebuilt release `.zip` from the
+     [llama.cpp releases page](https://github.com/ggml-org/llama.cpp/releases)
+     and unzip it.
+   - **macOS:** install with `brew install llama.cpp`.
+   - **Linux:** download a prebuilt release from the same releases page, or build
+     it from source.
+2. Start the server, picking a small model - it downloads on first run:
 
-Prefer the command line? Install llama.cpp and run, for example:
+   ```
+   llama-server -hf ggml-org/Qwen2.5-Coder-1.5B-Instruct-Q8_0-GGUF
+   ```
 
-```
-llama-server -hf ggml-org/Qwen2.5-Coder-1.5B-Instruct-Q8_0-GGUF --port 8011
-```
+   By default it listens on `http://localhost:8080`. Leave it running while you
+   use My Dev Team.
+
+   To swap in a different model, pick a **GGUF** build (the only format
+   `llama-server` loads) and prefer an **Instruct** (chat-tuned) variant: My Dev
+   Team asks the model for results in a specific shape, and instruct models
+   follow those output-format instructions where base/completion models do not.
 
 Then point My Dev Team at that server:
 
 1. Set `myDevTeam.llamacpp.endpoint` to the server's address (origin only, no
-   `/v1`); the default is `http://localhost:8011`. Check the address in
-   llama.vscode's settings (or your `llama-server --port`) if you used a
-   different port.
+   `/v1`); the default is `http://localhost:8080`. If you started `llama-server`
+   with `--port`, use that port instead.
 2. To use it for the quick triage step, set `myDevTeam.triage.model` to
    `provider:llamacpp`.
 
@@ -450,7 +455,7 @@ likely to touch:
 | `myDevTeam.disabledProviders`    | `[]`                     | Providers to never use (e.g. `["anthropic"]`); shown disabled in `/model` and never run, even if pinned or keyed |
 | `myDevTeam.disabledModels`       | `[]`                     | Individual models to never use (e.g. `["qwen3-coder"]`); same as above but per model |
 | `myDevTeam.ollama.endpoint`      | unset (uses `http://localhost:11434`) | Where your Ollama server listens. Leave blank for the default your install ships with (localhost if none); set it to point at your own server |
-| `myDevTeam.llamacpp.endpoint`    | unset (uses `http://localhost:8011`) | Where your local llama.cpp server (`llama-server`) listens, origin only (no `/v1`). Lets you run a small local model without Ollama; see "Running a local model without Ollama" |
+| `myDevTeam.llamacpp.endpoint`    | unset (uses `http://localhost:8080`) | Where your local llama.cpp server (`llama-server`) listens, origin only (no `/v1`). Lets you run a small local model without Ollama; see "Running a local model without Ollama" |
 | `myDevTeam.openai.baseUrl`       | `""`                     | Custom OpenAI endpoint (Azure / compatible gateway); empty uses OpenAI's default |
 | `myDevTeam.anthropic.baseUrl`    | `""`                     | Custom Anthropic endpoint (a proxy/gateway); empty uses Anthropic's default |
 | `myDevTeam.groq.baseUrl`         | `""`                     | Custom Groq endpoint (a proxy/gateway); empty uses Groq's default |

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.50.1] - 2026-06-15
+
+### Changed
+
+- **llama.cpp default port is now 8080.** The built-in llama.cpp endpoint
+  default moved from `http://localhost:8011` to `http://localhost:8080`, matching
+  `llama-server`'s own default port so it works out of the box without setting
+  `myDevTeam.llamacpp.endpoint` or passing `--port`.
+- **llama.cpp setup points at llama-server directly.** The "run a local model
+  without Ollama" guide and the unreachable-server hint no longer reference the
+  llama.vscode extension; instead they tell you to install `llama-server`
+  (llama.cpp) and start it yourself, which keeps the local-provider story
+  editor-agnostic.
+
 ## [0.50.0] - 2026-06-15
 
 ### Added
