@@ -80,8 +80,8 @@ import {
 /**
  * The Ollama models the router selects for the registered agents under Auto
  * routing, deduplicated - the set the startup probe checks are pulled. Triage
- * routes per the backend triage config (Ollama by default, but an operator can
- * point it elsewhere); like the other agents, only an Ollama choice is an Ollama
+ * routes per `myDevTeam.triage.model` (the backend triage config when unset,
+ * Ollama by default); like the other agents, only an Ollama choice is an Ollama
  * tag to probe, so a non-Ollama triage/work model is simply left out.
  */
 export function routedModels(): string[] {
@@ -107,9 +107,10 @@ export function routedModels(): string[] {
  * Which model each step will use for this run, for the protocol's
  * `model-selected` event and the reply's `selection`. Deterministic from the
  * route and the user's pin, so the streamed event and the final reply always
- * agree. Triage is always a local Ollama model; the work agents honour the
- * pin (or, in Auto, the best available model). Only the steps the route will
- * run are listed: triage always, then plan+execute, or answer.
+ * agree. Triage follows `myDevTeam.triage.model` (a local Ollama model by
+ * default), not the work pin; the work agents honour the pin (or, in Auto, the
+ * best available model). Only the steps the route will run are listed: triage
+ * always, then plan+execute, or answer.
  */
 export function modelSelection(
   intent: Intent,
@@ -274,8 +275,8 @@ function failureDetail(error: unknown): string {
  * The troubleshooting hint for a failed agent, naming the model it actually
  * used. A persistent rate limit (a 429 that outlasted the retries) points at
  * the throttle setting; otherwise an Ollama model points at the server + tag to
- * pull and a cloud model at its missing/invalid API key. Triage always uses a
- * local model.
+ * pull and a cloud model at its missing/invalid API key. Triage routes per
+ * `myDevTeam.triage.model`, so its hint can point at a cloud key too.
  */
 function failureHint(agent: AgentName, modelPin?: string, error?: unknown): string {
   const info =
@@ -389,8 +390,8 @@ export class LocalEngine implements Engine {
       }
 
       // The user's per-run model choice ("auto"/absent lets the router pick).
-      // Triage ignores it (always local); the work agents are built per run
-      // with it, since the pin changes which model they wire.
+      // Triage ignores it (it follows its own myDevTeam.triage.model); the work
+      // agents are built per run with it, since the pin changes which model they wire.
       const modelPin = input.model;
       const selectionFor = (
         intent: Intent,

@@ -229,8 +229,10 @@ Notes:
 
 - Picking a model uses it for the planning and the actual work. The quick
   internal "is this a question or a task?" step is not affected by your choice -
-  by default it stays on a fast local model, so it costs you nothing (a build can
-  point it elsewhere).
+  by default it stays on a fast local Ollama model, so it costs you nothing. If
+  you have no Ollama server, point it at a cloud provider with the
+  `myDevTeam.triage.model` setting (e.g. `provider:openai`); see
+  [Settings](#7-settings).
 - **Auto sizes the model to the job.** When the model is Auto (or you picked a
   provider rather than one fixed model), My Dev Team also judges how demanding a
   task is and uses a cheaper/smaller model for simple work (e.g. "write a
@@ -374,6 +376,7 @@ likely to touch:
 | Setting                          | Default                  | What it controls                                  |
 | -------------------------------- | ------------------------ | ------------------------------------------------- |
 | `myDevTeam.model`                | `auto`                   | Which model, provider (`provider:<name>`), or `auto` to use; easier to set with `/model` or the **My Dev Team** status button |
+| `myDevTeam.triage.model`         | `""`                     | What the quick triage step uses, kept separate from the model above. Empty uses the build's default (a local Ollama model); set `provider:openai` (or `anthropic`/`groq`), `auto`, or a model id when you have no Ollama server. A provider/model the build disabled cannot be chosen |
 | `myDevTeam.complexityRouting`    | `true`                   | Let Auto size the model to how hard the task is (cheaper for simple work, stronger for complex). Turn off to ignore difficulty; a pinned model is never affected |
 | `myDevTeam.planApproval`         | `auto`                   | When to pause for you to approve a plan before it runs: `auto` (complex plans only), `always` (every plan), or `never`. At the prompt you can Approve, Cancel, or Revise (comment and redraft) |
 | `myDevTeam.disabledProviders`    | `[]`                     | Providers to never use (e.g. `["anthropic"]`); shown disabled in `/model` and never run, even if pinned or keyed |

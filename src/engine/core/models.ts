@@ -196,23 +196,37 @@ export function localModels(): ModelInfo[] {
 const providerNames: readonly ProviderName[] = providerIds;
 
 /**
- * How the triage agent is routed, from `backend.json`'s `agents.triage.model`:
- * a registered model id pins that exact model; a provider name routes by
- * capability among that provider's enabled models; anything else (the default
- * "ollama", an unknown name, or a provider with nothing enabled) falls back to
- * the local models. Returned as the `(pin, candidates)` inputs the normal router
- * takes, so triage reuses the same scoring and disable rules as every other
- * agent - it is no longer hardwired to Ollama, but still defaults there.
+ * How the triage agent is routed. The user's `myDevTeam.triage.model` wins when
+ * set; otherwise the build's `backend.json` `agents.triage.model` floor (the
+ * "ollama" provider by default). This mirrors how the work agents' model is
+ * chosen - user-controlled, with the backend providing only the default and the
+ * unbypassable disable layers (applied via the candidate pools and `routeModel`,
+ * so triage can never reach a provider/model the operator disabled).
+ *
+ * The chosen value is interpreted leniently: "auto" routes among all available
+ * models; a registered model id pins that exact model; a provider - written as
+ * the `provider:<name>` pin (matching `myDevTeam.model`) or a bare provider name
+ * (the backend config's vocabulary) - routes by capability among that provider's
+ * enabled models; anything else (an unknown name, or a provider with nothing
+ * enabled) falls back to the local models. Returned as the `(pin, candidates)`
+ * inputs the normal router takes, so triage reuses the same scoring and disable
+ * rules as every other agent.
  */
 export function triageRouting(): { pin?: string; candidates: readonly ModelInfo[] } {
-  const choice = backendConfig.agents.triage.model;
+  const choice = settings.triageModel || backendConfig.agents.triage.model;
+  if (choice === 'auto') {
+    return { candidates: availableModels() };
+  }
   if (modelById(choice)) {
     return { pin: choice, candidates: availableModels() };
   }
-  if ((providerNames as readonly string[]).includes(choice)) {
-    const pool = modelRegistry.filter(
-      (m) => m.provider === (choice as ProviderName) && isModelEnabled(m)
-    );
+  const provider = choice.startsWith(PROVIDER_PIN_PREFIX)
+    ? providerPinOf(choice)
+    : (providerNames as readonly string[]).includes(choice)
+      ? (choice as ProviderName)
+      : undefined;
+  if (provider) {
+    const pool = modelRegistry.filter((m) => m.provider === provider && isModelEnabled(m));
     if (pool.length > 0) {
       return { candidates: pool };
     }

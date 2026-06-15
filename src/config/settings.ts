@@ -35,6 +35,7 @@ export interface McpServerConfig {
 export const defaults = {
   engine: 'local' as const,
   model: 'auto',
+  triageModel: '',
   complexityRouting: true,
   planApproval: 'auto' as const,
   approval: {
@@ -160,12 +161,26 @@ export const settings = {
    * (`myDevTeam.model`): a registry id (pin one model), a "provider:<name>"
    * (route within one provider), or "auto" to let the capability router pick
    * the best available model per agent. Read live and sent on every run
-   * request; triage always stays on its routed local model regardless. The
+   * request; triage is configured separately by `triageModel`, not this. The
    * `/model` command and the status-bar item write this setting.
    */
   get model(): string {
     const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<unknown>('model');
     return typeof value === 'string' && value.trim() ? value.trim() : defaults.model;
+  },
+
+  /**
+   * What the quick triage step uses (`myDevTeam.triage.model`), kept separate
+   * from `model` so the cheap classifier need not ride on the executor's model.
+   * A registry id pins one model, "provider:<name>" routes within a provider,
+   * "auto" routes among all available models; empty (the default) defers to the
+   * build's `agents.triage.model` floor (the "ollama" provider unless changed).
+   * Read live and resolved in engine/core/models.ts (`triageRouting`), where the
+   * disable layers still apply - this can never reach a disabled provider/model.
+   */
+  get triageModel(): string {
+    const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<unknown>('triage.model');
+    return typeof value === 'string' ? value.trim() : defaults.triageModel;
   },
 
   /**

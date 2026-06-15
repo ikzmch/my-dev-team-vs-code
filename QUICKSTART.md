@@ -20,7 +20,7 @@ use one of two:
 
 ## Step 1 - Install the `.vsix`
 
-The file is named something like `my-dev-team-vs-code-0.45.0.vsix`.
+The file is named something like `my-dev-team-vs-code-0.46.0.vsix`.
 
 1. Open VS Code.
 2. Press **Ctrl+Shift+X** to open the **Extensions** view (or click the
@@ -86,10 +86,13 @@ Finally, tell the extension to use it:
 > **If your organization has no Ollama server at all (Option B only):** the
 > extension uses a small internal "triage" step that, by default, expects an
 > Ollama model - so without Ollama anywhere, requests fail on the first step.
-> This is fixed once, when the extension is packaged, by pointing triage at your
-> cloud provider too. It is not something you change in Settings, so ask whoever
-> prepared your `.vsix` to configure it (it is the `agents.triage.model` backend
-> setting described in [DESIGN.md](DESIGN.md)).
+> Point it at your cloud provider too:
+>
+> 1. Press **Ctrl+,** to open **Settings** and search `My Dev Team`.
+> 2. Find **Triage: Model** and type `provider:openai` into its box (use
+>    `provider:anthropic` or `provider:groq` if that is your provider instead).
+>
+> Now every step uses your cloud provider and nothing needs Ollama.
 
 ## Step 3 - Open a folder
 

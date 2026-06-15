@@ -483,7 +483,8 @@ and read **live** by `config/settings.ts` on every access - no reload needed:
 | Setting                              | Default                  | Controls                                  |
 | ------------------------------------ | ------------------------ | ----------------------------------------- |
 | `myDevTeam.engine`                   | `local`                  | Which engine handles `@devteam` runs: `local` (in-process) or `remote` (Phase B; warns and falls back to local until it exists) |
-| `myDevTeam.model`                    | `auto`                   | What the planner/answerer/executor use: a model id, a `provider:<name>` to route within one provider, or `auto` to route by capability among the available models. Triage is not affected (it follows the backend `agents.triage.model` config, Ollama by default). Set it with `/model` or the "My Dev Team" status button's menu |
+| `myDevTeam.model`                    | `auto`                   | What the planner/answerer/executor use: a model id, a `provider:<name>` to route within one provider, or `auto` to route by capability among the available models. Triage is configured separately by `myDevTeam.triage.model`. Set it with `/model` or the "My Dev Team" status button's menu |
+| `myDevTeam.triage.model`             | `""`                     | What triage uses, separate from the model above so the cheap classifier need not ride on the executor's model. Empty defers to the backend `agents.triage.model` floor (the "ollama" provider by default); otherwise `auto`, a `provider:<name>` (or bare provider name), or a model id, resolved by `triageRouting`. User-controlled like `myDevTeam.model`, with the disable layers still applied, so it can never reach a disabled provider/model |
 | `myDevTeam.disabledProviders`        | `[]`                     | Providers the router must never use (e.g. `["anthropic"]`): their models are skipped and shown disabled in the `/model` picker even with a key set, and never run even when pinned. The per-user layer on top of the backend floor (`engine/config/backend.json`), which it cannot re-enable. Non-string/blank entries are ignored |
 | `myDevTeam.disabledModels`           | `[]`                     | Individual model ids the router must never use (e.g. `["qwen3-coder"]`), same two-layer hard-block semantics as `disabledProviders`: a disabled model never runs even when pinned (the run falls back to Auto) |
 | `myDevTeam.complexityRouting`        | `true`                   | Size models to how demanding the work is (the model registry's `tier`): triage's guess sizes the planner, the planner's judgement sizes the executor; simpler work routes to a cheaper/smaller model, harder work to a stronger one. Off routes by capability alone; a pinned model is never affected |
@@ -730,14 +731,17 @@ kinds of choice, all decided in `selectModel`:
 A model or provider pin bypasses the availability gate (the user asked for it),
 so a pinned cloud model/provider with no key still runs and fails with a hint
 to set the key, rather than being silently ignored. The user's `model` choice
-never touches **triage**: that is an operator decision, configured in
-`backend.json`'s `agents.triage.model` and routed by `triageRouting`
-(core/models.ts) - **a registered model id pins that exact model, a provider
-name routes by capability within it, and the default is the "ollama" provider**
-(the local models). Triage stays a cheap, invisible classification that should
-be fast and free, so it defaults to a local model and ignores whatever the user
-pinned for the work that follows; an operator who wants a sharper classifier can
-point it at a specific model or another provider.
+never touches **triage**: triage has its own knob, `myDevTeam.triage.model`,
+routed by `triageRouting` (core/models.ts) - **"auto" routes among the available
+models, a registered model id pins that exact model, a `provider:<name>` (or
+bare provider name) routes by capability within it, and empty defers to the
+backend `agents.triage.model` floor, the "ollama" provider** (the local models).
+Triage stays a cheap, invisible classification that should be fast and free, so
+it defaults to a local model and ignores whatever the user
+pinned for the work that follows; anyone who wants a sharper classifier - or who
+has no Ollama server - can point it at a specific model or another provider via
+`myDevTeam.triage.model`, with the operator's `agents.triage.model` as the
+shipped default.
 
 **Surfacing the choice.** The engine emits a `model-selected` event right after
 `triaged` and attaches the same `selection` to the reply (mode
@@ -751,9 +755,10 @@ registering a stronger model - no agent code changes either way.
 
 The "Auto selects" column below is the local-only default (no cloud key set);
 with a key configured, Auto prefers the higher-scoring cloud models for the
-planner/answerer/executor. Triage ignores the user's choice and follows the
-backend `agents.triage.model` config instead - the "ollama" provider by default,
-so it stays local unless an operator points it elsewhere.
+planner/answerer/executor. Triage follows its own setting, `myDevTeam.triage.model`
+(the executor's `myDevTeam.model` does not size it) - empty defers to the backend
+`agents.triage.model` floor ("ollama" by default, so it stays local), and a user
+can point it at a cloud provider when no Ollama server is available.
 
 | Agent      | Weights (what it cares about)                                | Auto selects (local-only) |
 | ---------- | ------------------------------------------------------------ | ----------------- |
@@ -790,8 +795,8 @@ model: resolveModel(agents.planner.capabilities, modelPin, undefined, complexity
 // engine/core/executor.ts - sized by the planner's complexity (the answerer
 // passes none and routes by capability alone):
 model: resolveModel(agents.executor.capabilities, modelPin, undefined, complexity),
-// engine/core/triage.ts - triage routes per the backend agents.triage.model
-// config (default: the "ollama" provider), never the user's pin:
+// engine/core/triage.ts - triage routes per myDevTeam.triage.model (empty
+// defers to the backend agents.triage.model floor), never the work-model pin:
 model: resolveTriageModel(agents.triage.capabilities),
 ```
 
@@ -1403,8 +1408,9 @@ You choose the model with `/model` (or the status button's menu): a registry id
 pins the planner, answerer, and executor to that model, while `Auto` (the
 default) routes each by capability among the available models - Ollama plus any
 cloud provider (OpenAI, Anthropic) whose API key you have set with the "My Dev
-Team: Set API Key" command. Triage is not affected by your choice - it follows
-the backend `agents.triage.model` config (a local Ollama model by default). Every
+Team: Set API Key" command. Triage is not affected by this choice - it has its
+own `myDevTeam.triage.model` setting (empty defers to the backend
+`agents.triage.model` default, a local Ollama model). Every
 run renders a `**Model:**` line under the triage block naming what ran, so you
 always know which model answered - especially in Auto mode.
 

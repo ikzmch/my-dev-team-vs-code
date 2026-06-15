@@ -14,7 +14,7 @@ vi.mock('../src/engine/config/backend', () => ({ backendConfig: fakeBackend }));
 
 import { triageRouting, routeTriageModel } from '../src/engine/core/models';
 import { agents } from '../src/engine/config/agents';
-import { __reset } from './mocks/vscode';
+import { __reset, __setConfig } from './mocks/vscode';
 
 beforeEach(() => {
   __reset();
@@ -57,6 +57,46 @@ describe('triageRouting', () => {
   it('falls back to local models when the named provider has nothing enabled', () => {
     fakeBackend.agents.triage.model = 'anthropic';
     fakeBackend.models.disabledProviders = ['anthropic'];
+    expect(triageRouting().candidates.every((m) => m.provider === 'ollama')).toBe(true);
+  });
+
+  it('lets the user setting override the backend default', () => {
+    // Backend says ollama, but the user picks a provider pin.
+    __setConfig('myDevTeam.triage.model', 'provider:anthropic');
+    const { pin, candidates } = triageRouting();
+    expect(pin).toBeUndefined();
+    expect(candidates.every((m) => m.provider === 'anthropic')).toBe(true);
+  });
+
+  it('accepts a bare provider name in the user setting', () => {
+    __setConfig('myDevTeam.triage.model', 'anthropic');
+    expect(triageRouting().candidates.every((m) => m.provider === 'anthropic')).toBe(true);
+  });
+
+  it('routes among all available models when the user picks "auto"', () => {
+    __setConfig('myDevTeam.triage.model', 'auto');
+    const { pin, candidates } = triageRouting();
+    // No pin, and the candidate pool is the available models (always at least
+    // the keyless local ones), not narrowed to a single provider.
+    expect(pin).toBeUndefined();
+    expect(candidates.some((m) => m.provider === 'ollama')).toBe(true);
+  });
+
+  it('pins an exact model id from the user setting', () => {
+    __setConfig('myDevTeam.triage.model', 'anthropic-opus');
+    expect(triageRouting().pin).toBe('anthropic-opus');
+  });
+
+  it('falls back to the backend default when the user setting is empty', () => {
+    fakeBackend.agents.triage.model = 'anthropic';
+    __setConfig('myDevTeam.triage.model', '');
+    expect(triageRouting().candidates.every((m) => m.provider === 'anthropic')).toBe(true);
+  });
+
+  it('cannot select a user provider the build disabled', () => {
+    fakeBackend.models.disabledProviders = ['anthropic'];
+    __setConfig('myDevTeam.triage.model', 'provider:anthropic');
+    // Disabled at the backend floor: the pool is empty, so it falls back local.
     expect(triageRouting().candidates.every((m) => m.provider === 'ollama')).toBe(true);
   });
 });

@@ -2,7 +2,7 @@
   "name": "my-dev-team-vs-code",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.45.0",
+  "version": "0.46.0",
   "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,
@@ -53,7 +53,12 @@
         "myDevTeam.model": {
           "type": "string",
           "default": "auto",
-          "description": "What @devteam uses for the planner, answerer, and executor: a model id, a \"provider:<name>\" to route among one provider's models (best per task), or \"auto\" to let the router pick the best available model per agent. Triage always uses a local Ollama model. Use the /model command or the status-bar item to change it from a list."
+          "description": "What @devteam uses for the planner, answerer, and executor: a model id, a \"provider:<name>\" to route among one provider's models (best per task), or \"auto\" to let the router pick the best available model per agent. The quick triage step is configured separately by myDevTeam.triage.model. Use the /model command or the status-bar item to change it from a list."
+        },
+        "myDevTeam.triage.model": {
+          "type": "string",
+          "default": "",
+          "description": "What @devteam uses for the quick internal triage step (deciding whether a request is a question or work). Leave empty to use the build's default (a local Ollama model unless the build changed it). Set it when you have no Ollama server: \"provider:openai\" (or anthropic/groq) routes within that provider, \"auto\" picks the best available model, or a model id pins one. A provider or model the build disabled cannot be selected here."
         },
         "myDevTeam.complexityRouting": {
           "type": "boolean",

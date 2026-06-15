@@ -40,8 +40,9 @@ function probeOnlyEngine(): LocalEngine {
 
 describe('routedModels', () => {
   it('returns the deduplicated local models Auto routes the agents to', () => {
-    // Triage always routes among the local models; the others route among the
-    // available models, and only their Ollama picks are tags the probe checks.
+    // Triage routes among the local models by default (myDevTeam.triage.model
+    // unset); the others route among the available models, and only their Ollama
+    // picks are tags the probe checks.
     const expected = new Set<string>();
     expected.add(routeModel(agents.triage.capabilities, undefined, localModels()).model);
     for (const name of ['planner', 'answerer', 'executor'] as const) {
