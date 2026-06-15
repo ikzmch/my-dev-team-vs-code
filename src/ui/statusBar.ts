@@ -25,6 +25,7 @@ import {
 import { Engine } from '../protocol/engine';
 import { settings } from '../config/settings';
 import { messages } from '../config/messages';
+import { uiLimits } from '../config/uiLimits';
 import {
   currentModelLabel,
   SELECT_MODEL_COMMAND_ID,
@@ -49,7 +50,10 @@ export class StatusBar {
     private readonly engine: Engine,
     menuCommandId: string
   ) {
-    this.item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    this.item = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Right,
+      uiLimits.statusBar.priority
+    );
     this.item.command = menuCommandId;
     this.item.text = messages.status.statusBar;
     this.renderTooltip();

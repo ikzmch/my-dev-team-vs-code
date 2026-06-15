@@ -27,15 +27,10 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { Attachment } from '../protocol/types';
 import { settings } from '../config/settings';
-import { messages } from '../config/messages';
+import { messages, truncateForDisplay } from '../config/messages';
 import { readFile, searchContent } from '../tools/workspaceTools';
 
 const execFileAsync = promisify(execFile);
-
-/** Cap on inlined text so a huge file or diff can't blow up the prompt. */
-function truncate(text: string, maxChars: number): string {
-  return text.length > maxChars ? text.slice(0, maxChars) + '\n. . . (truncated)' : text;
-}
 
 /** A value that carries a file Uri and a range, whether or not it is a `Location` instance. */
 function isLocationLike(v: unknown): v is { uri: vscode.Uri; range: vscode.Range } {
@@ -63,7 +58,7 @@ async function readWholeFile(uri: vscode.Uri): Promise<Attachment> {
   const bytes = await vscode.workspace.fs.readFile(uri);
   return {
     label: `File: ${rel}`,
-    text: truncate(Buffer.from(bytes).toString('utf8'), settings.maxAttachmentChars),
+    text: truncateForDisplay(Buffer.from(bytes).toString('utf8'), settings.maxAttachmentChars),
   };
 }
 
@@ -76,7 +71,7 @@ async function readLocation(uri: vscode.Uri, range: vscode.Range): Promise<Attac
   const where = endLine > startLine ? `(lines ${startLine}-${endLine})` : `(line ${startLine})`;
   return {
     label: `Selection from ${rel} ${where}`,
-    text: truncate(doc.getText(range), settings.maxAttachmentChars),
+    text: truncateForDisplay(doc.getText(range), settings.maxAttachmentChars),
   };
 }
 
@@ -96,7 +91,7 @@ async function resolveReference(ref: vscode.ChatPromptReference): Promise<Attach
       return await readLocation(v.uri, v.range);
     }
     if (typeof v === 'string') {
-      return { label: 'Attached text', text: truncate(v, settings.maxAttachmentChars) };
+      return { label: 'Attached text', text: truncateForDisplay(v, settings.maxAttachmentChars) };
     }
     // An unrecognised reference kind (e.g. binary/image data): keep a label so
     // the models know the user attached something we could not inline.
@@ -193,7 +188,7 @@ async function resolveCodebase(prompt: string): Promise<Attachment> {
       text += `\n\n--- ${file} ---\n${head}`;
     }
   }
-  return { label, text: truncate(text, settings.references.codebaseMaxChars) };
+  return { label, text: truncateForDisplay(text, settings.references.codebaseMaxChars) };
 }
 
 /** The default `#changes` resolver: the workspace's staged + unstaged git diff. */
@@ -239,7 +234,7 @@ async function resolveChanges(gitDiff: (cwd: string) => Promise<string>): Promis
   if (!diff.trim()) {
     return { label, text: messages.references.changesEmpty };
   }
-  return { label, text: truncate(diff, settings.references.changesMaxChars) };
+  return { label, text: truncateForDisplay(diff, settings.references.changesMaxChars) };
 }
 
 const CODEBASE_MARKER = /#codebase\b/i;

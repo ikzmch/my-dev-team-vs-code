@@ -14,18 +14,10 @@
 import * as vscode from 'vscode';
 import { Complexity, Plan } from '../protocol/types';
 import { messages } from '../config/messages';
+import { uiLimits } from '../config/uiLimits';
 
 /** The virtual-document scheme the preview content provider serves. */
 const SCHEME = 'devteam-plan';
-
-/**
- * Under the `auto` preview setting, a plan opens a preview when it is "big".
- * A plan tops out at 12 short steps, so "big" means awkward to read inline in
- * the chat scroll, not huge: the planner judged it `complex`, it carries design
- * decisions, its rendered document is long, or it has many steps.
- */
-export const PLAN_PREVIEW_MIN_CHARS = 1_400;
-export const PLAN_PREVIEW_MIN_STEPS = 8;
 
 /**
  * Render a drafted plan into the standalone markdown the preview displays: the
@@ -55,14 +47,16 @@ export function formatPlanDocument(plan: Plan, complexity: Complexity): string {
  * Whether a plan warrants the editor preview under the `auto` setting (the
  * `always`/`never` settings bypass this). True when the plan is complex, when
  * it carries design decisions, when its rendered document is long, or when it
- * has many steps - the cases where the chat checklist alone reads poorly.
+ * has many steps - the cases where the chat checklist alone reads poorly. A
+ * plan tops out at 12 short steps, so "big" means awkward to read inline in the
+ * chat scroll, not huge.
  */
 export function isBigPlan(plan: Plan, complexity: Complexity, document: string): boolean {
   return (
     complexity === 'complex' ||
     (plan.decisions?.length ?? 0) > 0 ||
-    document.length >= PLAN_PREVIEW_MIN_CHARS ||
-    plan.steps.length >= PLAN_PREVIEW_MIN_STEPS
+    document.length >= uiLimits.planPreview.minChars ||
+    plan.steps.length >= uiLimits.planPreview.minSteps
   );
 }
 

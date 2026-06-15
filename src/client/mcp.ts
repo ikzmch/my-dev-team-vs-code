@@ -24,6 +24,7 @@ import * as vscode from 'vscode';
 import { DynamicToolDef } from '../protocol/types';
 import { McpInvoker } from '../tools/types';
 import { McpServerConfig, settings } from '../config/settings';
+import { truncateForDisplay } from '../config/messages';
 
 /** Prefix every MCP tool name carries, so it cannot collide with a built-in tool. */
 export const MCP_TOOL_PREFIX = 'mcp__';
@@ -216,8 +217,7 @@ export class McpHub implements McpInvoker {
       throw new Error(`MCP server "${route.server}" is not connected.`);
     }
     const text = await connection.callTool(route.tool, args, signal);
-    const max = settings.mcp.resultMaxChars;
-    return text.length > max ? text.slice(0, max) + '\n. . . (truncated)' : text;
+    return truncateForDisplay(text, settings.mcp.resultMaxChars);
   }
 
   /** Close every server connection. Safe to call more than once. */

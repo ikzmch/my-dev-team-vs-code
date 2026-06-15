@@ -18,6 +18,7 @@ import * as os from 'os';
 import * as vscode from 'vscode';
 import { WorkspaceSkill } from '../protocol/types';
 import { settings } from '../config/settings';
+import { truncateForDisplay } from '../config/messages';
 
 const SKILL_FILE = 'SKILL.md';
 
@@ -117,10 +118,7 @@ export async function collectSkills(): Promise<WorkspaceSkill[]> {
           continue;
         }
         seen.add(file.path);
-        if (text.length > max) {
-          text = text.slice(0, max) + '\n. . . (truncated)';
-        }
-        skills.push({ source: sourceLabel(file, home), text });
+        skills.push({ source: sourceLabel(file, home), text: truncateForDisplay(text, max) });
       }
     }
   }

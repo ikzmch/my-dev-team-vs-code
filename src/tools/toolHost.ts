@@ -19,15 +19,13 @@ import { z } from 'zod';
 import { Approver, ChangeReporter, McpInvoker, RunMirror } from './types';
 import { readFile, searchFiles, runCommand, writeFile, editFile } from './workspaceTools';
 import { messages } from '../config/messages';
+import { uiLimits } from '../config/uiLimits';
 import {
   clientTools,
   clientToolNames,
   ClientToolName,
   ToolHost,
 } from '../protocol/toolContract';
-
-/** Max characters of an MCP call's argument preview shown in its approval prompt. */
-const MCP_ARGS_PREVIEW_MAX = 500;
 
 /** Compact, bounded preview of an MCP call's arguments for the approval prompt. */
 function mcpArgsPreview(args: unknown): string {
@@ -37,9 +35,8 @@ function mcpArgsPreview(args: unknown): string {
   } catch {
     text = String(args);
   }
-  return text.length > MCP_ARGS_PREVIEW_MAX
-    ? text.slice(0, MCP_ARGS_PREVIEW_MAX) + '…'
-    : text;
+  const max = uiLimits.approval.mcpArgsPreviewMaxChars;
+  return text.length > max ? text.slice(0, max) + '…' : text;
 }
 
 /**

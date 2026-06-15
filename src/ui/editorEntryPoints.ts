@@ -18,7 +18,7 @@
  *   (repair when the file currently has error diagnostics, else write/update).
  */
 import * as vscode from 'vscode';
-import { messages } from '../config/messages';
+import { messages, truncateForDisplay } from '../config/messages';
 import { settings } from '../config/settings';
 
 /** The chat participant mention that targets @devteam in a chat query. */
@@ -105,10 +105,7 @@ async function explainSelection(): Promise<void> {
   }
   const selection = editor.selection;
   const code = editor.document.getText(selection);
-  const capped =
-    code.length > settings.maxAttachmentChars
-      ? code.slice(0, settings.maxAttachmentChars) + '\n. . . (truncated)'
-      : code;
+  const capped = truncateForDisplay(code, settings.maxAttachmentChars);
   const relPath = vscode.workspace.asRelativePath(editor.document.uri);
   await openChat(
     'explain',

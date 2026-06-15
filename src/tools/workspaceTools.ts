@@ -4,7 +4,7 @@ import { exec, ChildProcess, ExecOptions } from 'child_process';
 import { promisify } from 'util';
 import { Approver, ChangeReporter, RunMirror } from './types';
 import { settings } from '../config/settings';
-import { messages } from '../config/messages';
+import { messages, TRUNCATED_SUFFIX } from '../config/messages';
 import { environment } from '../config/environment';
 import { searchContent } from './contentSearch';
 
@@ -224,13 +224,13 @@ function capReadLines(lines: string[]): {
     if (used + addition > max) {
       if (i === 0) {
         return {
-          text: lines[0].slice(0, max) + '\n. . . (truncated)',
+          text: lines[0].slice(0, max) + TRUNCATED_SUFFIX,
           lineCount: 1,
           truncated: true,
         };
       }
       return {
-        text: lines.slice(0, i).join('\n') + '\n. . . (truncated)',
+        text: lines.slice(0, i).join('\n') + TRUNCATED_SUFFIX,
         lineCount: i,
         truncated: true,
       };

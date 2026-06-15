@@ -30,6 +30,25 @@ function fence(content: string, min: number): string {
   return `${ticks}\n${content}\n${ticks}`;
 }
 
+/**
+ * The marker appended to text cut short for display, on its own line so it never
+ * runs into the last surviving line. One copy, since the client truncates inlined
+ * text - attachments, history turns, instruction/skill/MCP bodies, the read
+ * tool's output - in several places and they should read identically.
+ */
+export const TRUNCATED_SUFFIX = '\n. . . (truncated)';
+
+/**
+ * Cut `text` to at most `maxChars` characters for display, appending
+ * `TRUNCATED_SUFFIX` when it was over. The budget stays the caller's (each reads
+ * its own `settings.*` cap); this only shares the cut-and-mark, so every place
+ * that inlines bounded text does it the same way. Returns the text unchanged when
+ * it already fits.
+ */
+export function truncateForDisplay(text: string, maxChars: number): string {
+  return text.length > maxChars ? text.slice(0, maxChars) + TRUNCATED_SUFFIX : text;
+}
+
 export const messages = {
   /**
    * Hint the LocalEngine appends to a step failure, naming the model the

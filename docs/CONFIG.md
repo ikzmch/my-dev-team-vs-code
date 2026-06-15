@@ -153,9 +153,10 @@ engine ignores them.
 ## 4. Build-time constants
 
 Not user-tunable. The engine-read constants live in
-[limits.ts](../src/config/limits.ts) (the single source); the rest are non-getter
-fields of [settings.ts](../src/config/settings.ts). Change them in code and
-rebuild. They bound how much work the tools and UI do.
+[limits.ts](../src/config/limits.ts) (the single source); the client-read UI
+constants live in [uiLimits.ts](../src/config/uiLimits.ts); the rest are
+non-getter fields of [settings.ts](../src/config/settings.ts). Change them in
+code and rebuild. They bound how much work the tools and UI do.
 
 | Group | Constant | Default |
 | ----- | -------- | ------- |
@@ -200,6 +201,10 @@ rebuild. They bound how much work the tools and UI do.
 | | `sidecar.readyTimeoutMs` | `10000` |
 | | `sidecar.respawnWindowMs` | `60000` |
 | | `sidecar.maxRespawns` | `3` |
+| UI (client; `uiLimits.ts`) | `planPreview.minChars` | `1400` |
+| | `planPreview.minSteps` | `8` |
+| | `approval.mcpArgsPreviewMaxChars` | `500` |
+| | `statusBar.priority` | `100` |
 
 ## 5. Author config (the `.md` files)
 

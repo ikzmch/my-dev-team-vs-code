@@ -28,7 +28,7 @@ import { handleModelChatCommand } from './modelCommands';
 import { PlanPreview, formatPlanDocument, isBigPlan } from './planPreview';
 import { environment } from '../config/environment';
 import { settings } from '../config/settings';
-import { messages } from '../config/messages';
+import { messages, truncateForDisplay } from '../config/messages';
 
 export const PARTICIPANT_ID = 'myDevTeam.agent';
 
@@ -351,11 +351,6 @@ export class ChatPlanReviewer {
   }
 }
 
-function truncate(text: string, maxChars: number): string {
-  // Cap on inlined text so a huge file or reply can't blow up the prompt.
-  return text.length > maxChars ? text.slice(0, maxChars) + '\n. . . (truncated)' : text;
-}
-
 /**
  * Convert the chat session's prior turns into run-request history turns, so a
  * follow-up ("now rename it too") reaches the agents with the conversation
@@ -397,7 +392,7 @@ function collectHistory(
       const prompt = turn.command ? `/${turn.command} ${turn.prompt}` : turn.prompt;
       turns.push({
         role: 'user',
-        text: truncate(prompt, settings.history.maxTurnChars),
+        text: truncateForDisplay(prompt, settings.history.maxTurnChars),
       });
     } else if (turn instanceof vscode.ChatResponseTurn) {
       const metadata = turn.result?.metadata as Partial<TurnMetadata> | undefined;
@@ -420,7 +415,7 @@ function collectHistory(
       if (text.trim()) {
         turns.push({
           role: 'assistant',
-          text: truncate(text, settings.history.maxTurnChars),
+          text: truncateForDisplay(text, settings.history.maxTurnChars),
         });
       }
     }

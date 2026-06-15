@@ -9,6 +9,7 @@
 import * as vscode from 'vscode';
 import { ProjectInstructions } from '../protocol/types';
 import { settings } from '../config/settings';
+import { truncateForDisplay } from '../config/messages';
 
 /**
  * Resolve the workspace's project instructions: probe the configured file
@@ -35,10 +36,7 @@ export async function collectInstructions(): Promise<ProjectInstructions | undef
     if (!text.trim()) {
       continue;
     }
-    const max = settings.instructions.maxChars;
-    if (text.length > max) {
-      text = text.slice(0, max) + '\n. . . (truncated)';
-    }
+    text = truncateForDisplay(text, settings.instructions.maxChars);
     return { source: name, text };
   }
   return undefined;

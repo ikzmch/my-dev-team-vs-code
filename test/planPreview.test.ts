@@ -1,10 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  PlanPreview,
-  PLAN_PREVIEW_MIN_STEPS,
-  formatPlanDocument,
-  isBigPlan,
-} from '../src/ui/planPreview';
+import { PlanPreview, formatPlanDocument, isBigPlan } from '../src/ui/planPreview';
+import { uiLimits } from '../src/config/uiLimits';
 import { Plan } from '../src/protocol/types';
 import {
   __reset,
@@ -82,7 +78,7 @@ describe('isBigPlan', () => {
   });
 
   it('is true when the plan has many steps', () => {
-    const steps = Array.from({ length: PLAN_PREVIEW_MIN_STEPS }, (_, i) => ({
+    const steps = Array.from({ length: uiLimits.planPreview.minSteps }, (_, i) => ({
       title: `Step ${i}`,
       detail: 'do a thing',
     }));
