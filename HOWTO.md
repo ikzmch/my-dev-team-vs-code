@@ -15,6 +15,13 @@ leaves your machine; if you prefer, you can also point it at a cloud model
 (OpenAI, Anthropic, or Groq) by adding an API key - see
 [Choosing a model](#4-choosing-a-model).
 
+It is meant to work alongside GitHub Copilot, not just replace it (though you
+can use it as a replacement if you want). Because it sits in the same chat
+panel and can run on a free local model, it is a handy companion: send the
+quick, throwaway, or exploratory questions to `@devteam` so you do not burn
+through your Copilot budget on them, and when that budget is used up and
+Copilot chat stops responding, `@devteam` keeps answering.
+
 ## 1. What you need
 
 - **VS Code** 1.95 or newer

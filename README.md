@@ -8,8 +8,21 @@ apply directly to your Git-backed workspace). It runs on **local models** via
 [Ollama](https://ollama.com) by default - nothing leaves your machine - and can
 optionally use **cloud models** (OpenAI, Anthropic, Groq) when you add an API key.
 
+It is built to **work alongside GitHub Copilot, not just replace it** (though
+replacing it is one supported scenario). Sitting in the same chat panel, it
+gives you a free local fallback: send the "dummy" or exploratory questions to a
+local model so you do not spend your Copilot budget on them, and when that
+budget runs out and Copilot chat is disabled, `@devteam` is still there to
+answer.
+
 ## Highlights
 
+- **Complements Copilot, on your budget.** Live in the same VS Code chat next
+  to GitHub Copilot rather than instead of it. Route the cheap, throwaway, and
+  exploratory questions to a free local model to preserve your Copilot
+  allowance, and keep getting answers when that allowance is spent and Copilot
+  chat goes dark. Replacing Copilot outright is still a supported path - it is
+  just not the only one.
 - **Native chat experience.** No custom UI to learn: attachments,
   conversation follow-ups, slash commands (`/explain`, `/review`, `/plan`,
   `/do`, `/fix`, `/test`, `/compact`, `/clear`, `/model`), and 👍/👎 feedback all
