@@ -31,6 +31,10 @@ import {
   SELECT_MODEL_COMMAND_ID,
   SET_API_KEY_COMMAND_ID,
 } from './modelCommands';
+import {
+  currentVerbosityLabel,
+  SELECT_VERBOSITY_COMMAND_ID,
+} from './verbosityCommands';
 import { SHOW_USAGE_COMMAND_ID } from './usageView';
 
 /** Command id the status-bar button fires to open its menu. */
@@ -120,6 +124,11 @@ export class StatusBar {
           this.session.hasEstimates
         ),
         command: SHOW_USAGE_COMMAND_ID,
+      },
+      {
+        // Read fresh at open time: verbosity is a plain setting, no live state.
+        label: messages.status.menuVerbosity(currentVerbosityLabel()),
+        command: SELECT_VERBOSITY_COMMAND_ID,
       },
     ];
     const picked = await vscode.window.showQuickPick(items, {

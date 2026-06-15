@@ -23,11 +23,17 @@ import { formatTokenCount, sumUsage } from '../client/usageStats';
 import { collectInstructions } from '../client/instructions';
 import { collectSkills } from '../client/skills';
 import { collectReferences } from '../client/references';
-import { CLEAR_COMMAND, COMPACT_COMMAND, MODEL_COMMAND } from '../config/clientCommands';
+import {
+  CLEAR_COMMAND,
+  COMPACT_COMMAND,
+  MODEL_COMMAND,
+  VERBOSE_COMMAND,
+} from '../config/clientCommands';
 import { handleModelChatCommand } from './modelCommands';
+import { handleVerbosityChatCommand } from './verbosityCommands';
 import { PlanPreview, formatPlanDocument, isBigPlan } from './planPreview';
 import { environment } from '../config/environment';
-import { settings } from '../config/settings';
+import { settings, Verbosity } from '../config/settings';
 import { messages, truncateForDisplay } from '../config/messages';
 
 export const PARTICIPANT_ID = 'myDevTeam.agent';
@@ -433,8 +439,14 @@ function collectHistory(
  * growing snapshots prefix-extensions of each other - exactly what the
  * append-only chat stream needs. With `done` true it renders the full
  * checklist.
+ *
+ * `mode` controls how much is shown: `verbose` renders the summary, each step's
+ * title and detail, and the planner's complexity; `default` renders only the
+ * summary and the step titles (no per-step detail, no complexity line). The mode
+ * is fixed for the whole render, so successive renders stay prefix-extensions of
+ * one another within a run.
  */
-function formatPlan(plan: PartialPlan, done: boolean): string {
+function formatPlan(plan: PartialPlan, done: boolean, mode: Verbosity): string {
   if (plan.summary === undefined) {
     return '';
   }
@@ -451,6 +463,15 @@ function formatPlan(plan: PartialPlan, done: boolean): string {
       return text;
     }
     text += `${i + 1}. **${step.title}`;
+    // In default mode the detail is never shown, so the title is complete as soon
+    // as it is present: close the bold immediately and move to the next step.
+    if (mode === 'default') {
+      text += '**';
+      if (i < steps.length - 1) {
+        text += '\n';
+      }
+      continue;
+    }
     // The title is complete once the detail field has started; withhold the
     // closing bold marker until then so streamed renders stay prefix-extensions.
     if (step.detail === undefined && !done) {
@@ -469,7 +490,8 @@ function formatPlan(plan: PartialPlan, done: boolean): string {
   // a value that streams in after the steps (or only at finish) never breaks the
   // prefix-extension the chat stream relies on. Only reached once every step is
   // complete (the loop ran to the end), i.e. when `done` or execution started.
-  if (plan.complexity !== undefined) {
+  // Verbose only - the terser default mode omits it.
+  if (mode === 'verbose' && plan.complexity !== undefined) {
     text += messages.plan.complexity(plan.complexity);
   }
   return text;
@@ -558,12 +580,28 @@ function formatSummary(summary: PartialSummary, done: boolean): string {
  * Render the reply as chat markdown. Used both for in-flight snapshots
  * (`done` false) and for the final result (`done` true), so the streamed
  * prefix and the finished reply can never drift apart. Exported for tests.
+ *
+ * `mode` controls how much each agent's block shows (defaults to the shipped
+ * `verbose`): in `verbose` triage shows intent, reason, and complexity and the
+ * plan shows step details; in `default` triage shows only the intent and the
+ * plan shows summary and step titles. A pure rendering choice - the full reply
+ * data is the same in both modes.
  */
-export function renderReply(reply: ReplyProgress | Reply, done: boolean): string {
-  // The complexity shown is the planner's, rendered inside the plan block (see
-  // formatPlan) rather than here - so the value never changes after it is first
-  // emitted, keeping streamed renders prefix-extensions of one another.
-  let text = messages.triage.block(reply.intent, reply.reason);
+export function renderReply(
+  reply: ReplyProgress | Reply,
+  done: boolean,
+  mode: Verbosity = 'verbose'
+): string {
+  // The detected intent is shown in both modes; the reason and triage's
+  // complexity are verbose-only. (The complexity here is triage's pre-exploration
+  // read; the planner's post-exploration one rides inside the plan block.)
+  let text = messages.triage.intent(reply.intent);
+  if (mode === 'verbose') {
+    text += messages.triage.reason(reply.reason);
+    if (reply.complexity !== undefined) {
+      text += messages.triage.complexity(reply.complexity);
+    }
+  }
   // The model line arrives just after triage (the model-selected event), so it
   // is appended right behind the triage block - keeping streamed renders
   // prefix-extensions of one another - and ahead of the plan/answer.
@@ -573,7 +611,7 @@ export function renderReply(reply: ReplyProgress | Reply, done: boolean): string
   if (reply.plan) {
     // Once execution output exists the plan is necessarily complete, so it
     // can be rendered unconservatively even while the run is still going.
-    text += formatPlan(reply.plan, done || reply.execution !== undefined);
+    text += formatPlan(reply.plan, done || reply.execution !== undefined, mode);
     if (reply.execution) {
       text += '\n\n' + formatExecution(reply.execution, reply.plan, done);
       // The summary (when present) streams in after the transcript; its header
@@ -760,6 +798,19 @@ export function createHandler(
       return { metadata };
     }
 
+    // /verbose is also client-side and starts no run: the output mode is a pure
+    // rendering setting the renderer reads live, so picking it is a setting write
+    // plus a chat confirmation (the picker or the typed argument).
+    if (request.command === VERBOSE_COMMAND) {
+      await handleVerbosityChatCommand(request.prompt, stream);
+      const metadata: TurnMetadata = {
+        command: VERBOSE_COMMAND,
+        runId: randomUUID(),
+        outcome: 'ok',
+      };
+      return { metadata };
+    }
+
     // Resolve the workspace's standing instruction file (AGENTS.md/CLAUDE.md),
     // the request's references (attached files/selections/symbols plus inline
     // #codebase/#changes markers), and the prior turns; the engine folds them
@@ -868,7 +919,7 @@ export function createHandler(
         return;
       }
       try {
-        streamer.update(renderReply(progress, false));
+        streamer.update(renderReply(progress, false, settings.verbosity));
       } catch {
         // The stream is closed; the result handling below still runs.
       }
@@ -1047,7 +1098,7 @@ export function createHandler(
     recordRun('ok');
     if (!token.isCancellationRequested) {
       // Emits whatever the streaming path has not already rendered.
-      streamer.finish(renderReply(reply, true));
+      streamer.finish(renderReply(reply, true, settings.verbosity));
       emitChangeLine();
       emitTokenLine();
     }

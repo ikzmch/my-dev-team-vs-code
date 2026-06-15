@@ -256,6 +256,35 @@ export const messages = {
     /** The "open usage report" row, showing this session's running token total. */
     menuUsage: (total: string, estimated: boolean) =>
       `$(symbol-number) Token usage  -  ${estimated ? '~' : ''}${total} this session`,
+    /** The "change output verbosity" row, showing the current mode. */
+    menuVerbosity: (label: string) => `$(list-selection) Output mode  -  current: ${label}`,
+  },
+
+  /**
+   * Copy for the output-verbosity switcher: the `/verbose` chat command, the
+   * command-palette/status-bar quick pick, and the chat confirmations. The mode
+   * controls only how much of each agent's block the chat renders (see the
+   * `Verbosity` type); the engine is untouched.
+   */
+  verbosity: {
+    /** Human label for each mode, used in the picker and the status-bar menu. */
+    label: (mode: 'default' | 'verbose') =>
+      mode === 'verbose' ? 'Verbose' : 'Default',
+    /** Detail line under each mode in the picker. */
+    detail: (mode: 'default' | 'verbose') =>
+      mode === 'verbose'
+        ? 'Show everything: triage intent, reason, and complexity; full plan with step details.'
+        : 'Terser: triage intent only; plan summary and step titles, no details.',
+    /** Suffix marking the mode that is currently selected, in the picker. */
+    currentSuffix: ' (current)',
+    /** Placeholder atop the verbosity quick pick. */
+    pickerPlaceholder: 'Choose how much @devteam shows in the chat',
+    /** Reply to a `/verbose` turn (or a menu pick) confirming the new mode. */
+    confirmation: (label: string) =>
+      `Output mode set to **${label}**. It applies to your next @devteam reply.`,
+    /** The reply when `/verbose <arg>` named something other than a known mode. */
+    unknown: (arg: string) =>
+      `No output mode "${arg}". Use /verbose with no argument to pick, or "default"/"verbose".`,
   },
 
   /**
@@ -537,12 +566,19 @@ export const messages = {
   },
 
   triage: {
-    // Complexity is no longer shown here: the planner's (post-exploration)
-    // judgement is the one surfaced, and it rides in the plan block (see
-    // `plan.complexity`) so the value never changes after it is first rendered -
-    // the append-only chat stream needs every render to extend the last.
-    block: (intent: string, reason: string) =>
-      `**Detected intent:** \`${intent}\`\n\n` + `**Reason:** ${reason}\n\n`,
+    /**
+     * The detected intent line - the routing decision, shown in both modes (the
+     * one piece the terse `default` mode keeps).
+     */
+    intent: (intent: string) => `**Detected intent:** \`${intent}\`\n\n`,
+    /** Triage's justification, shown only in `verbose` mode. */
+    reason: (reason: string) => `**Reason:** ${reason}\n\n`,
+    /**
+     * Triage's complexity judgement, shown only in `verbose` mode. This is
+     * triage's pre-exploration read; the planner's post-exploration one rides in
+     * the plan block (see `plan.complexity`).
+     */
+    complexity: (complexity: string) => `**Complexity:** \`${complexity}\`\n\n`,
     error: (detail: string) => `**Triage error:** ${detail}\n\n`,
   },
 

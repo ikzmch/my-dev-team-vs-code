@@ -980,34 +980,83 @@ describe('createHandler', () => {
 });
 
 describe('renderReply plan complexity', () => {
-  it('shows the planner complexity in the plan block, not the triage block', () => {
+  it('shows triage complexity in the triage block and planner complexity in the plan block (verbose)', () => {
     const reply: Reply = {
       intent: 'planning',
       reason: 'needs steps',
-      complexity: 'moderate', // triage's value: must not be the one rendered
-      plan: { ...aPlan, complexity: 'complex' },
+      complexity: 'moderate', // triage's pre-exploration read
+      plan: { ...aPlan, complexity: 'complex' }, // planner's post-exploration read
       execution: anExecution,
     };
-    const text = renderReply(reply, true);
-    // The shown complexity is the planner's, and it sits after the plan steps
-    // (before the execution), never inside the triage block.
-    expect(text).toContain('**Complexity:** `complex`');
-    expect(text).not.toContain('`moderate`');
-    const triageEnd = text.indexOf('**Reason:**');
-    const complexityAt = text.indexOf('**Complexity:**');
+    const text = renderReply(reply, true); // defaults to verbose
+    // Both are shown in verbose mode: triage's sits in the triage block (after
+    // Reason, before the plan); the planner's sits after the plan steps.
+    const reasonAt = text.indexOf('**Reason:**');
     const planAt = text.indexOf('**Plan:**');
-    expect(complexityAt).toBeGreaterThan(planAt);
-    expect(complexityAt).toBeGreaterThan(triageEnd);
+    const triageComplexityAt = text.indexOf('**Complexity:** `moderate`');
+    const planComplexityAt = text.indexOf('**Complexity:** `complex`');
+    expect(triageComplexityAt).toBeGreaterThan(reasonAt);
+    expect(triageComplexityAt).toBeLessThan(planAt);
+    expect(planComplexityAt).toBeGreaterThan(planAt);
   });
 
-  it('omits the complexity line when the plan carries none', () => {
+  it('omits the planner complexity line when the plan carries none', () => {
     const reply: Reply = {
       intent: 'planning',
       reason: 'needs steps',
-      plan: aPlan, // no complexity
+      plan: aPlan, // no complexity (and no triage complexity either)
       execution: anExecution,
     };
     expect(renderReply(reply, true)).not.toContain('**Complexity:**');
+  });
+});
+
+describe('renderReply verbosity modes', () => {
+  const reply: Reply = {
+    intent: 'planning',
+    reason: 'needs steps',
+    complexity: 'moderate', // triage's read
+    plan: { ...aPlan, complexity: 'complex' }, // planner's read
+    execution: anExecution,
+  };
+
+  it('verbose shows intent, reason, both complexities, and step details', () => {
+    const text = renderReply(reply, true, 'verbose');
+    expect(text).toContain('**Detected intent:** `planning`');
+    expect(text).toContain('**Reason:** needs steps');
+    expect(text).toContain('**Complexity:** `moderate`'); // triage's
+    expect(text).toContain('**Complexity:** `complex`'); // planner's
+    // The step detail is shown after the title.
+    expect(text).toContain('1. **Find the file** - locate it');
+  });
+
+  it('default shows only the intent and step titles - no reason, complexity, or details', () => {
+    const text = renderReply(reply, true, 'default');
+    expect(text).toContain('**Detected intent:** `planning`');
+    expect(text).not.toContain('**Reason:**');
+    expect(text).not.toContain('**Complexity:**');
+    // The plan summary and bare step titles still render; the per-step detail
+    // does not (no " - locate it" after the title).
+    expect(text).toContain('**Plan:** Add a feature');
+    expect(text).toContain('1. **Find the file**');
+    expect(text).not.toContain('locate it');
+    expect(text).not.toContain('reason about it');
+  });
+
+  it('default keeps streamed renders prefix-extensions of one another', () => {
+    const progress = (plan: PartialPlan): ReplyProgress => ({
+      intent: 'planning',
+      reason: 'needs steps',
+      plan,
+    });
+    const renders = [
+      renderReply(progress({ summary: 'Add a feature', steps: [] }), false, 'default'),
+      renderReply(progress({ summary: 'Add a feature', steps: [{ title: 'Find the file' }] }), false, 'default'),
+      renderReply(progress({ ...aPlan, complexity: 'complex' }), false, 'default'),
+    ];
+    for (let i = 1; i < renders.length; i++) {
+      expect(renders[i].startsWith(renders[i - 1])).toBe(true);
+    }
   });
 });
 

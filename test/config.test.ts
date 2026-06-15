@@ -29,10 +29,10 @@ beforeEach(() => {
 });
 
 describe('messages templates', () => {
-  it('renders the intent block with the intent and reason', () => {
-    const block = messages.triage.block('oneshot', 'because');
-    expect(block).toContain('**Detected intent:** `oneshot`');
-    expect(block).toContain('**Reason:** because');
+  it('renders the triage pieces (intent, reason, complexity) separately', () => {
+    expect(messages.triage.intent('oneshot')).toContain('**Detected intent:** `oneshot`');
+    expect(messages.triage.reason('because')).toContain('**Reason:** because');
+    expect(messages.triage.complexity('moderate')).toContain('**Complexity:** `moderate`');
   });
 
   it('renders the step error templates from the protocol detail alone', () => {

@@ -2,7 +2,7 @@
   "name": "my-dev-team",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.51.0",
+  "version": "0.52.0",
   "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,
@@ -96,6 +96,19 @@
             "Never open a preview: review the plan inline in the chat only."
           ],
           "description": "When a plan paused for approval also opens as a read-only preview in the editor, so you can read the full plan and its design decisions beside the chat. The Approve/Cancel/Revise choices stay in the chat. Only applies when myDevTeam.planApproval pauses for approval."
+        },
+        "myDevTeam.verbosity": {
+          "type": "string",
+          "enum": [
+            "verbose",
+            "default"
+          ],
+          "default": "verbose",
+          "enumDescriptions": [
+            "Show everything: triage's detected intent, its reason and complexity; the full plan with each step's detail and the planner's complexity.",
+            "Terser output: triage shows only the detected intent; the plan shows its summary and step titles, without per-step details or complexity."
+          ],
+          "description": "How much @devteam shows in the chat. Verbose (the default) shows the agents' full reasoning; Default is a terser view. A pure display choice - it changes nothing the agents do. Switch it with the /verbose command or the My Dev Team status-bar menu."
         },
         "myDevTeam.disabledProviders": {
           "type": "array",
@@ -301,6 +314,11 @@
         "category": "My Dev Team"
       },
       {
+        "command": "myDevTeam.selectVerbosity",
+        "title": "Select Output Mode",
+        "category": "My Dev Team"
+      },
+      {
         "command": "myDevTeam.showUsage",
         "title": "Show Token Usage",
         "category": "My Dev Team"
@@ -330,6 +348,10 @@
           {
             "name": "model",
             "description": "Choose the model for the whole team or a single agent (or Auto to route by capability)."
+          },
+          {
+            "name": "verbose",
+            "description": "Choose how much @devteam shows in the chat: verbose (everything) or default (terser)."
           },
           {
             "name": "compact",

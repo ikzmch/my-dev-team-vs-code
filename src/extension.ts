@@ -21,6 +21,7 @@ import {
   SELECT_MODEL_COMMAND_ID,
   SET_API_KEY_COMMAND_ID,
 } from './ui/modelCommands';
+import { pickVerbosity, SELECT_VERBOSITY_COMMAND_ID } from './ui/verbosityCommands';
 import { StatusBar, STATUS_MENU_COMMAND_ID } from './ui/statusBar';
 import { runShowUsageCommand, SHOW_USAGE_COMMAND_ID } from './ui/usageView';
 import { registerEditorEntryPoints } from './ui/editorEntryPoints';
@@ -134,6 +135,10 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(SET_API_KEY_COMMAND_ID, () =>
       runSetApiKeyCommand(context.secrets)
     ),
+    // Output verbosity: a pure rendering setting the chat renderer reads live,
+    // so the picker is just a setting write (no status-bar refresh needed - the
+    // menu reads the mode fresh when it opens).
+    vscode.commands.registerCommand(SELECT_VERBOSITY_COMMAND_ID, () => pickVerbosity()),
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('myDevTeam.model')) {
         void statusBar.refresh();

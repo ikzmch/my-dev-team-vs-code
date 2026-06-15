@@ -22,6 +22,10 @@ export const clientCommands = [
     name: 'model',
     description: 'Choose the model for the whole team or a single agent (or Auto to route by capability).',
   },
+  {
+    name: 'verbose',
+    description: 'Choose how much @devteam shows in the chat: verbose (everything) or default (terser).',
+  },
 ] as const;
 
 /** The /clear command: later turns drop all history before its marker. */
@@ -29,6 +33,9 @@ export const CLEAR_COMMAND = clientCommands[0].name;
 
 /** The /model command: pick the model (or set it from an argument); starts no run. */
 export const MODEL_COMMAND = clientCommands[1].name;
+
+/** The /verbose command: pick the output mode (or set it from an argument); starts no run. */
+export const VERBOSE_COMMAND = clientCommands[2].name;
 
 /**
  * Name of the engine command whose successful reply (the summary) replaces

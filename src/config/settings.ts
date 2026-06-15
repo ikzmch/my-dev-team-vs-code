@@ -18,6 +18,16 @@ import { RuntimeConfig } from './runtimeConfig';
 const CONFIG_SECTION = 'myDevTeam';
 
 /**
+ * How much the chat renders for each agent's block (`myDevTeam.verbosity`):
+ * `verbose` (the shipped default) shows everything the agents produce; `default`
+ * is the terser mode (triage shows only the detected intent; the plan shows the
+ * summary and step titles, no per-step detail or complexity). A pure rendering
+ * choice - the engine never sees it (the full data crosses the protocol either
+ * way), so it does not ride the runtime-config seam.
+ */
+export type Verbosity = 'default' | 'verbose';
+
+/**
  * One configured MCP server (stdio transport): a name (used to namespace its
  * tools and to label its approval prompts) plus the command, arguments, and
  * environment to launch it with. Parsed from the `myDevTeam.mcp.servers` object
@@ -42,6 +52,7 @@ export const defaults = {
   complexityRouting: true,
   planApproval: 'auto' as const,
   planApprovalPreview: 'auto' as const,
+  verbosity: 'verbose' as Verbosity,
   approval: {
     fileChanges: false,
   },
@@ -237,6 +248,20 @@ export const settings = {
     return value === 'always' || value === 'never'
       ? value
       : defaults.planApprovalPreview;
+  },
+
+  /**
+   * How verbosely the chat renders each agent's block (`myDevTeam.verbosity`):
+   * `verbose` (the shipped default) shows everything; `default` is terser (see
+   * the `Verbosity` type). Client-only - the engine never sees it, the full data
+   * crosses the protocol regardless and the renderer filters. The
+   * `/verbose` command and the status-bar menu write this setting. Read live, so
+   * switching takes effect on the next reply; only the literal `default` switches
+   * off `verbose`.
+   */
+  get verbosity(): Verbosity {
+    const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<unknown>('verbosity');
+    return value === 'default' ? 'default' : defaults.verbosity;
   },
 
   /**

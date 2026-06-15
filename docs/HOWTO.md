@@ -342,6 +342,7 @@ want:
 | `/compact` | Summarize the conversation so far; the summary then stands in for it in future turns |
 | `/clear`   | Start fresh: drop the conversation so far from future requests      |
 | `/model`   | Choose the model (or Auto); see [Choosing a model](#4-choosing-a-model) |
+| `/verbose` | Choose how much each reply shows: `verbose` (everything) or `default` (terser); see [Settings](#7-settings) |
 
 Commands work in follow-ups too: `/explain what you just did` refers back to
 the earlier turns.
@@ -458,6 +459,7 @@ likely to touch:
 | `myDevTeam.complexityRouting`    | `true`                   | Let Auto size the model to how hard the task is (cheaper for simple work, stronger for complex). Turn off to ignore difficulty; a pinned model is never affected |
 | `myDevTeam.planApproval`         | `auto`                   | When to pause for you to approve a plan before it runs: `auto` (complex plans only), `always` (every plan), or `never`. At the prompt you can Approve, Cancel, or Revise (comment and redraft) |
 | `myDevTeam.planApproval.preview` | `auto`                   | When a paused plan also opens as a read-only preview in the editor: `auto` (only a big plan), `always` (every plan it pauses on), or `never` (review in the chat only). The Approve/Cancel/Revise buttons always stay in the chat |
+| `myDevTeam.verbosity`            | `verbose`                | How much each reply shows: `verbose` (the default - the agent's full reasoning: triage's intent, reason and complexity, and the plan with step details) or `default` (terser - the detected intent, and the plan's summary and step titles only). Easiest to switch with `/verbose` or the **My Dev Team** status button's menu. A display choice only - it changes nothing the agents do |
 | `myDevTeam.disabledProviders`    | `[]`                     | Providers to never use (e.g. `["anthropic"]`); shown disabled in `/model` and never run, even if pinned or keyed |
 | `myDevTeam.disabledModels`       | `[]`                     | Individual models to never use (e.g. `["qwen3-coder"]`); same as above but per model |
 | `myDevTeam.ollama.endpoint`      | unset (uses `http://localhost:11434`) | Where your Ollama server listens. Leave blank for the default your install ships with (localhost if none); set it to point at your own server |

@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.52.0] - 2026-06-16
+
+### Added
+
+- **Verbose and terse output modes.** A new `myDevTeam.verbosity` setting
+  controls how much each reply shows: `verbose` (the shipped default) shows
+  triage's intent, reason, and complexity and the full plan with step details;
+  `default` is terser - triage shows only the detected intent and the plan shows
+  its summary and step titles. Switch it with the new `/verbose` command, the
+  "Select Output Mode" command, or the My Dev Team status-bar menu. It is a pure
+  display choice and changes nothing the agents do.
+
 ## [0.51.0] - 2026-06-16
 
 ### Changed
