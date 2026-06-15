@@ -8,13 +8,17 @@
  * - `sidecar`: the engine runs in a forked Node child (`dist/sidecar.js`) and
  *   talks over the sidecar protocol; the client keeps the tools, approval, and
  *   rendering. The child is spawned lazily on first use and reused, its config
- *   refreshed when the user changes a setting, and killed on deactivate.
+ *   refreshed when the user changes a setting, and killed on deactivate. If the
+ *   child crashes, the memoised instance is dropped so the next request forks a
+ *   fresh one; after too many crashes in a short window the provider gives up,
+ *   warns, and falls back to local until the user switches the engine.
  * - `remote`: not built yet; warns once and falls back to local.
  */
 import * as vscode from 'vscode';
 import { Engine } from '../protocol/engine';
 import { LocalEngine } from '../engine/localEngine';
-import { SidecarEngine, createForkedChannel } from './sidecarEngine';
+import { SidecarEngine, createForkedChannel, traceChannel } from './sidecarEngine';
+import { SidecarChannel } from '../sidecar/transport';
 import { providersWithStoredKeyButNoEnv } from './secrets';
 import { providerDescriptor, providerLabels } from '../config/providers';
 import { settings, runtimeConfigSnapshot } from '../config/settings';
@@ -40,6 +44,37 @@ export function createEngineProvider(sidecarScriptPath: string): EngineProvider 
   let sidecar: SidecarEngine | undefined;
   let warnedRemote = false;
   let warnedSidecarSecrets = false;
+  // Respawn bookkeeping: the timestamps of recent child crashes, and whether we
+  // have given up reforking after too many in the window. Re-armed when the user
+  // switches the engine away from sidecar.
+  let sidecarCrashes: number[] = [];
+  let sidecarBlocked = false;
+  let warnedSidecarCrashed = false;
+
+  // Fork a fresh child and wrap it in a SidecarEngine. On close (crash/exit) the
+  // memoised instance is dropped so the next getEngine() forks again; once the
+  // crashes within the window exceed the cap we stop and fall back to local.
+  const buildSidecar = (): SidecarEngine => {
+    let channel: SidecarChannel = createForkedChannel(sidecarScriptPath);
+    if (settings.telemetry.evalLogEnabled) {
+      channel = traceChannel(channel, (stats) =>
+        console.log(
+          `[My Dev Team] sidecar channel closed: sent ${stats.sent} msg / ${stats.bytesSent} B, ` +
+            `received ${stats.received} msg / ${stats.bytesReceived} B`
+        )
+      );
+    }
+    channel.onClose(() => {
+      sidecar = undefined;
+      const now = Date.now();
+      sidecarCrashes = sidecarCrashes.filter((t) => now - t < settings.sidecar.respawnWindowMs);
+      sidecarCrashes.push(now);
+      if (sidecarCrashes.length >= settings.sidecar.maxRespawns) {
+        sidecarBlocked = true;
+      }
+    });
+    return new SidecarEngine(channel, runtimeConfigSnapshot);
+  };
 
   // The sidecar child reads cloud keys from the environment only, so a key the
   // user set via "Set API Key" (SecretStorage) silently stops working under it.
@@ -64,16 +99,25 @@ export function createEngineProvider(sidecarScriptPath: string): EngineProvider 
     const choice = settings.engine;
     if (choice !== 'sidecar') {
       warnedSidecarSecrets = false;
+      // Re-arm the crash give-up: switching away and back is the user's "try
+      // again", same as the other one-time warnings.
+      sidecarBlocked = false;
+      warnedSidecarCrashed = false;
+      sidecarCrashes = [];
     }
     if (choice !== 'remote') {
       warnedRemote = false;
     }
     if (choice === 'sidecar') {
       warnSidecarSecrets();
-      return (sidecar ??= new SidecarEngine(
-        createForkedChannel(sidecarScriptPath),
-        runtimeConfigSnapshot
-      ));
+      if (sidecarBlocked) {
+        if (!warnedSidecarCrashed) {
+          warnedSidecarCrashed = true;
+          void vscode.window.showWarningMessage(messages.engine.sidecarCrashed);
+        }
+        return (local ??= new LocalEngine());
+      }
+      return (sidecar ??= buildSidecar());
     }
     if (choice === 'remote' && !warnedRemote) {
       void vscode.window.showWarningMessage(messages.engine.remoteUnavailable);

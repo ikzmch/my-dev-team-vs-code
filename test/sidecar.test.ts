@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { SidecarEngine } from '../src/client/sidecarEngine';
+import { PassThrough } from 'node:stream';
+import {
+  SidecarEngine,
+  createStreamChannel,
+  traceChannel,
+  ChannelStats,
+} from '../src/client/sidecarEngine';
 import { createChildRuntime } from '../src/sidecar/childRuntime';
 import { SidecarChannel, ParentMessage, ChildMessage } from '../src/sidecar/transport';
 import {
@@ -191,5 +197,224 @@ describe('sidecar round trip', () => {
       { id: 'auto', label: 'Auto', available: true },
     ]);
     await expect(sidecar.startupWarnings()).resolves.toEqual(['ollama down']);
+  });
+});
+
+/**
+ * Drive a SidecarEngine over a hand-controlled channel: capture what it posts,
+ * and feed it child messages and a close on demand. Lets the readiness, version,
+ * and timeout behaviour be exercised without a child runtime sending `ready`.
+ */
+function manual(): {
+  sidecar: SidecarEngine;
+  posted: ParentMessage[];
+  emit: (m: ChildMessage) => void;
+  close: (reason: string) => void;
+} {
+  let onMsg: (m: ChildMessage) => void = () => {};
+  let onClose: (r: string) => void = () => {};
+  const posted: ParentMessage[] = [];
+  const channel: SidecarChannel = {
+    post: (m) => posted.push(m),
+    onMessage: (h) => {
+      onMsg = h;
+    },
+    onClose: (h) => {
+      onClose = h;
+    },
+    dispose: () => {},
+  };
+  const getConfig = (): RuntimeConfig =>
+    ({ planApproval: 'auto' } as unknown as RuntimeConfig);
+  return {
+    sidecar: new SidecarEngine(channel, getConfig),
+    posted,
+    emit: (m) => onMsg(m),
+    close: (r) => onClose(r),
+  };
+}
+
+const ready = (version: number): ChildMessage => ({
+  t: 'ready',
+  protocolVersion: version,
+  kind: 'local',
+});
+
+function startBare(sidecar: SidecarEngine): Promise<Reply> {
+  return sidecar.startRun(request(), {
+    onEvent: () => {},
+    toolHost: { tools: [], execute: async () => '' },
+  }).result;
+}
+
+describe('sidecar readiness and version handshake', () => {
+  it('holds the first run until the child reports ready', async () => {
+    const { sidecar, posted, emit } = manual();
+    void startBare(sidecar);
+    await Promise.resolve();
+    // Config was sent, but no run started yet - the child has not said it is up.
+    expect(posted.some((m) => m.t === 'start')).toBe(false);
+
+    emit(ready(2));
+    await Promise.resolve();
+    expect(posted.some((m) => m.t === 'start')).toBe(true);
+  });
+
+  it('rejects a run when the child speaks a different protocol version', async () => {
+    const { sidecar, posted, emit } = manual();
+    const result = startBare(sidecar);
+    emit(ready(1));
+    const err = await result.catch((e) => e as RunFailedError);
+    expect(err).toBeInstanceOf(RunFailedError);
+    expect(err.message).toContain('out of date');
+    // Never started the run against a mismatched child.
+    expect(posted.some((m) => m.t === 'start')).toBe(false);
+  });
+
+  it('fails the first run if the child never reports ready', async () => {
+    vi.useFakeTimers();
+    try {
+      const { sidecar } = manual();
+      const result = startBare(sidecar);
+      const settled = result.catch((e) => e as RunFailedError);
+      await vi.advanceTimersByTimeAsync(11_000);
+      const err = await settled;
+      expect(err).toBeInstanceOf(RunFailedError);
+      expect(err.message).toContain('did not start in time');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not start a run that was cancelled before the child was ready', async () => {
+    const { sidecar, posted, emit } = manual();
+    const handle = sidecar.startRun(request(), {
+      onEvent: () => {},
+      toolHost: { tools: [], execute: async () => '' },
+    });
+    handle.cancel();
+    emit(ready(2));
+    await expect(handle.result).rejects.toBeInstanceOf(RunCancelledError);
+    expect(posted.some((m) => m.t === 'start')).toBe(false);
+  });
+});
+
+describe('sidecar wire timeouts and probe failures', () => {
+  it('times out a query and falls back (empty models, a startup warning)', async () => {
+    vi.useFakeTimers();
+    try {
+      const { sidecar } = manual();
+      const models = sidecar.listModels();
+      const warnings = sidecar.startupWarnings();
+      await vi.advanceTimersByTimeAsync(11_000);
+      await expect(models).resolves.toEqual([]);
+      const w = await warnings;
+      expect(w).toHaveLength(1);
+      expect(w[0]).toContain('could not reach the engine sidecar');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces a query failure as a startup warning instead of hiding it', async () => {
+    const { sidecar, posted, emit } = manual();
+    const warnings = sidecar.startupWarnings();
+    const q = posted.find((m) => m.t === 'query');
+    expect(q).toBeTruthy();
+    emit({
+      t: 'query-result',
+      queryId: (q as { queryId: string }).queryId,
+      ok: false,
+      error: 'ollama unreachable',
+    });
+    const w = await warnings;
+    expect(w).toHaveLength(1);
+    expect(w[0]).toContain('ollama unreachable');
+  });
+
+  it('fails pending runs and queries when the channel closes', async () => {
+    const { sidecar, emit, close } = manual();
+    emit(ready(2));
+    const run = startBare(sidecar);
+    const models = sidecar.listModels();
+    close('The engine sidecar exited unexpectedly (code 1).');
+    await expect(run).rejects.toBeInstanceOf(RunFailedError);
+    await expect(models).resolves.toEqual([]);
+  });
+});
+
+describe('createStreamChannel (NDJSON)', () => {
+  it('frames posts as NDJSON and parses incoming lines', async () => {
+    const out = new PassThrough();
+    const inc = new PassThrough();
+    const channel = createStreamChannel(out, inc);
+    const received: ChildMessage[] = [];
+    channel.onMessage((m) => received.push(m));
+
+    channel.post({ t: 'cancel', runId: 'run-0' });
+    const line = await new Promise<string>((r) => out.once('data', (c) => r(c.toString())));
+    expect(JSON.parse(line.trim())).toEqual({ t: 'cancel', runId: 'run-0' });
+
+    inc.write(
+      `${JSON.stringify({ t: 'event', runId: 'run-0', event: { type: 'answer-delta', text: 'hi' } })}\n`
+    );
+    await Promise.resolve();
+    expect(received).toHaveLength(1);
+    expect(received[0].t).toBe('event');
+  });
+
+  it('skips a malformed frame and still reads the next', async () => {
+    const out = new PassThrough();
+    const inc = new PassThrough();
+    const channel = createStreamChannel(out, inc);
+    const received: ChildMessage[] = [];
+    channel.onMessage((m) => received.push(m));
+    inc.write(`not json\n${JSON.stringify({ t: 'ready', protocolVersion: 2, kind: 'local' })}\n`);
+    await Promise.resolve();
+    expect(received).toHaveLength(1);
+    expect(received[0].t).toBe('ready');
+  });
+
+  it('closes when the incoming stream ends', async () => {
+    const inc = new PassThrough();
+    const channel = createStreamChannel(new PassThrough(), inc);
+    let reason = '';
+    channel.onClose((r) => {
+      reason = r;
+    });
+    inc.end();
+    await new Promise((r) => setImmediate(r));
+    expect(reason).toContain('stream ended');
+  });
+});
+
+describe('traceChannel', () => {
+  it('counts messages and bytes both ways and reports on dispose', () => {
+    const posted: ParentMessage[] = [];
+    let onMsg: (m: ChildMessage) => void = () => {};
+    const base: SidecarChannel = {
+      post: (m) => posted.push(m),
+      onMessage: (h) => {
+        onMsg = h;
+      },
+      onClose: () => {},
+      dispose: () => {},
+    };
+    let stats: ChannelStats | undefined;
+    const traced = traceChannel(base, (s) => {
+      stats = s;
+    });
+    const received: ChildMessage[] = [];
+    traced.onMessage((m) => received.push(m));
+
+    traced.post({ t: 'cancel', runId: 'r' });
+    onMsg({ t: 'ready', protocolVersion: 2, kind: 'local' });
+    traced.dispose();
+
+    expect(posted).toHaveLength(1);
+    expect(received).toHaveLength(1);
+    expect(stats).toMatchObject({ sent: 1, received: 1 });
+    expect(stats!.bytesSent).toBeGreaterThan(0);
+    expect(stats!.bytesReceived).toBeGreaterThan(0);
   });
 });

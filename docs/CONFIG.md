@@ -195,6 +195,10 @@ rebuild. They bound how much work the tools and UI do.
 | History | `history.maxTurns` | `10` |
 | | `history.maxTurnChars` | `2000` |
 | Startup | `startupProbeTimeoutMs` | `3000` |
+| Sidecar | `sidecar.queryTimeoutMs` | `10000` |
+| | `sidecar.readyTimeoutMs` | `10000` |
+| | `sidecar.respawnWindowMs` | `60000` |
+| | `sidecar.maxRespawns` | `3` |
 
 ## 5. Author config (the `.md` files)
 

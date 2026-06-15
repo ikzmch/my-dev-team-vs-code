@@ -2,7 +2,7 @@
   "name": "my-dev-team",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.47.1",
+  "version": "0.48.0",
   "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,

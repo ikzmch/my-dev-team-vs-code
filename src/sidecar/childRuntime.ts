@@ -19,7 +19,7 @@ import {
   RunCancelledError,
 } from '../protocol/engine';
 import { ToolHost } from '../protocol/toolContract';
-import { RunRequest, PlanDecision } from '../protocol/types';
+import { RunRequest, PlanDecision, PROTOCOL_VERSION } from '../protocol/types';
 import { setRuntimeConfig } from '../config/runtimeConfig';
 import { ParentMessage, ChildMessage, RunResult } from './transport';
 
@@ -49,6 +49,14 @@ export function createChildRuntime(
   makeEngine: () => Engine
 ): (msg: ParentMessage) => void {
   const engine = makeEngine();
+  // The readiness handshake: tell the parent the engine is up, which protocol it
+  // speaks, and its kind. Deferred to a microtask so the parent (which subscribes
+  // to messages as it constructs its channel) has its handler in place first -
+  // in the forked case the child starts asynchronously anyway, but the in-process
+  // test harness wires the two ends in the same tick.
+  queueMicrotask(() =>
+    post({ t: 'ready', protocolVersion: PROTOCOL_VERSION, kind: engine.kind })
+  );
   const runs = new Map<string, RunHandle>();
   const toolCalls = new Map<
     string,

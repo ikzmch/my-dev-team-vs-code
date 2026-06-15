@@ -768,6 +768,40 @@ export const settings = {
 
   /** How long the activation health check waits for Ollama, in milliseconds (config/limits.ts). */
   startupProbeTimeoutMs: limits.startupProbeTimeoutMs,
+
+  /**
+   * Bounds on the sidecar engine's wire and lifecycle (client/sidecarEngine.ts,
+   * client/engineFactory.ts). Compile-time constants: these protect the editor
+   * from a hung or crash-looping child, not something an end user tunes.
+   */
+  sidecar: {
+    /**
+     * How long a one-shot query (`listModels`/`startupWarnings`) waits for the
+     * child before rejecting, so a wedged child cannot hang the `/model` picker
+     * or the activation health check forever. On a timeout the caller falls back
+     * (an empty picker, or a "could not reach the engine" startup warning).
+     */
+    queryTimeoutMs: 10_000,
+    /**
+     * How long the parent holds the first run waiting for the child's `ready`
+     * handshake before failing it with a clear "engine did not start" message
+     * (rather than a run that hangs because the child died during module load).
+     */
+    readyTimeoutMs: 10_000,
+    /**
+     * Sliding window over which rapid child crashes are counted toward the
+     * give-up threshold. A crash older than this no longer counts, so an engine
+     * that ran fine for a while and then crashes once still gets respawned.
+     */
+    respawnWindowMs: 60_000,
+    /**
+     * How many child crashes within `respawnWindowMs` are tolerated before the
+     * provider stops reforking and falls back to the local engine (warning
+     * once), so a genuinely broken bundle cannot fork-loop. Re-armed when the
+     * user switches the engine away from `sidecar` and back.
+     */
+    maxRespawns: 3,
+  },
 };
 
 /**

@@ -7,9 +7,11 @@
  * parent (see sidecar/childRuntime.ts and client/sidecarEngine.ts).
  *
  * The Node client transports these as `child_process.fork` IPC messages
- * (structured clone, no framing); they are all plain JSON-serializable data, so
- * a non-Node client (e.g. a future JVM/Kotlin client) can instead frame them as
- * newline-delimited JSON over stdio without changing the contract.
+ * (`serialization: 'advanced'`, a real structured clone, no framing); they are
+ * all plain JSON-serializable data, so a non-Node client (e.g. a future
+ * JVM/Kotlin client) can instead frame them as newline-delimited JSON over a
+ * stream without changing the contract - which `createStreamChannel`
+ * (client/sidecarEngine.ts) does, over any writable/readable pair.
  */
 import { RunRequest, Reply, Plan, PlanDecision, Complexity } from '../protocol/types';
 import { RunEvent, RunStep } from '../protocol/events';
@@ -45,6 +47,14 @@ export type ParentMessage =
 
 /** Messages the child (engine host) sends back to the parent. */
 export type ChildMessage =
+  /**
+   * The readiness handshake: posted once when the child's engine is constructed,
+   * before any run. Carries the `PROTOCOL_VERSION` the child speaks and the
+   * engine `kind`, so the parent can hold the first run until the child is up and
+   * reject up front on a version mismatch (a stale `dist/sidecar.js`) instead of
+   * mis-serialising mid-run.
+   */
+  | { t: 'ready'; protocolVersion: number; kind: string }
   /** A run event (the engine's `onEvent`), forwarded verbatim for rendering. */
   | { t: 'event'; runId: string; event: RunEvent }
   /** The engine asks the client to execute a tool and answer with a `tool-result`. */

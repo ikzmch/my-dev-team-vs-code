@@ -12,12 +12,24 @@ vi.mock('@mastra/core/agent', () => ({
 // The sidecar branch forks a child; replace `fork` with a fake so no real
 // process spawns. Each fake child records what it was sent and can be killed.
 const { forkMock, forkedChildren } = vi.hoisted(() => {
-  const forkedChildren: { sent: unknown[]; killed: boolean }[] = [];
+  type FakeChild = {
+    sent: unknown[];
+    killed: boolean;
+    emit: (event: string, ...args: unknown[]) => void;
+  };
+  const forkedChildren: FakeChild[] = [];
   const forkMock = vi.fn(() => {
-    const child = { sent: [] as unknown[], killed: false };
+    const handlers: Record<string, (...args: unknown[]) => void> = {};
+    const child: FakeChild = {
+      sent: [] as unknown[],
+      killed: false,
+      emit: (event, ...args) => handlers[event]?.(...args),
+    };
     forkedChildren.push(child);
     return {
-      on: vi.fn(),
+      on: vi.fn((event: string, h: (...args: unknown[]) => void) => {
+        handlers[event] = h;
+      }),
       send: vi.fn((m: unknown) => child.sent.push(m)),
       kill: vi.fn(() => {
         child.killed = true;
@@ -103,6 +115,48 @@ describe('createEngineProvider', () => {
 
     provider.dispose();
     expect(forkedChildren[0].killed).toBe(true);
+  });
+
+  it('respawns a fresh child after a crash, then gives up after repeated crashes', () => {
+    __setConfig('myDevTeam.engine', 'sidecar');
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
+
+    expect(getEngine().kind).toBe('sidecar'); // fork 1
+    forkedChildren[0].emit('exit', 1, null); // crash
+    // The memoised instance was dropped, so the next request forks afresh.
+    expect(getEngine().kind).toBe('sidecar'); // fork 2
+    expect(forkMock).toHaveBeenCalledTimes(2);
+
+    forkedChildren[1].emit('exit', 1, null);
+    expect(getEngine().kind).toBe('sidecar'); // fork 3
+    forkedChildren[2].emit('exit', 1, null);
+
+    // Three crashes in the window hits the cap: give up, warn once, fall back.
+    expect(getEngine().kind).toBe('local');
+    expect(getEngine().kind).toBe('local');
+    expect(forkMock).toHaveBeenCalledTimes(3);
+    expect(window.showWarningMessage).toHaveBeenCalledTimes(1);
+    const warning = vi.mocked(window.showWarningMessage).mock.calls[0][0] as string;
+    expect(warning).toContain('keeps crashing');
+  });
+
+  it('re-arms the sidecar after the user switches engine away and back', () => {
+    __setConfig('myDevTeam.engine', 'sidecar');
+    const { getEngine } = createEngineProvider(SIDECAR_PATH);
+    getEngine();
+    forkedChildren[0].emit('exit', 1, null);
+    getEngine();
+    forkedChildren[1].emit('exit', 1, null);
+    getEngine();
+    forkedChildren[2].emit('exit', 1, null);
+    expect(getEngine().kind).toBe('local'); // gave up
+
+    __setConfig('myDevTeam.engine', 'local');
+    getEngine();
+    __setConfig('myDevTeam.engine', 'sidecar');
+    // Re-armed: a fresh child is forked again.
+    expect(getEngine().kind).toBe('sidecar');
+    expect(forkMock).toHaveBeenCalledTimes(4);
   });
 
   it('warns once that the sidecar ignores a SecretStorage-only key', async () => {

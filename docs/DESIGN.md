@@ -87,8 +87,8 @@ src/
       frontmatter.ts      minimal frontmatter parser for the .md config files
       markdown.d.ts       lets TS treat `*.md` and `glob:` imports as strings / string[]
   client/
-    engineFactory.ts      the myDevTeam.engine switch: LocalEngine, the sidecar child, or RemoteEngine (Phase B); disposes the sidecar
-    sidecarEngine.ts      client end of the sidecar: an Engine that forks the child, folds its events back, and services tool-call/plan-review on this side
+    engineFactory.ts      the myDevTeam.engine switch: LocalEngine, the sidecar child, or RemoteEngine (Phase B); respawns a crashed child (gives up after repeated crashes), disposes the sidecar
+    sidecarEngine.ts      client end of the sidecar: an Engine that forks the child (createForkedChannel) or a stream (createStreamChannel/NDJSON), holds runs until the ready handshake, times out queries, folds events back, services tool-call/plan-review
     secrets.ts            the host's SecretStorage-backed secret source (+ the Set API Key cache), injected into config/credentials for the local engine
     auth.ts               AuthProvider implementations (anonymous today; real credentials in Phase B)
     instructions.ts       reads the workspace's AGENTS.md/CLAUDE.md as standing project instructions per request
@@ -108,8 +108,8 @@ src/
     environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
     clientCommands.ts     the client-handled /clear and /model commands + the /compact history-replacement marker
   sidecar/                the engine-as-a-child-process plumbing (vscode-free)
-    transport.ts          the sidecar wire: parent<->child message types + the SidecarChannel seam
-    childRuntime.ts       hosts an Engine and maps messages to engine calls; the tool-call/plan-review proxies that invert side effects back to the parent
+    transport.ts          the sidecar wire: parent<->child message types (incl. the ready handshake) + the SidecarChannel seam
+    childRuntime.ts       hosts an Engine and maps messages to engine calls; posts the ready handshake; the tool-call/plan-review proxies that invert side effects back to the parent
     main.ts               the child entry point: wires childRuntime to process IPC + a real LocalEngine; bundled to dist/sidecar.js, never imports vscode
   tools/                  the client's hands - these never move to a backend
     workspaceTools.ts     read / search / run / write / edit implementations (UI-agnostic)
@@ -383,12 +383,19 @@ sidecar needs, so no protocol churn was required.
 
 - **The wire** (`sidecar/transport.ts`) is a small set of parent<->child message
   types (config, start, cancel, tool-result, plan-decision, query one way;
-  event, tool-call, plan-review, result, query-result the other) behind a
+  ready, event, tool-call, plan-review, result, query-result the other) behind a
   `SidecarChannel` seam. The VS Code client carries them as `child_process.fork`
-  IPC messages (structured clone); they are all plain JSON data, so a non-Node
-  client could frame them as newline-delimited JSON over stdio unchanged.
+  IPC messages with `serialization: 'advanced'` (a real structured clone, so an
+  `undefined`-valued tool arg survives - the `fork` default `'json'` would drop
+  it); they are all plain JSON data, so a non-Node client can frame them as
+  newline-delimited JSON over a stream instead. That NDJSON variant exists today
+  as `createStreamChannel` (next to `createForkedChannel`), proving the same
+  `SidecarEngine`/`childRuntime` pair works over a socket or stdio, not just
+  `fork` IPC - the transport a JVM/Kotlin client would target.
 - **The child** (`sidecar/childRuntime.ts` + `sidecar/main.ts`) hosts the
-  engine. For each run it builds a `RunClient` whose `onEvent` posts an `event`
+  engine. Once it constructs the engine it posts a `ready` message carrying the
+  `PROTOCOL_VERSION` it speaks and the engine `kind` (the readiness handshake).
+  For each run it builds a `RunClient` whose `onEvent` posts an `event`
   message, whose `ToolHost` is a **proxy** that posts a `tool-call` and resolves
   on the matching `tool-result`, and whose `reviewPlan` posts a `plan-review`
   and resolves on the `plan-decision` (only offered when the real client offers
@@ -397,13 +404,29 @@ sidecar needs, so no protocol churn was required.
   same inversion as in-process. The child imports no `vscode` (Part of why the
   config and credentials seams exist); esbuild bundles it as a second entry.
 - **The client end** (`client/sidecarEngine.ts`) implements `Engine`: it forks
-  the child, sends the runtime-config snapshot up front (and again on a settings
-  change), forwards each `event` to `client.onEvent`, services a `tool-call`
-  through the real `client.toolHost` and a `plan-review` through the real
-  `client.reviewPlan`, and settles the run's `result` from the terminal `result`
-  message - rethrowing the same `RunFailedError`/`RunCancelledError` the
-  in-process engine would. A cancel aborts the in-flight tool's signal and posts
-  `cancel`; a child crash rejects the in-flight runs with a clear reason.
+  the child (with `execArgv: []`, so the child does not inherit the host's
+  `--inspect` flags under the debugger), sends the runtime-config snapshot up
+  front (and again on a settings change), forwards each `event` to
+  `client.onEvent`, services a `tool-call` through the real `client.toolHost` and
+  a `plan-review` through the real `client.reviewPlan`, and settles the run's
+  `result` from the terminal `result` message - rethrowing the same
+  `RunFailedError`/`RunCancelledError` the in-process engine would. A cancel
+  aborts the in-flight tool's signal and posts `cancel`.
+- **Lifecycle resilience.** The parent **holds the first run** until the child's
+  `ready` arrives, and rejects up front with a clear "bundle is out of date,
+  reload" message on a **protocol-version mismatch** (a stale `dist/sidecar.js`)
+  or with "did not start in time" if `ready` never comes - instead of
+  mis-serialising or hanging mid-run. A mid-run crash still rejects that run (only
+  *new* runs get the fresh child), but the **memoised instance is dropped on
+  close** so the next request (`engineFactory`) forks a fresh child; after
+  `settings.sidecar.maxRespawns` crashes inside `respawnWindowMs` the provider
+  gives up, warns once, and falls back to local until the user switches the engine
+  away and back. One-shot **queries** (`listModels`/`startupWarnings`) **time
+  out** (`settings.sidecar.queryTimeoutMs`) rather than hanging the `/model`
+  picker or the health check, and a failed/timed-out `startupWarnings` surfaces as
+  a warning (so the health check still fires) rather than collapsing to "no
+  warnings". With the telemetry flag on, the channel is wrapped to log a
+  message/byte count when it closes (`traceChannel`).
 - **Config and secrets.** The child has no `vscode`: it reads user settings from
   the injected `runtimeConfig` snapshot the client sends (see
   [Configuration vs. code](#configuration-vs-code-config)) and cloud keys from

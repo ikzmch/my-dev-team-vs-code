@@ -8,9 +8,18 @@
  * run's result is settled from the terminal `result` message, rethrowing the
  * same `RunFailedError`/`RunCancelledError` the in-process engine would have.
  *
+ * Before any run is started the parent waits for the child's `ready` handshake
+ * (which carries the protocol version the child speaks): a stale `dist/sidecar.js`
+ * is rejected up front with a clear "reload" message instead of mis-serialising
+ * mid-run, and a child that dies during module load fails the first run with a
+ * timeout rather than hanging it. One-shot queries (`listModels`/`startupWarnings`)
+ * time out too, and a failed query surfaces as a warning rather than disappearing,
+ * so the health check still fires when the child cannot reach Ollama.
+ *
  * It is transport-agnostic: it takes a `SidecarChannel`, so a unit test can wire
  * it straight to an in-process child runtime, and production wraps a forked
- * child (see `createForkedChannel`).
+ * child (`createForkedChannel`) or any stream pair (`createStreamChannel`, the
+ * remote-ready NDJSON variant).
  */
 import { fork } from 'node:child_process';
 import {
@@ -20,9 +29,11 @@ import {
   RunFailedError,
   RunCancelledError,
 } from '../protocol/engine';
-import { RunRequest, Reply, ModelChoice } from '../protocol/types';
+import { RunRequest, Reply, ModelChoice, PROTOCOL_VERSION } from '../protocol/types';
 import { RuntimeConfig } from '../config/runtimeConfig';
-import { SidecarChannel, ChildMessage, RunResult } from '../sidecar/transport';
+import { settings } from '../config/settings';
+import { messages } from '../config/messages';
+import { SidecarChannel, ChildMessage, ParentMessage, RunResult } from '../sidecar/transport';
 
 interface RunState {
   client: RunClient;
@@ -30,6 +41,10 @@ interface RunState {
   resolve: (reply: Reply) => void;
   reject: (err: unknown) => void;
   settled: boolean;
+  /** True once `start` has been posted to the child (so a cancel must be forwarded). */
+  started: boolean;
+  /** True if cancel was called before the run could start (so it never starts). */
+  cancelRequested: boolean;
 }
 
 export class SidecarEngine implements Engine {
@@ -44,6 +59,14 @@ export class SidecarEngine implements Engine {
   /** Set once the child exits/crashes; further runs fail fast with this reason. */
   private closedReason: string | undefined;
 
+  // The readiness handshake. `whenReady` resolves once the child's `ready`
+  // arrives (and its protocol version matches), rejects on a version mismatch or
+  // the readiness timeout, and the first run is held until it settles.
+  private readyState: 'pending' | 'ready' | 'failed' = 'pending';
+  private readyError: Error | undefined;
+  private readyWaiters: { resolve: () => void; reject: (e: Error) => void }[] = [];
+  private readyTimer: ReturnType<typeof setTimeout> | undefined;
+
   constructor(
     private readonly channel: SidecarChannel,
     private readonly getConfig: () => RuntimeConfig
@@ -53,6 +76,12 @@ export class SidecarEngine implements Engine {
     // Hand the engine its config before any run (env-var secrets ride in the
     // child's process environment, so only this non-secret config is sent).
     channel.post({ t: 'config', config: getConfig() });
+    this.readyTimer = setTimeout(
+      () => this.rejectReady(new RunFailedError(undefined, messages.sidecar.notReady)),
+      settings.sidecar.readyTimeoutMs
+    );
+    // Do not let the readiness timeout keep the host's event loop alive.
+    this.readyTimer.unref?.();
   }
 
   /** Re-send the runtime config; call when the user changed a setting. */
@@ -63,6 +92,10 @@ export class SidecarEngine implements Engine {
   }
 
   dispose(): void {
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer);
+      this.readyTimer = undefined;
+    }
     this.channel.dispose();
   }
 
@@ -75,22 +108,48 @@ export class SidecarEngine implements Engine {
       resolve = res;
       reject = rej;
     });
-    const state: RunState = { client, ac, resolve, reject, settled: false };
+    const state: RunState = {
+      client,
+      ac,
+      resolve,
+      reject,
+      settled: false,
+      started: false,
+      cancelRequested: false,
+    };
     this.runs.set(runId, state);
 
     if (this.closedReason) {
-      state.settled = true;
-      this.runs.delete(runId);
-      reject(new RunFailedError(undefined, this.closedReason));
+      this.failRun(runId, new RunFailedError(undefined, this.closedReason));
     } else {
-      this.channel.post({ t: 'start', runId, request, canReviewPlan: !!client.reviewPlan });
+      // Hold the start until the child says it is up (or fails to). A run
+      // cancelled while waiting never starts.
+      this.whenReady().then(
+        () => {
+          if (state.settled || state.cancelRequested) {
+            if (!state.settled) {
+              this.failRun(runId, new RunCancelledError());
+            }
+            return;
+          }
+          state.started = true;
+          this.channel.post({
+            t: 'start',
+            runId,
+            request,
+            canReviewPlan: !!client.reviewPlan,
+          });
+        },
+        (err) => this.failRun(runId, err)
+      );
     }
 
     return {
       result,
       cancel: () => {
         ac.abort(new RunCancelledError());
-        if (!this.closedReason) {
+        state.cancelRequested = true;
+        if (state.started && !this.closedReason) {
           this.channel.post({ t: 'cancel', runId });
         }
       },
@@ -101,6 +160,9 @@ export class SidecarEngine implements Engine {
     try {
       return (await this.query('listModels')) as ModelChoice[];
     } catch {
+      // The picker has nothing to show if the child cannot answer; an empty
+      // catalogue is the only sensible fallback (the startup warning carries the
+      // "engine unreachable" signal).
       return [];
     }
   }
@@ -108,8 +170,11 @@ export class SidecarEngine implements Engine {
   async startupWarnings(): Promise<string[]> {
     try {
       return (await this.query('startupWarnings')) as string[];
-    } catch {
-      return [];
+    } catch (err) {
+      // Distinguish "the child says all is well" (an empty array it returned)
+      // from "the child did not answer": the latter is itself worth surfacing,
+      // so the health check still warns instead of silently reporting nothing.
+      return [messages.sidecar.probeFailed(errorMessage(err))];
     }
   }
 
@@ -119,13 +184,38 @@ export class SidecarEngine implements Engine {
     }
     const queryId = `q-${this.querySeq++}`;
     return new Promise<unknown>((resolve, reject) => {
-      this.queries.set(queryId, { resolve, reject });
+      const timer = setTimeout(() => {
+        if (this.queries.delete(queryId)) {
+          reject(new Error(messages.sidecar.queryTimeout));
+        }
+      }, settings.sidecar.queryTimeoutMs);
+      timer.unref?.();
+      const settle = (fn: () => void) => {
+        clearTimeout(timer);
+        fn();
+      };
+      this.queries.set(queryId, {
+        resolve: (v) => settle(() => resolve(v)),
+        reject: (e) => settle(() => reject(e)),
+      });
       this.channel.post({ t: 'query', queryId, method });
     });
   }
 
   private handle(msg: ChildMessage): void {
     switch (msg.t) {
+      case 'ready':
+        if (msg.protocolVersion !== PROTOCOL_VERSION) {
+          this.rejectReady(
+            new RunFailedError(
+              undefined,
+              messages.sidecar.versionMismatch(msg.protocolVersion, PROTOCOL_VERSION)
+            )
+          );
+        } else {
+          this.resolveReady();
+        }
+        return;
       case 'event':
         this.runs.get(msg.runId)?.client.onEvent(msg.event);
         return;
@@ -176,6 +266,59 @@ export class SidecarEngine implements Engine {
     }
   }
 
+  private resolveReady(): void {
+    if (this.readyState !== 'pending') {
+      return;
+    }
+    this.readyState = 'ready';
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer);
+      this.readyTimer = undefined;
+    }
+    const waiters = this.readyWaiters;
+    this.readyWaiters = [];
+    for (const w of waiters) {
+      w.resolve();
+    }
+  }
+
+  private rejectReady(err: Error): void {
+    if (this.readyState !== 'pending') {
+      return;
+    }
+    this.readyState = 'failed';
+    this.readyError = err;
+    if (this.readyTimer) {
+      clearTimeout(this.readyTimer);
+      this.readyTimer = undefined;
+    }
+    const waiters = this.readyWaiters;
+    this.readyWaiters = [];
+    for (const w of waiters) {
+      w.reject(err);
+    }
+  }
+
+  private whenReady(): Promise<void> {
+    if (this.readyState === 'ready') {
+      return Promise.resolve();
+    }
+    if (this.readyState === 'failed') {
+      return Promise.reject(this.readyError);
+    }
+    return new Promise<void>((resolve, reject) => this.readyWaiters.push({ resolve, reject }));
+  }
+
+  private failRun(runId: string, err: unknown): void {
+    const state = this.runs.get(runId);
+    if (!state || state.settled) {
+      return;
+    }
+    state.settled = true;
+    this.runs.delete(runId);
+    state.reject(err);
+  }
+
   private settleResult(runId: string, result: RunResult): void {
     const state = this.runs.get(runId);
     if (!state || state.settled) {
@@ -196,6 +339,9 @@ export class SidecarEngine implements Engine {
 
   private handleClose(reason: string): void {
     this.closedReason = reason;
+    // A run waiting on readiness (never started) is rejected with the close
+    // reason too, so nothing is left pending.
+    this.rejectReady(new RunFailedError(undefined, reason));
     for (const state of this.runs.values()) {
       if (!state.settled) {
         state.settled = true;
@@ -210,13 +356,28 @@ export class SidecarEngine implements Engine {
   }
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /**
  * A production channel that forks the bundled engine child (`dist/sidecar.js`)
  * and talks to it over `child_process` IPC. The child inherits the parent's
  * environment, so env-var API keys resolve there with nothing on the wire.
+ *
+ * - `execArgv: []` so the child does not inherit the extension host's launch
+ *   flags - notably `--inspect`/`--inspect-brk` under the debugger, which would
+ *   make the child fail to bind an already-used inspector port.
+ * - `serialization: 'advanced'` so messages cross as a real structured clone
+ *   (the `fork` default is `'json'`, which silently drops `undefined`-valued
+ *   fields in a `tool-call`'s args).
  */
 export function createForkedChannel(scriptPath: string): SidecarChannel {
-  const child = fork(scriptPath, [], { stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+  const child = fork(scriptPath, [], {
+    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+    execArgv: [],
+    serialization: 'advanced',
+  });
   const messageHandlers: ((m: ChildMessage) => void)[] = [];
   const closeHandlers: ((reason: string) => void)[] = [];
   let closed = false;
@@ -253,6 +414,138 @@ export function createForkedChannel(scriptPath: string): SidecarChannel {
     dispose: () => {
       closed = true;
       child.kill();
+    },
+  };
+}
+
+/**
+ * A transport-neutral channel over a writable/readable stream pair, framing each
+ * message as newline-delimited JSON (NDJSON). This is the remote-ready variant
+ * the transport's docs anticipate: the same `SidecarEngine`/`childRuntime` pair
+ * works over a socket or stdio, not just `fork` IPC, which is the cheap step
+ * toward the Phase-B remote engine and a JVM/Kotlin client that cannot use Node's
+ * IPC. (JSON framing, unlike structured clone, does not carry `undefined`; the
+ * contract is plain JSON data, so that is by design.)
+ *
+ * `outgoing` carries parent messages to the peer; `incoming` carries the peer's
+ * messages back. A malformed line is skipped rather than tearing the channel
+ * down. The stream ending or erroring closes the channel; `dispose` ends the
+ * outgoing stream (the caller owns the underlying socket/process lifecycle).
+ */
+export function createStreamChannel(
+  outgoing: NodeJS.WritableStream,
+  incoming: NodeJS.ReadableStream
+): SidecarChannel {
+  const messageHandlers: ((m: ChildMessage) => void)[] = [];
+  const closeHandlers: ((reason: string) => void)[] = [];
+  let closed = false;
+  let buffer = '';
+  const close = (reason: string): void => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    for (const h of closeHandlers) {
+      h(reason);
+    }
+  };
+  incoming.on('data', (chunk: Buffer | string) => {
+    buffer += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (!line.trim()) {
+        continue;
+      }
+      let msg: ChildMessage;
+      try {
+        msg = JSON.parse(line) as ChildMessage;
+      } catch {
+        // Skip a malformed frame rather than killing the whole channel.
+        continue;
+      }
+      for (const h of messageHandlers) {
+        h(msg);
+      }
+    }
+  });
+  incoming.on('end', () => close('The engine sidecar stream ended.'));
+  incoming.on('error', (err: Error) =>
+    close(`The engine sidecar stream failed: ${err.message}`)
+  );
+  return {
+    post: (msg) => {
+      if (!closed) {
+        outgoing.write(`${JSON.stringify(msg)}\n`);
+      }
+    },
+    onMessage: (h) => {
+      messageHandlers.push(h);
+    },
+    onClose: (h) => {
+      closeHandlers.push(h);
+    },
+    dispose: () => {
+      closed = true;
+      outgoing.end();
+    },
+  };
+}
+
+/** Running totals a `traceChannel` reports for diagnosing a slow sidecar. */
+export interface ChannelStats {
+  /** Parent messages posted to the child. */
+  sent: number;
+  /** Child messages received. */
+  received: number;
+  /** Approximate JSON bytes posted. */
+  bytesSent: number;
+  /** Approximate JSON bytes received. */
+  bytesReceived: number;
+}
+
+/**
+ * Wrap a channel to count the messages and (approximate) bytes crossing it in
+ * each direction, reporting the running totals to `report` whenever the channel
+ * closes or is disposed. Used behind the telemetry flag (engineFactory) to make
+ * a slow or chatty sidecar diagnosable; the unwrapped channel is used otherwise,
+ * so there is no cost when tracing is off.
+ */
+export function traceChannel(
+  channel: SidecarChannel,
+  report: (stats: ChannelStats) => void
+): SidecarChannel {
+  const stats: ChannelStats = { sent: 0, received: 0, bytesSent: 0, bytesReceived: 0 };
+  const size = (msg: unknown): number => {
+    try {
+      return JSON.stringify(msg).length;
+    } catch {
+      return 0;
+    }
+  };
+  return {
+    post: (msg: ParentMessage) => {
+      stats.sent++;
+      stats.bytesSent += size(msg);
+      channel.post(msg);
+    },
+    onMessage: (h) => {
+      channel.onMessage((m) => {
+        stats.received++;
+        stats.bytesReceived += size(m);
+        h(m);
+      });
+    },
+    onClose: (h) => {
+      channel.onClose((reason) => {
+        report({ ...stats });
+        h(reason);
+      });
+    },
+    dispose: () => {
+      report({ ...stats });
+      channel.dispose();
     },
   };
 }

@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.0] - 2026-06-15
+
+### Added
+
+- **Sidecar lifecycle resilience.** The sidecar engine now recovers from a
+  crashed child: the dead instance is dropped and the next request forks a fresh
+  one, and after repeated crashes in a short window it gives up, warns once, and
+  falls back to the local engine until you switch engines - instead of a single
+  transient crash bricking `@devteam` for the rest of the session.
+- **Sidecar readiness and version handshake.** The child now announces itself
+  before any run; the editor holds the first run until it is up and rejects a
+  stale `dist/sidecar.js` with a clear "bundle out of date, reload" message
+  rather than mis-serialising mid-run, and a child that fails to start fails the
+  run with a timeout instead of hanging it.
+- **NDJSON stream transport for the sidecar.** Alongside the forked-process
+  channel, the same engine/client pair can now talk over a newline-delimited-JSON
+  stream (`createStreamChannel`), proving the protocol works over a socket or
+  stdio - the transport a future remote backend or non-VS-Code (JVM/Kotlin)
+  client would target.
+
+### Fixed
+
+- **Sidecar queries no longer hang the editor.** `listModels` and
+  `startupWarnings` time out instead of waiting forever on a wedged child, so the
+  `/model` picker and the activation health check cannot stall. A failed or
+  timed-out health probe now surfaces as a warning rather than silently reporting
+  "no warnings".
+- **Sidecar child no longer breaks under the debugger.** The forked child is
+  launched without inheriting the extension host's `--inspect` flags (which made
+  it fail to bind an already-used inspector port), and uses structured-clone IPC
+  so `undefined`-valued tool arguments survive the trip across the process
+  boundary.
+
 ## [0.47.1] - 2026-06-15
 
 ### Added

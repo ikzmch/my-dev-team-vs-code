@@ -637,6 +637,35 @@ export const messages = {
       `variables only, so a key you set with "Set API Key" will not be used: ${keys}. ` +
       'Set the matching environment variable before launching VS Code, or switch ' +
       '"myDevTeam.engine" back to "local" to use the stored key.',
+    /** The sidecar child crashed repeatedly, so the provider gave up reforking it. */
+    sidecarCrashed:
+      'My Dev Team: the sidecar engine keeps crashing, so it has been switched off ' +
+      'for now and the local engine is being used instead. Reload the window to try ' +
+      'the sidecar again, or set "myDevTeam.engine" to "local" to hide this warning.',
+  },
+
+  /**
+   * Reasons the sidecar client (client/sidecarEngine.ts) settles a run or query
+   * with when the child does not cooperate - distinct from a real run failure.
+   */
+  sidecar: {
+    /**
+     * The child's `ready` handshake reported a different protocol version than
+     * this build speaks - a stale `dist/sidecar.js`. `childVersion`/`ourVersion`
+     * are the two protocol numbers.
+     */
+    versionMismatch: (childVersion: number, ourVersion: number) =>
+      `The engine sidecar bundle is out of date (it speaks protocol ${childVersion}, ` +
+      `this build speaks ${ourVersion}). Reload the window to rebuild it, or set ` +
+      '"myDevTeam.engine" to "local".',
+    /** The child never sent its `ready` handshake within the timeout. */
+    notReady: 'The engine sidecar did not start in time.',
+    /** A `listModels`/`startupWarnings` query failed or timed out; `detail` is why. */
+    probeFailed: (detail: string) =>
+      `My Dev Team: could not reach the engine sidecar (${detail}). ` +
+      'Reload the window, or set "myDevTeam.engine" to "local".',
+    /** A one-shot query exceeded `settings.sidecar.queryTimeoutMs`. */
+    queryTimeout: 'the engine sidecar did not answer in time',
   },
 
   /** Warnings the engines' startup probes may surface (ui/startupCheck.ts). */
