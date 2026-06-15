@@ -413,10 +413,41 @@ likely to touch:
 | `myDevTeam.approval.fileChanges` | `false`                  | Ask you to approve every file write and edit (same Approve/Decline prompt as a command). Off by default - changes apply directly since your workspace is Git-backed. Running commands is always gated regardless |
 | `myDevTeam.telemetry.evalLog`    | `false`                  | Opt-in local log of runs and 👍/👎 feedback - stays on your machine, records no prompts or file contents |
 | `myDevTeam.telemetry.shadowTriage` | `false`                | While the log is on, also check on each `/command` run how the router would have classified it, so the usage report can show how often it agrees. Adds a small background step per command run |
+| `myDevTeam.engine`               | `local`                  | Where the agent runs: `local` (inside the extension) or `sidecar` (a separate process); see [Local vs sidecar engine](#local-vs-sidecar-engine). Takes effect on your next request |
 
 There are further knobs for read/search limits (`myDevTeam.read.*`,
-`myDevTeam.search.*`) and the engine choice (`myDevTeam.engine`, leave it on
-`local` for now).
+`myDevTeam.search.*`).
+
+### Local vs sidecar engine
+
+Most people never touch this. The `myDevTeam.engine` setting picks **where** the
+agent's "brain" runs - it does not change what `@devteam` does or which models
+it uses:
+
+- **`local`** (the default) - the agent runs inside the extension itself. This
+  is what you want unless you have a reason not to.
+- **`sidecar`** - the same agent runs in a separate background process. The
+  parts you interact with (approval prompts, the chat transcript, file edits)
+  stay in the editor; only the agent's reasoning is moved out into its own
+  process, so a hiccup there cannot disturb the rest of VS Code.
+
+To switch, open Settings, search for "My Dev Team", and set **Engine** to
+`local` or `sidecar` (or edit `"myDevTeam.engine"` in `settings.json`). The
+change takes effect on your **next message** - no reload needed.
+
+One thing to know if you use a cloud model on the **sidecar** engine: it reads
+API keys **only from environment variables** (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `GROQ_API_KEY`), set before you launch VS Code - the
+"My Dev Team: Set API Key" command does not reach it. If you switch to
+`sidecar` while a key is stored only via that command, a one-time notice
+reminds you to set the matching environment variable (or switch back to
+`local`), so a cloud model does not quietly stop working. If the sidecar
+process keeps crashing, the extension warns you once and falls back to the
+local engine on its own until you switch engines or reload.
+
+(A third value, `remote`, is reserved for running the agent on a remote server
+and is not available yet - selecting it just falls back to `local` with a
+warning.)
 
 ## 8. Token usage
 

@@ -151,6 +151,52 @@ describe('sidecar round trip', () => {
     expect(deltas).toEqual(['approve']);
   });
 
+  it('keeps two concurrent plan reviews for one run distinct (no resolver clobber)', async () => {
+    // Each review is keyed by its own id, so issuing two for one run resolves
+    // both; keying by runId alone would overwrite the first resolver and hang it.
+    const reviewPlan = vi.fn(
+      async (_plan: Plan, complexity: string): Promise<PlanDecision> =>
+        complexity === 'simple' ? { kind: 'approve' } : { kind: 'revise', comment: 'c' }
+    );
+    const engine = new FakeEngine(async (_req, client) => {
+      const [a, b] = await Promise.all([
+        client.reviewPlan!({ summary: 'a', steps: [] } as unknown as Plan, 'simple'),
+        client.reviewPlan!({ summary: 'b', steps: [] } as unknown as Plan, 'complex'),
+      ]);
+      client.onEvent({ type: 'answer-delta', text: `${a.kind}/${b.kind}` });
+      return REPLY;
+    });
+    const { sidecar } = connect(engine);
+    const deltas: string[] = [];
+    const handle = sidecar.startRun(request(), {
+      onEvent: (e) => {
+        if (e.type === 'answer-delta') deltas.push(e.text);
+      },
+      toolHost: { tools: [], execute: async () => '' },
+      reviewPlan,
+    });
+    await handle.result;
+    expect(deltas).toEqual(['approve/revise']);
+  });
+
+  it('rejects a tool call left pending when the run settles', async () => {
+    // The engine fires a tool call but the run settles before the parent answers
+    // it: the child must reject the orphaned promise rather than leak it. The
+    // parent's toolHost never resolves, so only the run-settle cleanup can.
+    let toolPromise: Promise<string> | undefined;
+    const engine = new FakeEngine(async (_req, client) => {
+      toolPromise = client.toolHost.execute('read', { path: 'a.ts' });
+      return REPLY;
+    });
+    const { sidecar } = connect(engine);
+    const handle = sidecar.startRun(request(), {
+      onEvent: () => {},
+      toolHost: { tools: ['read'], execute: () => new Promise<string>(() => {}) },
+    });
+    await handle.result;
+    await expect(toolPromise!).rejects.toBeInstanceOf(RunCancelledError);
+  });
+
   it('does not offer the plan-review seam when the client lacks it', async () => {
     const engine = new FakeEngine(async (_req, client) => {
       expect(client.reviewPlan).toBeUndefined();
@@ -255,7 +301,7 @@ describe('sidecar readiness and version handshake', () => {
     // Config was sent, but no run started yet - the child has not said it is up.
     expect(posted.some((m) => m.t === 'start')).toBe(false);
 
-    emit(ready(2));
+    emit(ready(3));
     await Promise.resolve();
     expect(posted.some((m) => m.t === 'start')).toBe(true);
   });
@@ -293,7 +339,7 @@ describe('sidecar readiness and version handshake', () => {
       toolHost: { tools: [], execute: async () => '' },
     });
     handle.cancel();
-    emit(ready(2));
+    emit(ready(3));
     await expect(handle.result).rejects.toBeInstanceOf(RunCancelledError);
     expect(posted.some((m) => m.t === 'start')).toBe(false);
   });
@@ -332,9 +378,19 @@ describe('sidecar wire timeouts and probe failures', () => {
     expect(w[0]).toContain('ollama unreachable');
   });
 
+  it('answers an orphan tool-call (unknown run) with an error result', () => {
+    const { posted, emit } = manual();
+    emit(ready(3));
+    emit({ t: 'tool-call', runId: 'run-unknown', callId: 'c1', tool: 'read', args: {} });
+    const result = posted.find((m) => m.t === 'tool-result');
+    // Rather than dropping it (leaving the child's promise pending forever), the
+    // parent answers with a failure so the child settles.
+    expect(result).toMatchObject({ t: 'tool-result', callId: 'c1', ok: false });
+  });
+
   it('fails pending runs and queries when the channel closes', async () => {
     const { sidecar, emit, close } = manual();
-    emit(ready(2));
+    emit(ready(3));
     const run = startBare(sidecar);
     const models = sidecar.listModels();
     close('The engine sidecar exited unexpectedly (code 1).');

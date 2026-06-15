@@ -2224,7 +2224,7 @@ describe('createHandler protocol envelope', () => {
     );
 
     expect(captured).toMatchObject({
-      protocolVersion: 2,
+      protocolVersion: 3,
       prompt: 'hi',
       offeredTools: ['read', 'search', 'run', 'write', 'edit'],
     });

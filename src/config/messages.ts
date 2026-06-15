@@ -666,6 +666,12 @@ export const messages = {
       'Reload the window, or set "myDevTeam.engine" to "local".',
     /** A one-shot query exceeded `settings.sidecar.queryTimeoutMs`. */
     queryTimeout: 'the engine sidecar did not answer in time',
+    /**
+     * The parent received a `tool-call` for a run it no longer tracks (a late or
+     * duplicate message), so it answers with this rather than leaving the child's
+     * tool-call promise pending forever.
+     */
+    orphanToolCall: 'The engine sidecar requested a tool for a run that is no longer active.',
   },
 
   /** Warnings the engines' startup probes may surface (ui/startupCheck.ts). */

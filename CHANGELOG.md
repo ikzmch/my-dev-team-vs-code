@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.48.1] - 2026-06-15
+
+### Fixed
+
+- **Sidecar promise leaks on the process boundary.** A tool request for a run
+  that has already ended is now answered with an error instead of being dropped
+  (which left the engine waiting forever), and a tool request still in flight
+  when its run ends is cleaned up rather than leaked. Plan approvals are now
+  tracked per review, so a run that asks for more than one approval can no longer
+  lose track of an earlier one. Closes the last findings of the sidecar audit.
+
 ## [0.48.0] - 2026-06-15
 
 ### Added

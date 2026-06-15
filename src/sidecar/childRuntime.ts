@@ -58,12 +58,39 @@ export function createChildRuntime(
     post({ t: 'ready', protocolVersion: PROTOCOL_VERSION, kind: engine.kind })
   );
   const runs = new Map<string, RunHandle>();
+  // Each pending inversion remembers its `runId` so a run that settles (or whose
+  // parent answer never arrives) can clean up the promises it left waiting,
+  // rather than leaking them.
   const toolCalls = new Map<
     string,
-    { resolve: (result: string) => void; reject: (err: Error) => void }
+    { runId: string; resolve: (result: string) => void; reject: (err: Error) => void }
   >();
-  const planReviews = new Map<string, (decision: PlanDecision) => void>();
+  const planReviews = new Map<
+    string,
+    { runId: string; resolve: (decision: PlanDecision) => void }
+  >();
   let callSeq = 0;
+  let reviewSeq = 0;
+
+  /**
+   * Settle a run: forget its handle and reject any tool call still awaiting a
+   * `tool-result` (the parent already settled the run, so no answer is coming),
+   * and drop any pending plan review so its resolver does not leak.
+   */
+  function settleRun(runId: string): void {
+    runs.delete(runId);
+    for (const [callId, pending] of toolCalls) {
+      if (pending.runId === runId) {
+        toolCalls.delete(callId);
+        pending.reject(new RunCancelledError());
+      }
+    }
+    for (const [reviewId, pending] of planReviews) {
+      if (pending.runId === runId) {
+        planReviews.delete(reviewId);
+      }
+    }
+  }
 
   function startRun(runId: string, request: RunRequest, canReviewPlan: boolean): void {
     const toolHost: ToolHost = {
@@ -71,7 +98,7 @@ export function createChildRuntime(
       execute: (tool, args, signal) =>
         new Promise<string>((resolve, reject) => {
           const callId = `${runId}#${callSeq++}`;
-          toolCalls.set(callId, { resolve, reject });
+          toolCalls.set(callId, { runId, resolve, reject });
           if (signal) {
             const onAbort = () => {
               if (toolCalls.delete(callId)) {
@@ -95,8 +122,9 @@ export function createChildRuntime(
         ? {
             reviewPlan: (plan, complexity) =>
               new Promise<PlanDecision>((resolve) => {
-                planReviews.set(runId, resolve);
-                post({ t: 'plan-review', runId, plan, complexity });
+                const reviewId = `${runId}~${reviewSeq++}`;
+                planReviews.set(reviewId, { runId, resolve });
+                post({ t: 'plan-review', runId, reviewId, plan, complexity });
               }),
           }
         : {}),
@@ -106,17 +134,18 @@ export function createChildRuntime(
     try {
       handle = engine.startRun(request, client);
     } catch (err) {
+      settleRun(runId);
       post({ t: 'result', runId, result: failureResult(err) });
       return;
     }
     runs.set(runId, handle);
     handle.result.then(
       (reply) => {
-        runs.delete(runId);
+        settleRun(runId);
         post({ t: 'result', runId, result: { ok: true, reply } });
       },
       (err) => {
-        runs.delete(runId);
+        settleRun(runId);
         post({ t: 'result', runId, result: failureResult(err) });
       }
     );
@@ -147,10 +176,10 @@ export function createChildRuntime(
         return;
       }
       case 'plan-decision': {
-        const resolve = planReviews.get(msg.runId);
-        if (resolve) {
-          planReviews.delete(msg.runId);
-          resolve(msg.decision);
+        const pending = planReviews.get(msg.reviewId);
+        if (pending) {
+          planReviews.delete(msg.reviewId);
+          pending.resolve(msg.decision);
         }
         return;
       }

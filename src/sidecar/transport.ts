@@ -40,8 +40,8 @@ export type ParentMessage =
   /** Answer a `tool-call`: the tool's returned text, or the error it threw. */
   | { t: 'tool-result'; callId: string; ok: true; result: string }
   | { t: 'tool-result'; callId: string; ok: false; error: string }
-  /** Answer a `plan-review` with the user's verdict. */
-  | { t: 'plan-decision'; runId: string; decision: PlanDecision }
+  /** Answer a `plan-review` with the user's verdict, keyed by the review's id. */
+  | { t: 'plan-decision'; reviewId: string; decision: PlanDecision }
   /** Ask the engine a one-shot question (the picker catalogue, startup warnings). */
   | { t: 'query'; queryId: string; method: 'listModels' | 'startupWarnings' };
 
@@ -59,8 +59,13 @@ export type ChildMessage =
   | { t: 'event'; runId: string; event: RunEvent }
   /** The engine asks the client to execute a tool and answer with a `tool-result`. */
   | { t: 'tool-call'; runId: string; callId: string; tool: string; args: unknown }
-  /** The engine asks the client to approve a plan and answer with a `plan-decision`. */
-  | { t: 'plan-review'; runId: string; plan: Plan; complexity: Complexity }
+  /**
+   * The engine asks the client to approve a plan and answer with a
+   * `plan-decision`. `runId` finds the run's client; `reviewId` correlates the
+   * resolver, so a run that issues more than one review never overwrites a
+   * pending one (the way `callId` correlates a `tool-call`).
+   */
+  | { t: 'plan-review'; runId: string; reviewId: string; plan: Plan; complexity: Complexity }
   /** The run settled (its `result` promise resolved or rejected). */
   | { t: 'result'; runId: string; result: RunResult }
   /** A query answer. */

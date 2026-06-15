@@ -222,6 +222,16 @@ export class SidecarEngine implements Engine {
       case 'tool-call': {
         const state = this.runs.get(msg.runId);
         if (!state) {
+          // A `tool-call` for a run we no longer track (a late or duplicate
+          // message, or one whose run already settled). Answer with an error so
+          // the child's awaiting promise settles instead of leaking, rather than
+          // dropping it silently.
+          this.channel.post({
+            t: 'tool-result',
+            callId: msg.callId,
+            ok: false,
+            error: messages.sidecar.orphanToolCall,
+          });
           return;
         }
         state.client.toolHost.execute(msg.tool, msg.args, state.ac.signal, msg.runId).then(
@@ -243,7 +253,7 @@ export class SidecarEngine implements Engine {
           return;
         }
         void review(msg.plan, msg.complexity).then((decision) =>
-          this.channel.post({ t: 'plan-decision', runId: msg.runId, decision })
+          this.channel.post({ t: 'plan-decision', reviewId: msg.reviewId, decision })
         );
         return;
       }

@@ -12,7 +12,7 @@ import { clientTools, clientToolNames } from '../src/protocol/toolContract';
 
 describe('protocol schemas', () => {
   it('pins the protocol version', () => {
-    expect(PROTOCOL_VERSION).toBe(2);
+    expect(PROTOCOL_VERSION).toBe(3);
   });
 
   it('accepts a minimal run request and rejects a malformed one', () => {

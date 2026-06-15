@@ -19,7 +19,7 @@ import { z } from 'zod';
  * or field changes meaning - adding a new event type is backwards-compatible
  * and needs no bump.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 
 /** One attached file/selection: a short label naming it plus its (already truncated) text. */
 export const AttachmentSchema = z.object({
