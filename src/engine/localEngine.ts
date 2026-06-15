@@ -560,13 +560,23 @@ export class LocalEngine implements Engine {
    * the UI's job) whether the server is unreachable or any Auto-routed local
    * model is not pulled, instead of letting the first run be what fails. Cloud
    * models are not Ollama tags, so they are not probed here.
+   *
+   * When no agent routes to Ollama at all (e.g. triage and the work agents all
+   * resolve to a cloud provider), Ollama is not needed for this configuration,
+   * so the probe is skipped entirely and the server's reachability is never
+   * mentioned - a fully cloud setup must not warn about an Ollama server it does
+   * not use.
    */
   async startupWarnings(): Promise<string[]> {
+    const routed = routedModels();
+    if (routed.length === 0) {
+      return [];
+    }
     const installed = await this.installedOllamaTags();
     if (!installed) {
       return [messages.startup.unreachable(ollamaEndpoint())];
     }
-    const missing = routedModels().filter(
+    const missing = routed.filter(
       (model) => !LocalEngine.ollamaInstalled(model, installed)
     );
     return missing.length > 0 ? [messages.startup.missingModels(missing)] : [];

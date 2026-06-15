@@ -534,6 +534,10 @@ On activation the extension asks the selected engine for startup warnings
 activation): the LocalEngine pings `<endpoint>/api/tags` (3s timeout) and
 reports an unreachable server or a router-selected model that is not
 pulled - instead of letting the first chat request be the thing that fails.
+When no agent routes to Ollama at all (e.g. triage pinned to a cloud provider
+and the local provider disabled), the probe is skipped entirely and Ollama's
+reachability is never mentioned - a fully cloud setup must not warn about a
+server it does not use.
 
 ### Capability-based model router (`engine/config/models.ts` + `engine/core/models.ts`)
 
@@ -1397,7 +1401,9 @@ the first `@devteam` request rather than appearing only after it. On activation,
 the extension loads any stored cloud-provider API keys from
 SecretStorage, then asks the selected engine for startup warnings; the local
 engine pings the configured Ollama endpoint and warns (once, non-blocking) if
-the server is down or an Auto-routed local model is not pulled. A single
+the server is down or an Auto-routed local model is not pulled - unless no
+agent routes to Ollama, in which case it skips the probe and stays silent. A
+single
 "My Dev Team" status-bar button surfaces both: hovering it shows a rich popup (a
 trusted markdown tooltip with command links, the same approach as Copilot's
 status item) and clicking it opens a quick-pick menu, either way letting you

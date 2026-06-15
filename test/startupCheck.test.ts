@@ -18,6 +18,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  delete process.env.OPENAI_API_KEY;
 });
 
 /** A successful /api/tags response listing the given model names. */
@@ -110,6 +111,20 @@ describe('LocalEngine.startupWarnings', () => {
       expect(warnings[0]).not.toContain(present);
     }
     expect(warnings[0]).toContain('ollama pull');
+  });
+
+  it('skips the probe entirely when no agent routes to Ollama', async () => {
+    // A fully cloud configuration: triage pinned to OpenAI and the local
+    // provider disabled, so every agent resolves to a cloud model and
+    // routedModels() is empty. Ollama is not used, so its reachability must
+    // never be probed or warned about.
+    process.env.OPENAI_API_KEY = 'sk-test';
+    __setConfig('myDevTeam.triage.model', 'provider:openai');
+    __setConfig('myDevTeam.disabledProviders', ['ollama']);
+    expect(routedModels()).toHaveLength(0);
+
+    await expect(probeOnlyEngine().startupWarnings()).resolves.toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('never throws on a malformed tags payload; it reports unreachable', async () => {

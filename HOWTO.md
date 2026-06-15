@@ -74,7 +74,9 @@ install it with either method above.
 After installing, open a workspace folder and you are ready to use `@devteam`.
 On startup the extension checks your Ollama server and warns you if it is
 unreachable or one of the models above is missing - if you see no warning,
-you are good to go.
+you are good to go. If you have set everything up to run on a cloud provider
+instead (no local models in use), it skips this check and stays quiet about
+Ollama.
 
 ## 3. First steps
 
