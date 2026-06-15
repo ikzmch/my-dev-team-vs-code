@@ -54,6 +54,6 @@ describe('provider registry', () => {
 
     // A cloud provider: the model id passes through to the SDK instance.
     const openai = providerDescriptor('openai').build({ apiKey: 'k' });
-    expect(openai('gpt-4o').modelId).toBe('gpt-4o');
+    expect(openai('gpt-4.1').modelId).toBe('gpt-4.1');
   });
 });

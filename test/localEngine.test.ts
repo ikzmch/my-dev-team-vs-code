@@ -548,7 +548,7 @@ describe('LocalEngine.listModels', () => {
     expect(choices.find((c) => c.id === 'anthropic-opus')?.available).toBe(
       credentials.has('anthropic')
     );
-    expect(choices.find((c) => c.id === 'openai-gpt4o')?.available).toBe(
+    expect(choices.find((c) => c.id === 'openai-gpt41')?.available).toBe(
       credentials.has('openai')
     );
   });

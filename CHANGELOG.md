@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.45.0] - 2026-06-15
+
+### Changed
+
+- **OpenAI model upgraded from GPT-4o to GPT-4.1.** The registered OpenAI model
+  is now `gpt-4.1` (id `openai-gpt41`), bringing stronger coding and instruction
+  following so the router can pick a more capable cloud model for the same tier.
+
 ## [0.44.0] - 2026-06-14
 
 ### Added
