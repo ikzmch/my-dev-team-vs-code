@@ -20,7 +20,7 @@ export const clientCommands = [
   },
   {
     name: 'model',
-    description: 'Choose the model @devteam uses (or Auto to route by capability).',
+    description: 'Choose the model for the whole team or a single agent (or Auto to route by capability).',
   },
 ] as const;
 

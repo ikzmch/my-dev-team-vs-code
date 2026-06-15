@@ -72,8 +72,8 @@ so consumers can always trust what they read.
 | Setting | Default | Usage | Floor / layer interaction |
 | ------- | ------- | ----- | ------------------------- |
 | `engine` | `local` | Which engine handles runs: `local` (in-process), `sidecar` (same engine in a forked child), or `remote` (Phase B; warns and falls back to local) | - |
-| `model` | `auto` | Planner/answerer/executor model: a model id, `provider:<name>`, or `auto`. Set via `/model` or the status-bar menu | - |
-| `triage.model` | `""` | Triage classifier model, separate from `model`. Empty defers to the floor | empty -> `agents.triage.model` floor |
+| `model` | `auto` | Planner/answerer/executor model: a model id, `provider:<name>`, or `auto`. Set via `/model` or the status-bar menu; picking a provider/Auto there also sets `triage.model` to match | - |
+| `triage.model` | `""` | Triage classifier model, separate from `model`. Empty defers to the floor. Set from `/model`'s "Triage only" group, by a provider/Auto pick (which sets both), or directly | empty -> `agents.triage.model` floor |
 | `complexityRouting` | `true` | Size the model to the task's complexity tier; off routes by capability alone | a model pin bypasses regardless |
 | `planApproval` | `auto` | When a drafted plan must be approved: `auto` (only when complex), `always`, `never` | - |
 | `planApproval.preview` | `auto` | When a paused plan also opens as a read-only editor preview: `auto` (only a big plan), `always`, `never` (chat only) | client-only (not on the engine runtime-config seam); applies only when `planApproval` pauses |

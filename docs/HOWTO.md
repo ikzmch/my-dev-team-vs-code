@@ -216,13 +216,18 @@ for a popup with a **Select model** link, or click it and choose **Select
 model**) and pick from the list - or type the name directly, e.g.
 `/model Claude Sonnet 4.6`.
 
-The list offers three kinds of choice:
+The list is grouped so the common case is one click:
 
-- **Auto** - the best available model for each task, across every provider.
-- **A specific model** - always use that one model.
-- **A provider** (e.g. "Anthropic (best available)") - stick to that provider
-  but let it pick the best model for each task. Type `/model anthropic` (or
-  `openai`, `ollama`) as a shortcut.
+- **Use one provider for everything** (the top group) - **Auto**, or a provider
+  like "Anthropic (best available)". Picking one here points the **whole team**
+  at it: the quick internal triage step and the planning/coding agents all use
+  it. This is the simplest way to "just use Anthropic" (or `ollama`, `openai`).
+  Type `/model anthropic` (or `auto`) as a shortcut for the same thing.
+- **Or pin one model** - always use that one specific model for the
+  planning and the actual work (triage is left as it is).
+- **Triage only (advanced)** - change just the quick triage step, leaving the
+  work agents alone. Useful for a split setup, e.g. cheap local triage with a
+  cloud model doing the work.
 
 Out of the box the list is your local Ollama models. To use a cloud model, give
 it an API key one of two ways:
@@ -241,13 +246,14 @@ it an API key one of two ways:
 
 Notes:
 
-- Picking a model uses it for the planning and the actual work. The quick
-  internal "is this a question or a task?" step is not affected by your choice -
-  by default it stays on a fast local Ollama model, so it costs you nothing. If
-  you have no Ollama server, point it at a cloud provider with the
-  `myDevTeam.triage.model` setting (e.g. `provider:openai`), or at a local
-  llama.cpp server with `provider:llamacpp` (see "Running a local model without
-  Ollama" below); see [Settings](#7-settings).
+- Pinning a specific model (the middle group) uses it for the planning and the
+  actual work only. The quick internal "is this a question or a task?" step is
+  left alone - by default it stays on a fast local Ollama model, so it costs you
+  nothing. If you have no Ollama server, point triage at a cloud provider (or a
+  local llama.cpp server) from the **Triage only** group, the `/model` shortcut
+  for a provider/Auto (which sets both at once), or the `myDevTeam.triage.model`
+  setting (e.g. `provider:openai`, or `provider:llamacpp` - see "Running a local
+  model without Ollama" below); see [Settings](#7-settings).
 - **Auto sizes the model to the job.** When the model is Auto (or you picked a
   provider rather than one fixed model), My Dev Team also judges how demanding a
   task is and uses a cheaper/smaller model for simple work (e.g. "write a
@@ -448,7 +454,7 @@ likely to touch:
 | Setting                          | Default                  | What it controls                                  |
 | -------------------------------- | ------------------------ | ------------------------------------------------- |
 | `myDevTeam.model`                | `auto`                   | Which model, provider (`provider:<name>`), or `auto` to use; easier to set with `/model` or the **My Dev Team** status button |
-| `myDevTeam.triage.model`         | `""`                     | What the quick triage step uses, kept separate from the model above. Empty uses the build's default (a local Ollama model); set `provider:llamacpp` (a local llama.cpp server), `provider:openai` (or `anthropic`/`groq`), `auto`, or a model id when you have no Ollama server. A provider/model the build disabled cannot be chosen |
+| `myDevTeam.triage.model`         | `""`                     | What the quick triage step uses, kept separate from the model above. Easiest to set from the `/model` list's **Triage only** group (or a provider/Auto pick, which sets both). Empty uses the build's default (a local Ollama model); set `provider:llamacpp` (a local llama.cpp server), `provider:openai` (or `anthropic`/`groq`), `auto`, or a model id when you have no Ollama server. A provider/model the build disabled cannot be chosen |
 | `myDevTeam.complexityRouting`    | `true`                   | Let Auto size the model to how hard the task is (cheaper for simple work, stronger for complex). Turn off to ignore difficulty; a pinned model is never affected |
 | `myDevTeam.planApproval`         | `auto`                   | When to pause for you to approve a plan before it runs: `auto` (complex plans only), `always` (every plan), or `never`. At the prompt you can Approve, Cancel, or Revise (comment and redraft) |
 | `myDevTeam.planApproval.preview` | `auto`                   | When a paused plan also opens as a read-only preview in the editor: `auto` (only a big plan), `always` (every plan it pauses on), or `never` (review in the chat only). The Approve/Cancel/Revise buttons always stay in the chat |

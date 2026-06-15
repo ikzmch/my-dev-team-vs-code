@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.51.0] - 2026-06-16
+
+### Changed
+
+- **One picker sets the model for the whole team.** The `/model` list (and the
+  status-bar menu) is now grouped: picking a provider or Auto at the top points
+  both the quick triage step and the planning/coding agents at it in one click,
+  a "specific model" group still pins just the work agents, and a new "Triage
+  only" group changes triage on its own. Triage finally has a UI instead of
+  needing a hand-edited `myDevTeam.triage.model` setting.
+
 ## [0.50.1] - 2026-06-15
 
 ### Changed

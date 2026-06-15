@@ -49,6 +49,10 @@ function modelSetting(): unknown {
   return __state.configuration.get('myDevTeam.model');
 }
 
+function triageSetting(): unknown {
+  return __state.configuration.get('myDevTeam.triage.model');
+}
+
 describe('resolveModelArg', () => {
   it('matches by id or label, case-insensitively', () => {
     expect(resolveModelArg(choices, 'qwen3-coder')?.id).toBe('qwen3-coder');
@@ -73,18 +77,29 @@ describe('currentModelLabel', () => {
 });
 
 describe('handleModelChatCommand', () => {
-  it('sets the model from an argument and confirms', async () => {
+  it('pins the work agents from a specific-model argument, leaving triage', async () => {
     const stream = fakeStream();
     await handleModelChatCommand(fakeEngine(), 'qwen3-coder', stream as any);
     expect(modelSetting()).toBe('qwen3-coder');
+    expect(triageSetting()).toBeUndefined();
     expect(stream.markdown.mock.calls[0][0]).toContain('Qwen3 Coder (Ollama)');
+    expect(stream.markdown.mock.calls[0][0]).toContain('triage unchanged');
   });
 
-  it('sets a provider from a bare provider name', async () => {
+  it('points the whole team from a bare provider name', async () => {
     const stream = fakeStream();
     await handleModelChatCommand(fakeEngine(), 'anthropic', stream as any);
     expect(modelSetting()).toBe('provider:anthropic');
+    expect(triageSetting()).toBe('provider:anthropic');
     expect(stream.markdown.mock.calls[0][0]).toContain('Anthropic (best available)');
+    expect(stream.markdown.mock.calls[0][0]).toContain('Triage and all agents');
+  });
+
+  it('points the whole team from an "auto" argument', async () => {
+    const stream = fakeStream();
+    await handleModelChatCommand(fakeEngine(), 'auto', stream as any);
+    expect(modelSetting()).toBe('auto');
+    expect(triageSetting()).toBe('auto');
   });
 
   it('reports an unknown argument without changing the setting', async () => {
@@ -94,11 +109,12 @@ describe('handleModelChatCommand', () => {
     expect(stream.markdown.mock.calls[0][0]).toContain('No model "gpt-9"');
   });
 
-  it('with no argument opens the picker and sets the chosen model', async () => {
-    __setQuickPickResponse(2); // the qwen3-coder entry
+  it('with no argument opens the picker and pins the chosen work model', async () => {
+    __setQuickPickResponse(4); // the qwen3-coder (work) entry
     const stream = fakeStream();
     await handleModelChatCommand(fakeEngine(), '   ', stream as any);
     expect(modelSetting()).toBe('qwen3-coder');
+    expect(triageSetting()).toBeUndefined();
     expect(stream.markdown.mock.calls[0][0]).toContain('Qwen3 Coder (Ollama)');
   });
 
@@ -111,12 +127,40 @@ describe('handleModelChatCommand', () => {
   });
 });
 
+// Picker layout (separators included), used to address rows by index below:
+//   0 sep "everything"   1 auto(both)        2 provider:anthropic(both)
+//   3 sep "specific"     4 qwen3-coder(work) 5 anthropic-opus(work)
+//   6 sep "triage"       7 auto(triage)      8 provider:anthropic(triage)
+//   9 qwen3-coder(triage) 10 anthropic-opus(triage)
 describe('pickModel', () => {
-  it('writes the chosen id and returns it', async () => {
-    __setQuickPickResponse(3); // anthropic-opus
+  it('pins a specific work model and returns the work scope', async () => {
+    __setQuickPickResponse(5); // anthropic-opus (work)
     const picked = await pickModel(fakeEngine());
-    expect(picked?.id).toBe('anthropic-opus');
+    expect(picked).toEqual({ label: 'Claude Opus 4.8 (Anthropic)', scope: 'work' });
     expect(modelSetting()).toBe('anthropic-opus');
+    expect(triageSetting()).toBeUndefined();
+  });
+
+  it('points the whole team when a provider row is picked', async () => {
+    __setQuickPickResponse(2); // provider:anthropic (both)
+    const picked = await pickModel(fakeEngine());
+    expect(picked?.scope).toBe('both');
+    expect(modelSetting()).toBe('provider:anthropic');
+    expect(triageSetting()).toBe('provider:anthropic');
+  });
+
+  it('sets triage alone from the advanced group', async () => {
+    __setQuickPickResponse(9); // qwen3-coder (triage)
+    const picked = await pickModel(fakeEngine());
+    expect(picked?.scope).toBe('triage');
+    expect(triageSetting()).toBe('qwen3-coder');
+    expect(modelSetting()).toBeUndefined();
+  });
+
+  it('returns undefined for a dismissed picker', async () => {
+    __setQuickPickResponse(undefined);
+    expect(await pickModel(fakeEngine())).toBeUndefined();
+    expect(modelSetting()).toBeUndefined();
   });
 
   it('shows the disabled detail for a disabled choice', async () => {
@@ -132,8 +176,11 @@ describe('pickModel', () => {
     ];
     __setQuickPickResponse(undefined);
     await pickModel(fakeEngine(list));
-    const items = window.showQuickPick.mock.calls[0][0] as { choice: ModelChoice; detail: string }[];
-    const coder = items.find((i) => i.choice.id === 'qwen3-coder')!;
+    const items = window.showQuickPick.mock.calls[0][0] as {
+      choice?: ModelChoice;
+      detail?: string;
+    }[];
+    const coder = items.find((i) => i.choice?.id === 'qwen3-coder' && i.detail)!;
     expect(coder.detail).toContain('Disabled');
   });
 });

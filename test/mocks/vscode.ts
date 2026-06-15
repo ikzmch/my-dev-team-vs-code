@@ -134,6 +134,11 @@ export enum ConfigurationTarget {
   WorkspaceFolder = 3,
 }
 
+export enum QuickPickItemKind {
+  Separator = -1,
+  Default = 0,
+}
+
 /** Mirrors vscode.FileType: a bitmask, with SymbolicLink OR'd onto the base type. */
 export enum FileType {
   Unknown = 0,

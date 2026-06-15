@@ -116,6 +116,17 @@ export const messages = {
       `Use ${provider} models; the best one is picked per task.`,
     /** Suffix marking the model that is currently selected, in the picker. */
     currentSuffix: ' (current)',
+    /**
+     * Separator headers grouping the picker. The first group's rows point the
+     * whole team (triage + the work agents) at one provider/Auto; the second
+     * pins a single model for the work agents only; the third overrides triage
+     * alone, for the rare split setup.
+     */
+    everythingSeparator: 'Use one provider for everything (triage + agents)',
+    specificModelSeparator: 'Or pin one model (agents only)',
+    triageSeparator: 'Triage only (advanced)',
+    /** Prefix marking a picker row that sets the triage model alone. */
+    triageLabel: (label: string) => `Triage: ${label}`,
     /** Detail shown on a picker entry whose model cannot run yet. */
     unavailableDetail: 'Not available - set its API key or pull the model first.',
     /**
@@ -124,10 +135,16 @@ export const messages = {
      */
     disabledDetail: 'Disabled by configuration - it will not run.',
     /** Placeholder in the `/model` quick pick. */
-    pickerPlaceholder: 'Choose the model for @devteam (Auto routes by capability)',
-    /** The whole reply to a `/model` turn that set the choice. */
+    pickerPlaceholder: 'Choose models for @devteam (the top rows set the whole team)',
+    /** Reply to a `/model` turn that pointed the whole team at one provider/Auto. */
+    confirmationBoth: (label: string) =>
+      `Triage and all agents set to **${label}**. It applies to your next @devteam request.`,
+    /** Reply to a `/model` turn that pinned the work agents' model (triage unchanged). */
     confirmation: (label: string) =>
-      `Model set to **${label}**. It applies to your next @devteam request.`,
+      `All agents set to **${label}** (triage unchanged). It applies to your next @devteam request.`,
+    /** Reply to a `/model` turn that set the triage model alone. */
+    confirmationTriage: (label: string) =>
+      `Triage set to **${label}**. It applies to your next @devteam request.`,
     /** The reply when `/model <name>` named something not in the catalogue. */
     unknown: (name: string) =>
       `No model "${name}". Run /model with no argument to pick from the list.`,
