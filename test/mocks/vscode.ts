@@ -76,6 +76,12 @@ export class CodeLens {
 }
 
 /** Mirrors vscode.DiagnosticSeverity (Error is 0, as in the real API). */
+export enum ProgressLocation {
+  SourceControl = 1,
+  Window = 10,
+  Notification = 15,
+}
+
 export enum DiagnosticSeverity {
   Error = 0,
   Warning = 1,
@@ -624,6 +630,29 @@ export const window = {
 
   showInputBox: vi.fn(
     async (..._args: unknown[]): Promise<string | undefined> => __state.inputBoxResponse
+  ),
+
+  // Runs the task immediately with an inert progress reporter and a token that
+  // never cancels; cancellation paths are exercised by settling the awaited
+  // work itself (e.g. an engine run rejecting RunCancelledError).
+  withProgress: vi.fn(
+    async (
+      _options: unknown,
+      task: (
+        progress: { report: (value: unknown) => void },
+        token: {
+          isCancellationRequested: boolean;
+          onCancellationRequested: (listener: () => void) => { dispose: () => void };
+        }
+      ) => Promise<unknown>
+    ): Promise<unknown> =>
+      task(
+        { report: vi.fn() },
+        {
+          isCancellationRequested: false,
+          onCancellationRequested: vi.fn(() => ({ dispose: vi.fn() })),
+        }
+      )
   ),
 
   // One tab group holding every open tab; `close` removes the given tab(s).

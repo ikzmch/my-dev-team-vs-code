@@ -7,7 +7,7 @@ import {
   loadCommands,
   pinnedReason,
 } from '../src/engine/config/commands';
-import { clientCommands, COMPACT_COMMAND } from '../src/config/clientCommands';
+import { ASK_COMMAND, clientCommands, COMPACT_COMMAND } from '../src/config/clientCommands';
 
 function commandFile(frontmatter: string, body = ''): string {
   return `---\n${frontmatter}\n---\n\n${body}`;
@@ -70,6 +70,7 @@ describe('command configs', () => {
 
   it('registers the discovered commands keyed by name', () => {
     expect(commandNames).toEqual([
+      'ask',
       'compact',
       'do',
       'explain',
@@ -84,7 +85,7 @@ describe('command configs', () => {
   });
 
   it('pins oneshot commands to oneshot and planning commands to planning', () => {
-    for (const name of ['compact', 'explain', 'review']) {
+    for (const name of ['ask', 'compact', 'explain', 'review']) {
       expect(commandConfigs[name].intent).toBe('oneshot');
     }
     for (const name of ['do', 'fix', 'plan', 'test']) {
@@ -117,6 +118,14 @@ describe('client commands', () => {
     // The client may not import engine internals, so it repeats the name;
     // this is the guard that the engine actually knows it.
     expect(commandConfigs[COMPACT_COMMAND]?.intent).toBe('oneshot');
+  });
+
+  it('points the side-question command at a registered oneshot engine command', () => {
+    // Same rule as COMPACT_COMMAND: the client repeats the /ask name for its
+    // history filtering and the quick-question run, so the engine must know it
+    // and answer it in one shot (a side question never plans or executes).
+    expect(commandConfigs[ASK_COMMAND]?.intent).toBe('oneshot');
+    expect(commandConfigs[ASK_COMMAND]?.complexity).toBe('simple');
   });
 });
 

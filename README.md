@@ -24,9 +24,9 @@ answer.
   chat goes dark. Replacing Copilot outright is still a supported path - it is
   just not the only one.
 - **Native chat experience.** No custom UI to learn: attachments,
-  conversation follow-ups, slash commands (`/explain`, `/review`, `/plan`,
-  `/do`, `/fix`, `/test`, `/compact`, `/clear`, `/model`), and 👍/👎 feedback all
-  work the way the rest of VS Code chat does. Your project's `AGENTS.md` or
+  conversation follow-ups, slash commands (`/ask`, `/explain`, `/review`,
+  `/plan`, `/do`, `/fix`, `/test`, `/compact`, `/clear`, `/model`, `/verbose`),
+  and 👍/👎 feedback all work the way the rest of VS Code chat does. Your project's `AGENTS.md` or
   `CLAUDE.md` is respected as standing instructions on every request. You can
   also start from the editor: a **Fix with Dev Team** Quick Fix on a diagnostic,
   an **Explain** action on a selection, and a write/repair-tests CodeLens on

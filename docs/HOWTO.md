@@ -333,6 +333,7 @@ want:
 
 | Command    | What it does                                                        |
 | ---------- | ------------------------------------------------------------------- |
+| `/ask`     | Ask a quick side question - answered directly, and it never joins the conversation (typing `btw ...` does the same) |
 | `/explain` | Explain a file, selection, or concept in the chat - no changes made |
 | `/review`  | Review the attached code or selection - findings in chat, no edits  |
 | `/plan`    | Draft the step-by-step plan but do not execute it; say "go ahead" in a follow-up to run it |
@@ -355,6 +356,36 @@ opening a new chat. The chat panel still shows everything; the commands only
 change what the models receive. If a `/compact` fails (e.g. Ollama is down),
 your history is untouched - the summary only takes over once it actually
 succeeded.
+
+### Side questions: "btw ..."
+
+Mid-task curiosity ("how do I sort an array in Python?") does not have to
+derail the work. Start a message with `btw` (or use `/ask`) and it is treated
+as a **side question**: answered right there in the chat, but kept out of the
+conversation - the agent's next turn neither sees the question nor the answer,
+so a follow-up like "now do step 3 differently" still refers to the real work.
+Only a leading `btw` counts; a sentence merely containing "btw" is handled
+normally.
+
+One consequence to know: because a side question never joins the conversation,
+its answer cannot be followed up on either - "and in reverse order?" as the
+next message would arrive with no memory of the sorting question. Ask side
+questions self-contained.
+
+### Ask while the agent is busy: the quick-question hotkey
+
+While a long `@devteam` turn is still running, the chat input is held by that
+turn - but you can still ask on the side. Press `Ctrl+Alt+Q` (`Cmd+Alt+Q` on
+macOS), or run **My Dev Team: Ask a Quick Question** from the command palette,
+type your question, and the answer opens in a small read-only preview beside
+your editor while the main task keeps running undisturbed. The notification
+that appears while it thinks has a Cancel button. These questions are
+answered from the model's knowledge alone - they never read or change your
+files - and their tokens count in the session total like any other request.
+
+Tip: a second chat session (the `+` button in the Chat view, or a chat in a
+new window) can also talk to `@devteam` in parallel; use `/ask` there for the
+same keep-it-out-of-the-conversation behavior.
 
 **From the editor, without typing `@devteam`.** Three shortcuts open the chat
 for you with the right command already filled in, so you can start from the

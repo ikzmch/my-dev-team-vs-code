@@ -555,6 +555,46 @@ export const messages = {
         : `Write or update the tests in ${relPath}, then run them.`,
   },
 
+  /**
+   * Copy for the quick-question command (ui/quickQuestion.ts): the hotkey path
+   * for asking a side question while a chat run is busy. The input box takes
+   * the question, a cancellable progress notification covers the run, and the
+   * answer renders into a read-only markdown preview beside the editor (the
+   * chat input may be blocked by the ongoing turn, so the answer cannot land
+   * there). Like a "btw" chat turn it runs the /ask route with no history.
+   */
+  quickAsk: {
+    /** Prompt of the question input box. */
+    inputPrompt:
+      'Ask a quick question - answered on the side, it never joins the chat conversation.',
+    /** Placeholder of the question input box. */
+    inputPlaceholder: 'e.g. how do I sort an array in Python?',
+    /** Title of the cancellable progress notification shown while answering. */
+    progressTitle: 'My Dev Team: answering your question',
+    /** Tab/file name of the answer preview (the id keeps concurrent asks apart). */
+    fileName: (id: string) => `Quick answer ${id}.md`,
+    /** Document title of the answer preview. */
+    title: '# Quick answer\n',
+    /** The question, quoted under the title (each line, so multi-line quotes hold). */
+    question: (question: string) =>
+      '\n' +
+      question
+        .split('\n')
+        .map((line) => `> ${line}`)
+        .join('\n') +
+      '\n\n',
+    /** Body shown while the answer is still streaming in. */
+    working: '_Working..._\n',
+    /** Body when the run failed; `detail` is the protocol error's message. */
+    failed: (detail: string) => `**The question failed:** ${detail}\n\n`,
+    /**
+     * Returned to the model should a quick-question run ever call a tool: the
+     * run offers none (the /ask route answers in one model call), so this is
+     * the structural backstop, not an expected path.
+     */
+    noTools: 'Tools are not available for a quick question; answer from knowledge.',
+  },
+
   /** Copy for the client-side /clear command (it never starts a run). */
   clear: {
     /** The whole reply to a /clear turn. */

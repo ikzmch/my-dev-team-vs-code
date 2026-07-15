@@ -25,6 +25,7 @@ import { pickVerbosity, SELECT_VERBOSITY_COMMAND_ID } from './ui/verbosityComman
 import { StatusBar, STATUS_MENU_COMMAND_ID } from './ui/statusBar';
 import { runShowUsageCommand, SHOW_USAGE_COMMAND_ID } from './ui/usageView';
 import { registerEditorEntryPoints } from './ui/editorEntryPoints';
+import { registerQuickQuestion } from './ui/quickQuestion';
 import { setRuntimeConfig } from './config/runtimeConfig';
 import { liveRuntimeConfig } from './config/settings';
 import { setSecretSource } from './config/credentials';
@@ -162,6 +163,14 @@ export function activate(context: vscode.ExtensionContext) {
       runShowUsageCommand(evalLog)
     )
   );
+
+  // --- Quick questions ---
+  // The hotkey path for a side question while a chat turn is busy: an input
+  // box, a run on the pinned /ask route (no history, no tools), and the answer
+  // in a read-only preview beside the editor. Shares the chat handler's engine
+  // provider, eval log, and session token counter, so a quick question is
+  // billed and logged like any run.
+  registerQuickQuestion(context, getEngine, evalLog, (usage) => statusBar.add(usage));
 
   // --- Editor entry points ---
   // Meet the user in the editor, not only the chat panel: a "Fix with Dev

@@ -57,10 +57,11 @@ describe('activate', () => {
     // the run-mirror terminal + five tools + the participant, plus the unified
     // status-bar button and its status-menu command, the engine-provider
     // disposable, the select-model, set-api-key, and select-verbosity commands,
-    // the config-change listener, the show-usage command, and the five editor
-    // entry points (three shim commands + the code-action and CodeLens
-    // providers), get pushed for disposal.
-    expect(context.subscriptions).toHaveLength(25);
+    // the config-change listener, the show-usage command, the quick-question
+    // entry point (its command and the answer-preview provider and emitter),
+    // and the five editor entry points (three shim commands + the code-action
+    // and CodeLens providers), get pushed for disposal.
+    expect(context.subscriptions).toHaveLength(28);
     expect(__state.registeredCommands.has('myDevTeam.approval')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.planReview')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.statusMenu')).toBe(true);
@@ -68,6 +69,7 @@ describe('activate', () => {
     expect(__state.registeredCommands.has('myDevTeam.setApiKey')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.selectVerbosity')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.showUsage')).toBe(true);
+    expect(__state.registeredCommands.has('myDevTeam.quickQuestion')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.fixDiagnostic')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.explainSelection')).toBe(true);
     expect(__state.registeredCommands.has('myDevTeam.writeOrRepairTests')).toBe(true);

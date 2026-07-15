@@ -24,6 +24,7 @@ import { collectInstructions } from '../client/instructions';
 import { collectSkills } from '../client/skills';
 import { collectReferences } from '../client/references';
 import {
+  ASK_COMMAND,
   CLEAR_COMMAND,
   COMPACT_COMMAND,
   MODEL_COMMAND,
@@ -358,6 +359,30 @@ export class ChatPlanReviewer {
 }
 
 /**
+ * The "btw" marker that turns a bare chat prompt into a side question (the
+ * typed shorthand for the /ask command). Only a leading "btw" token counts -
+ * optionally followed by punctuation - so a prompt merely mentioning "btw"
+ * mid-sentence is never misrouted; /ask stays the explicit spelling.
+ */
+const SIDE_QUESTION_PREFIX = /^btw\b[,:.!?]?\s*/i;
+
+/**
+ * The side question carried by a prompt led by the "btw" marker, or undefined
+ * when the prompt is not one (no marker, or nothing after it). Used twice, and
+ * the two must agree: the handler routes a matching request as /ask, and
+ * collectHistory recognizes the same marker on prior request turns to keep
+ * side questions out of every later turn's context. Exported for tests.
+ */
+export function sideQuestion(prompt: string): string | undefined {
+  const marker = SIDE_QUESTION_PREFIX.exec(prompt);
+  if (!marker) {
+    return undefined;
+  }
+  const question = prompt.slice(marker[0].length).trim();
+  return question ? question : undefined;
+}
+
+/**
  * Convert the chat session's prior turns into run-request history turns, so a
  * follow-up ("now rename it too") reaches the agents with the conversation
  * that says what "it" is. Only this participant's exchanges count: a request
@@ -378,6 +403,12 @@ export class ChatPlanReviewer {
  *   /compact request turn is only the instruction and is skipped, and a
  *   failed or cancelled compact is skipped entirely so it never wipes the
  *   history it failed to summarize.
+ *
+ * Side questions (/ask, or a bare prompt led by "btw") are skipped entirely -
+ * both the question turn and its answer. A side question is answered in place
+ * but never joins the conversation, so it cannot derail a follow-up to the
+ * real work. The request turn is recognized by its command or the "btw"
+ * marker, the response turn by the `TurnMetadata.command` the handler stored.
  */
 function collectHistory(
   history: readonly (vscode.ChatRequestTurn | vscode.ChatResponseTurn)[]
@@ -395,6 +426,12 @@ function collectHistory(
       if (turn.command === COMPACT_COMMAND) {
         continue;
       }
+      if (
+        turn.command === ASK_COMMAND ||
+        (!turn.command && sideQuestion(turn.prompt) !== undefined)
+      ) {
+        continue;
+      }
       const prompt = turn.command ? `/${turn.command} ${turn.prompt}` : turn.prompt;
       turns.push({
         role: 'user',
@@ -402,7 +439,7 @@ function collectHistory(
       });
     } else if (turn instanceof vscode.ChatResponseTurn) {
       const metadata = turn.result?.metadata as Partial<TurnMetadata> | undefined;
-      if (metadata?.command === CLEAR_COMMAND) {
+      if (metadata?.command === CLEAR_COMMAND || metadata?.command === ASK_COMMAND) {
         continue;
       }
       if (metadata?.command === COMPACT_COMMAND) {
@@ -710,16 +747,21 @@ export interface TurnMetadata {
  * the first response turn that carries one); otherwise - a new chat, or the
  * first turn after a /clear emptied the history - it mints a fresh id. A
  * /clear or /model turn carries no id, so the scan skips past it to the real
- * conversation it belongs to.
+ * conversation it belongs to. A side-question (/ask) turn does carry an id -
+ * its own, minted fresh since it runs with no history - so the scan skips it
+ * explicitly: the real conversation resumes past it, not under it.
  */
 function conversationIdFor(context: vscode.ChatContext, hasHistory: boolean): string {
   if (hasHistory) {
     for (let i = context.history.length - 1; i >= 0; i--) {
       const turn = context.history[i];
       if (turn instanceof vscode.ChatResponseTurn && turn.participant === PARTICIPANT_ID) {
-        const id = (turn.result?.metadata as Partial<TurnMetadata> | undefined)?.conversationId;
-        if (id) {
-          return id;
+        const metadata = turn.result?.metadata as Partial<TurnMetadata> | undefined;
+        if (metadata?.command === ASK_COMMAND) {
+          continue;
+        }
+        if (metadata?.conversationId) {
+          return metadata.conversationId;
         }
       }
     }
@@ -811,6 +853,14 @@ export function createHandler(
       return { metadata };
     }
 
+    // A side question: /ask typed explicitly, or a bare prompt led by "btw".
+    // Either spelling runs as the pinned /ask route with the marker stripped
+    // and no conversation history - the question neither reads the main
+    // thread's context nor (via collectHistory skipping ask turns) writes into
+    // it, so it is answered in place without derailing the ongoing work.
+    const aside = !request.command ? sideQuestion(request.prompt) : undefined;
+    const command = aside !== undefined ? ASK_COMMAND : request.command;
+
     // Resolve the workspace's standing instruction file (AGENTS.md/CLAUDE.md),
     // the request's references (attached files/selections/symbols plus inline
     // #codebase/#changes markers), and the prior turns; the engine folds them
@@ -826,9 +876,9 @@ export function createHandler(
     const dynamicTools = mcp ? await mcp.listToolDefs() : [];
     const { attachments, prompt } = await collectReferences(
       request.references,
-      request.prompt
+      aside ?? request.prompt
     );
-    const history = collectHistory(context.history);
+    const history = command === ASK_COMMAND ? [] : collectHistory(context.history);
 
     // What this turn contributes to the eval log: a fresh run id (also the
     // feedback pairing key), the route once triage decides it, and the
@@ -849,7 +899,9 @@ export function createHandler(
     const usage: UsageEntry[] = [];
     const chatResult = (): vscode.ChatResult => {
       const metadata: TurnMetadata = {
-        command: request.command ?? '',
+        // The effective command: a "btw" side question records ASK_COMMAND
+        // here, which is what lets collectHistory skip its response turn.
+        command: command ?? '',
         runId,
         conversationId,
         intent,
@@ -953,8 +1005,8 @@ export function createHandler(
         // The slash command travels by name only: what it does (route
         // pinning, prompt preamble) is the engine's command registry's
         // business, and an engine that does not know the name treats the
-        // prompt as plain text.
-        command: request.command,
+        // prompt as plain text. A "btw" side question travels as /ask.
+        command,
         // The user's model choice (a registry id, or "auto"); the engine routes
         // by capability when it is "auto" or an id it does not know.
         model: settings.model,
@@ -1009,7 +1061,7 @@ export function createHandler(
       void evalLog?.recordRun({
         runId,
         conversationId,
-        command: request.command ?? '',
+        command: command ?? '',
         intent,
         outcome: ending,
         errorStep,

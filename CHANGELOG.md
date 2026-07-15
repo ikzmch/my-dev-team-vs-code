@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.53.0] - 2026-07-15
+
+### Added
+
+- **Side questions with `/ask` and "btw".** Start a message with `btw` (or use
+  the new `/ask` command) to ask a quick question that is answered in place but
+  never joins the conversation: it runs with no history and is excluded from
+  every later turn's context, so mid-task curiosity cannot derail the ongoing
+  work.
+- **Quick-question hotkey.** `Ctrl+Alt+Q` (`Cmd+Alt+Q` on macOS) or the "My Dev
+  Team: Ask a Quick Question" command asks a side question while a chat turn is
+  still running: the question goes into an input box, the answer streams into a
+  read-only preview beside the editor, and the run is cancellable from its
+  progress notification. Quick questions never read or change workspace files.
+
 ## [0.52.0] - 2026-06-16
 
 ### Added

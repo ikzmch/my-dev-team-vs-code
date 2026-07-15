@@ -1574,6 +1574,113 @@ describe('createHandler conversation history', () => {
   });
 });
 
+describe('createHandler side questions', () => {
+  /** Run the handler and capture the agent prompts, the stream, and the result. */
+  async function handle(prompt: string, history: unknown[] = [], command?: string) {
+    const { engine, seen } = makeEngine();
+    const stream = fakeStream();
+    const result = await createHandler(() => engine, hostStub)(
+      { prompt, command, references: [] } as any,
+      { history } as any,
+      stream as any,
+      fakeToken() as any
+    );
+    return { seen, stream, result };
+  }
+
+  /** A response turn carrying the TurnMetadata the handler stores per turn. */
+  function responseTurn(
+    text: string,
+    metadata: { command: string; outcome?: string; conversationId?: string }
+  ) {
+    return new ChatResponseTurn(
+      [new ChatResponseMarkdownPart(text)],
+      undefined,
+      { metadata: { runId: 'r', ...metadata } }
+    );
+  }
+
+  it('routes a "btw" prompt as the pinned /ask route with the marker stripped', async () => {
+    const { seen, stream, result } = await handle('btw how do I sort an array in Python?');
+
+    // The route is pinned: the triage model is never called...
+    expect(seen.triage).toBeUndefined();
+    expect(emitted(stream)).toContain('Requested via /ask.');
+    // ...and the answerer sees the question without the marker, framed by the
+    // ask preamble.
+    expect(seen.answerer).toContain('how do I sort an array in Python?');
+    expect(seen.answerer).toContain('side question');
+    expect(seen.answerer).not.toMatch(/btw/i);
+    // The turn records the ask command, which is what excludes its response
+    // from later turns' history.
+    expect((result?.metadata as { command?: string })?.command).toBe('ask');
+  });
+
+  it('accepts the marker in any case with trailing punctuation', async () => {
+    const { seen } = await handle('BTW, which is faster, a list or a tuple?');
+    expect(seen.answerer).toContain('which is faster, a list or a tuple?');
+    expect(seen.answerer).not.toMatch(/btw/i);
+  });
+
+  it('runs a side question with no conversation history', async () => {
+    const { seen } = await handle('btw how do I sort a list?', [
+      new ChatRequestTurn('create a calculator'),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('Created calculator.py.')]),
+    ]);
+
+    expect(seen.answerer).not.toContain('--- Conversation so far ---');
+    expect(seen.answerer).not.toContain('create a calculator');
+  });
+
+  it('keeps prior side questions out of a later turn\'s history', async () => {
+    const { seen } = await handle('now rename it too', [
+      new ChatRequestTurn('create a calculator'),
+      new ChatResponseTurn([new ChatResponseMarkdownPart('Created calculator.py.')]),
+      // A "btw" side question and its answer...
+      new ChatRequestTurn('btw how do I sort a list?'),
+      responseTurn('Use sorted().', { command: 'ask', outcome: 'ok' }),
+      // ...and an explicit /ask turn and its answer.
+      new ChatRequestTurn('what is a tuple?', 'ask'),
+      responseTurn('An immutable sequence.', { command: 'ask', outcome: 'ok' }),
+    ]);
+
+    // The real conversation survives; neither side question leaked into it.
+    expect(seen.answerer).toContain('User: create a calculator');
+    expect(seen.answerer).toContain('Assistant: Created calculator.py.');
+    expect(seen.answerer).not.toContain('sort a list');
+    expect(seen.answerer).not.toContain('sorted()');
+    expect(seen.answerer).not.toContain('tuple');
+  });
+
+  it('resumes the conversation id past a side-question turn', async () => {
+    const { result } = await handle('now rename it too', [
+      new ChatRequestTurn('create a calculator'),
+      responseTurn('Created calculator.py.', { command: '', conversationId: 'main' }),
+      new ChatRequestTurn('btw how do I sort a list?'),
+      responseTurn('Use sorted().', { command: 'ask', conversationId: 'aside' }),
+    ]);
+
+    // The follow-up continues the real thread, not the side question's.
+    expect((result?.metadata as { conversationId?: string })?.conversationId).toBe('main');
+  });
+
+  it('leaves a prompt that merely mentions btw on the normal route', async () => {
+    const { seen } = await handle('the btw flag is broken, fix it');
+    // Triage ran (nothing was pinned) and saw the untouched prompt.
+    expect(seen.triage).toBe('the btw flag is broken, fix it');
+  });
+
+  it('leaves a word merely starting with btw on the normal route', async () => {
+    const { seen } = await handle('btware needs an update');
+    expect(seen.triage).toBe('btware needs an update');
+  });
+
+  it('leaves a bare "btw" with no question on the normal route', async () => {
+    const { seen } = await handle('btw');
+    expect(seen.triage).toBe('btw');
+  });
+});
+
 describe('createHandler streaming', () => {
   const count = (text: string, needle: string) => text.split(needle).length - 1;
 

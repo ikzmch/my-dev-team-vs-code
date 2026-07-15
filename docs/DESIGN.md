@@ -36,12 +36,16 @@ contract (see [The engine protocol](#the-engine-protocol-srcprotocol)). A
 > the approval seam. When the run changed files, a **summarizer** then recaps it
 > in three sections (what ships, how it's built, tests and docs). Every turn
 > carries the **conversation history** (size-capped), so follow-ups like
-> "now rename it too" resolve against the earlier exchanges. Seven engine
-> **slash commands** (`/explain`, `/review`, `/plan`, `/do`, `/fix`, `/test`,
-> `/compact`) pin the route without a triage call and frame the request for
-> the agents; `/plan` stops after the plan is drafted, `/compact` summarizes
-> the conversation into a turn that replaces it, and a client-side `/clear`
-> drops the history without starting a run. The pipeline now
+> "now rename it too" resolve against the earlier exchanges. Eight engine
+> **slash commands** (`/ask`, `/explain`, `/review`, `/plan`, `/do`, `/fix`,
+> `/test`, `/compact`) pin the route without a triage call and frame the
+> request for the agents; `/plan` stops after the plan is drafted, `/compact`
+> summarizes the conversation into a turn that replaces it, `/ask` (or a
+> prompt led by "btw") answers a **side question** that never joins the
+> conversation history, and a client-side `/clear` drops the history without
+> starting a run. A **quick-question command** (default `Ctrl+Alt+Q`) asks a
+> side question outside the chat - useful while a long turn still streams -
+> with the answer in an editor preview. The pipeline now
 > runs behind the engine protocol (Phase A of the backend split): only the
 > local engine exists, but the seam, the event stream, the tool inversion,
 > and the usage (billing) events are in place. See
@@ -107,7 +111,7 @@ src/
     credentials.ts        cloud-provider API keys behind an injectable source (vscode-free): default env-only (the sidecar's only source); the host injects a SecretStorage source for the local engine
     messages.ts           user-facing chat copy (errors, warnings, templates, the model-selection copy)
     environment.ts        runtime OS/shell facts: fills prompt placeholders, picks the run tool's shell
-    clientCommands.ts     the client-handled /clear and /model commands + the /compact history-replacement marker
+    clientCommands.ts     the client-handled /clear and /model commands + the /compact history-replacement and /ask side-question markers
   sidecar/                the engine-as-a-child-process plumbing (vscode-free)
     transport.ts          the sidecar wire: parent<->child message types (incl. the ready handshake) + the SidecarChannel seam
     childRuntime.ts       hosts an Engine and maps messages to engine calls; posts the ready handshake; the tool-call/plan-review proxies that invert side effects back to the parent
@@ -122,6 +126,7 @@ src/
   ui/
     chatParticipant.ts    chat handler: folds run events, streams the reply + Phase-1 ChatApprover + ChatPlanReviewer (plan-approval gate)
     planPreview.ts        read-only editor preview of a big paused plan: a virtual-document content provider opened beside the chat for review (myDevTeam.planApproval.preview)
+    quickQuestion.ts      the quick-question command (hotkey): an input box runs a side question as the pinned /ask route (no history, no tools), the answer streams into a read-only editor preview
     modelCommands.ts      model selection UI: the grouped /model picker (a provider/Auto pick sets the work model + triage at once; an advanced group sets triage alone) and the Set API Key command (SecretStorage; used by the local engine)
     verbosityCommands.ts  output-verbosity UI: the /verbose chat command and the "Select Output Mode" picker, writing the myDevTeam.verbosity rendering setting (client-only; the engine never sees it)
     statusBar.ts          the single "My Dev Team" status-bar button: a rich hover (trusted markdown with command links) and a click menu to change the model, output mode, or open the usage report; holds the live model label and session token total
@@ -997,10 +1002,10 @@ model: resolveTriageModel(agents.triage.capabilities),
 
 ### Slash commands (`engine/config/commands/` + `engine/config/commands.ts`)
 
-`@devteam` offers nine slash commands - seven **engine commands** and two
-**client commands** (`/clear` and `/model`, see below). Each engine command is a `.md`
-config file (discovered like the models and tools - dropping a file in
-registers the command) that does exactly two things:
+`@devteam` offers eleven slash commands - eight **engine commands** and three
+**client commands** (`/clear`, `/model`, and `/verbose`, see below). Each
+engine command is a `.md` config file (discovered like the models and tools -
+dropping a file in registers the command) that does exactly two things:
 
 - **Pins the route.** A known command skips the triage model call entirely:
   the user typing `/fix` already *is* the routing decision, so the call would
@@ -1018,6 +1023,7 @@ registers the command) that does exactly two things:
 
 | Command    | Route                  | What it does                                          |
 | ---------- | ---------------------- | ----------------------------------------------------- |
+| `/ask`     | oneshot                | Answer a quick side question with no conversation history; the turn (question and answer) is excluded from every later turn's history, so it never derails the ongoing work. A bare prompt led by "btw" is shorthand for it (see below) |
 | `/explain` | oneshot                | Explain a file, selection, or concept - no changes    |
 | `/review`  | oneshot                | Review the attached code - findings in chat, no edits |
 | `/plan`    | planning, plan-only    | Draft the plan and stop; the reply ends with a "nothing was executed" note. A follow-up ("go ahead") re-plans with the drafted plan in the conversation history and executes |
@@ -1027,6 +1033,7 @@ registers the command) that does exactly two things:
 | `/compact` | oneshot                | Summarize the conversation so far; once it succeeds, the summary replaces all earlier turns in future prompts (see below) |
 | `/clear`   | client-side, no run    | Drop the conversation so far from future requests; the panel still shows it, the models no longer see it |
 | `/model`   | client-side, no run    | Choose what the planner/answerer/executor use: a model, a provider (best model per task within it), or Auto. With an argument sets it directly (a model name or a bare provider name); with none opens a picker. Writes `myDevTeam.model`, starts no run |
+| `/verbose` | client-side, no run    | Choose the output mode (verbose or default) the chat renders with. Writes `myDevTeam.verbosity`, starts no run |
 
 The command travels on the protocol as `RunRequest.command` - the name only.
 What a command does is the engine's business; the client just relays what the
@@ -1052,6 +1059,43 @@ never wipes the history it failed to summarize - see
 [Conversation history](#the-engine-protocol-srcprotocol). Auto-compaction is
 deliberately absent: compacting spends tokens and changes what the models
 see, so it only happens when the user asks.
+
+**Side questions (`/ask` and the "btw" marker) are half-and-half.** The `/ask`
+route itself is a plain engine command (oneshot, `complexity: simple`, a
+preamble telling the answerer the question is independent of the ongoing
+work), but everything that makes it a *side* question is client history
+policy, like `/clear` and `/compact`: the handler sends an `/ask` turn with
+**no history**, and `collectHistory` skips ask turns - the request by its
+command or the "btw" marker, the response by the `TurnMetadata.command` the
+handler stored - so the question and its answer never reach a later turn's
+prompt. A bare prompt whose first token is `btw` (any case, optional
+punctuation) is shorthand for `/ask`: the handler strips the marker and routes
+the rest as the command; only a *leading* token counts, so a prompt mentioning
+"btw" mid-sentence is never misrouted (`sideQuestion` in
+`ui/chatParticipant.ts`, shared by the routing and the history filter so the
+two cannot drift). The known cost, documented in docs/HOWTO.md: a side question
+cannot be followed up on - its answer is not in anyone's history. The
+`conversationIdFor` scan also skips ask turns, so a follow-up to the real work
+continues the real thread's id, not the side question's.
+
+### Quick questions (`ui/quickQuestion.ts`)
+
+The hotkey path for a side question **while a chat turn is still streaming**:
+VS Code delivers no second chat request from a busy session, so this path
+bypasses the chat UI entirely. The `myDevTeam.quickQuestion` command (default
+`Ctrl+Alt+Q` / `Cmd+Alt+Q`, also in the palette as "My Dev Team: Ask a Quick
+Question") takes the question in an input box, starts a run on whichever
+engine the provider currently selects - the pinned `/ask` route, no history,
+`offeredTools: []` plus a no-op ToolHost so the run structurally cannot touch
+the workspace - and streams the answer into a read-only virtual markdown
+preview beside the editor (`AnswerPreview`, mirroring `planPreview.ts`; the
+tab stays open until the user closes it, except a cancelled question's, which
+cleans itself up). A cancellable progress notification covers the run. The
+engine already multiplexes concurrent runs (per-run ids everywhere, the
+per-provider rate limiter shared), so a quick question during a long
+`@devteam` turn needs no special casing. Usage flows like any run's: the
+session token counter gets the tokens, and the opt-in eval log records the
+run under the `ask` command with its own conversation id.
 
 ### Editor entry points (`ui/editorEntryPoints.ts`)
 
@@ -1645,8 +1689,8 @@ Out of the box, `@devteam <prompt>`:
    for real - small local models routinely need that nudge. The repair is a
    real second model call, so it reports usage too (flagged `repaired` on the
    usage event and the eval-log record, so how often output needs repair stays
-   measurable). A slash command (`/explain`, `/review`, `/plan`, `/do`, `/fix`,
-   `/test`, `/compact` - see [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts))
+   measurable). A slash command (`/ask`, `/explain`, `/review`, `/plan`, `/do`,
+   `/fix`, `/test`, `/compact` - see [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts))
    skips this call and pins the route directly, with `Requested via /<name>.`
    as the rendered reason. The boundary is the deliverable, not the difficulty: requests
    whose product is text in the chat are `oneshot`; anything that should
@@ -1823,8 +1867,8 @@ npm run build      # esbuild bundle -> dist/extension.js
 
 In the dev window, open the Chat view (Ctrl+Alt+I) and type `@devteam hello`.
 Type `/` after
-`@devteam` to pick a slash command (`/explain`, `/review`, `/plan`, `/do`,
-`/fix`, `/test`, `/compact`, `/clear`, `/model`): a command pins the route without a
+`@devteam` to pick a slash command (`/ask`, `/explain`, `/review`, `/plan`,
+`/do`, `/fix`, `/test`, `/compact`, `/clear`, `/model`, `/verbose`): a command pins the route without a
 triage call and frames the request for the agents, the context commands
 manage what history later requests carry, and `/model` chooses the model - see
 [Slash commands](#slash-commands-engineconfigcommands--engineconfigcommandsts).

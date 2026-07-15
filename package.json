@@ -2,7 +2,7 @@
   "name": "my-dev-team",
   "displayName": "My Dev Team",
   "description": "An agentic chat participant for VS Code with tool-calling (read, search, run, write) and built-in feedback.",
-  "version": "0.52.0",
+  "version": "0.53.0",
   "icon": "media/my-dev-team.png",
   "publisher": "bobro",
   "private": true,
@@ -322,6 +322,18 @@
         "command": "myDevTeam.showUsage",
         "title": "Show Token Usage",
         "category": "My Dev Team"
+      },
+      {
+        "command": "myDevTeam.quickQuestion",
+        "title": "Ask a Quick Question",
+        "category": "My Dev Team"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "myDevTeam.quickQuestion",
+        "key": "ctrl+alt+q",
+        "mac": "cmd+alt+q"
       }
     ],
     "menus": {
@@ -341,6 +353,10 @@
         "description": "Describe what to build",
         "isSticky": true,
         "commands": [
+          {
+            "name": "ask",
+            "description": "Ask a quick side question - answered directly, never joins the conversation."
+          },
           {
             "name": "clear",
             "description": "Start fresh: drop the conversation so far from future requests."

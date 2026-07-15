@@ -45,3 +45,13 @@ export const VERBOSE_COMMAND = clientCommands[2].name;
  * actually knows a command of this name.
  */
 export const COMPACT_COMMAND = 'compact';
+
+/**
+ * Name of the engine command that answers a quick side question (a "btw"
+ * question asked without derailing the ongoing conversation). The client
+ * treats its turns specially - they run with no history and are excluded from
+ * every later turn's history - so the name lives here like COMPACT_COMMAND:
+ * repeated rather than imported, with the commands unit test asserting the
+ * engine registry knows it as a oneshot command.
+ */
+export const ASK_COMMAND = 'ask';
